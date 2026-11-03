@@ -14,6 +14,22 @@ pub struct VideoInfo {
     pub codec: String,
 }
 
+/// Check the destination volume without creating or deleting user files.
+pub fn require_space(path: &Path, required_bytes: u64) -> io::Result<()> {
+    let available = fs2::available_space(path)?;
+    if available < required_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::StorageFull,
+            format!(
+                "Yeterli disk alanı yok: {} MiB gerekli, {} MiB kullanılabilir. Alan açıp yeniden dene.",
+                required_bytes.div_ceil(1024 * 1024),
+                available / (1024 * 1024)
+            ),
+        ));
+    }
+    Ok(())
+}
+
 pub fn duration(path: &Path) -> io::Result<f64> {
     Ok(inspect(path)?.duration)
 }
@@ -165,6 +181,9 @@ fn render(
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
+    // Reserve space for a 16 Mbit/s encode plus headroom; this is a preflight, not a size guarantee.
+    let required = ((end - start) * 2_000_000.0).ceil() as u64;
+    require_space(parent, required.saturating_add(256 * 1024 * 1024))?;
     let temporary = tempfile::Builder::new()
         .prefix(".tehom-")
         .suffix(".mp4")

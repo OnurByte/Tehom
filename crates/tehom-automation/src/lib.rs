@@ -757,7 +757,11 @@ impl Automation {
                 Ok(()) => ("complete", None),
                 Err(error) => {
                     let message = error.to_string();
-                    if message.starts_with("Needs input:") {
+                    if message.starts_with("Needs input:")
+                        || error
+                            .downcast_ref::<std::io::Error>()
+                            .is_some_and(|error| error.kind() == std::io::ErrorKind::StorageFull)
+                    {
                         ("needs_input", Some(message))
                     } else {
                         ("failed", Some(message))
@@ -1011,6 +1015,14 @@ impl Automation {
         subtitles_only: bool,
         cancel: Arc<AtomicBool>,
     ) -> Result<()> {
+        let reserve = if subtitles_only {
+            16 * 1024 * 1024
+        } else {
+            1024 * 1024 * 1024
+        };
+        tehom_media::require_space(folder, reserve).context(
+            "Needs input: indirme klasöründe yeterli disk alanı yok; alan açıp yeniden dene",
+        )?;
         let mut child = self
             .download_command(folder, url, subtitles_only)
             .spawn()
@@ -1018,8 +1030,14 @@ impl Automation {
         let result = tokio::time::timeout(
             Duration::from_secs(if subtitles_only { 300 } else { 7200 }),
             async {
+                let mut space_check = tokio::time::Instant::now();
                 loop {
                     ensure!(!cancel.load(Ordering::Acquire), "Cancelled");
+                    if space_check.elapsed() >= Duration::from_secs(1) {
+                        tehom_media::require_space(folder, if subtitles_only { 16 * 1024 * 1024 } else { 256 * 1024 * 1024 })
+                            .context("Needs input: indirme sırasında disk alanı azaldı; alan açıp yeniden dene")?;
+                        space_check = tokio::time::Instant::now();
+                    }
                     if let Some(status) = child.try_wait()? {
                         ensure!(
                             status.success(),

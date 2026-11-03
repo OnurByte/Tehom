@@ -59,3 +59,9 @@ tehom retry VIDEO_ID
 ```
 
 Use `--data /your/data/directory` to select a data directory. One engine owns a data directory at a time; close the desktop before running the daemon against the same directory. Ctrl+C and Unix service-stop signals cancel active daemon work and drain the current operation. See [Linux user-service setup](docs/headless-service.md). Configuration accepts data.directory, automation.check_interval_minutes, export.directory and ai.endpoint/model. Relative paths resolve beside the configuration file; explicit CLI data/interval options take priority. Unknown or unsupported settings are rejected. The service installer and signed distributable releases are not implemented yet.
+
+## Disk space
+
+Before downloading, Tehom requires 1 GiB available on the media volume (16 MiB for captions alone). During download it checks once per second and cancels if less than 256 MiB remains (16 MiB for captions). MP4 preflight estimates 16 Mbit/s for the selected duration plus 256 MiB headroom on the export volume. These are conservative checks, not reservations or exact size guarantees; competing writes can still exhaust space. Existing output files are never replaced. Free space and explicitly retry a job that needs input.
+
+The platform space query uses [fs2 available_space](https://docs.rs/fs2/0.4.3/fs2/fn.available_space.html). Configurable storage quotas and managed-cache cleanup are still pending.
