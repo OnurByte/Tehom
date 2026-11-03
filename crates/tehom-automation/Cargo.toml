@@ -1,0 +1,18 @@
+[package]
+name = "tehom-automation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[dependencies]
+anyhow = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "sync", "fs"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+feed-rs = "2"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+tehom-core = { path = "../tehom-core" }
+tehom-media = { path = "../tehom-media" }
+[dev-dependencies]
+tempfile = "3"

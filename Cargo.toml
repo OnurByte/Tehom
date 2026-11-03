@@ -1,5 +1,5 @@
 [workspace]
-members = ["apps/tehom-desktop", "crates/tehom-media", "crates/tehom-ui"]
+members = ["apps/tehom-desktop", "crates/tehom-media", "crates/tehom-ui", "crates/tehom-core", "crates/tehom-automation", "apps/tehom-cli"]
 resolver = "2"
 
 [workspace.package]

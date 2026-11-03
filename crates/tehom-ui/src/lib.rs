@@ -1,11 +1,18 @@
+mod automation_ui;
+use automation_ui::{Backend, Page};
+use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
+    AnyElement, AssetSource, Entity, KeyDownEvent, ObjectFit, PathPromptOptions, RenderImage,
+    Result, Role, SharedString, Subscription, Task, Window, assets,
     component::{
         Disableable,
         button::{Button, ButtonVariants},
         input::{Input, InputState},
+        slider::{Slider, SliderEvent, SliderState},
     },
+    div, img,
     prelude::*,
-    *,
+    px, rgb, svg,
 };
 use std::{
     path::PathBuf,
@@ -15,14 +22,33 @@ use std::{
     },
     time::Duration,
 };
+use tehom_core::{AutomationMode, EngineSnapshot};
 use tehom_media::preview::Preview;
 
 pub struct Tehom {
+    page: Page,
+    source_url: Entity<InputState>,
+    ai_endpoint: Entity<InputState>,
+    ai_model: Entity<InputState>,
+    source_mode: AutomationMode,
+    source_busy: bool,
+    backend: Option<Arc<Backend>>,
+    engine_snapshot: Option<EngineSnapshot>,
+    available_models: Vec<String>,
+    engine_stop: Arc<AtomicBool>,
+    _engine_task: Option<Task<()>>,
+    _snapshot_task: Option<Task<()>>,
+    pending_range: Option<(u64, u64)>,
     source: Option<PathBuf>,
     preview: Option<Preview>,
     image: Option<Arc<RenderImage>>,
     start: Entity<InputState>,
     end: Entity<InputState>,
+    timeline: Entity<SliderState>,
+    timeline_position: f32,
+    scrubbing: bool,
+    _timeline_events: Subscription,
+    _timeline_value: Subscription,
     total: f64,
     metadata: String,
     busy: bool,
@@ -35,8 +61,24 @@ pub struct Tehom {
 
 impl Tehom {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let source_url = cx.new(|cx| InputState::new(window, cx).placeholder("youtube.com/@kanal"));
+        let ai_endpoint =
+            cx.new(|cx| InputState::new(window, cx).default_value("http://127.0.0.1:11434"));
+        let ai_model = cx.new(|cx| InputState::new(window, cx).placeholder("Yerel model adı"));
+        let engine_stop = Arc::new(AtomicBool::new(false));
         let start = cx.new(|cx| InputState::new(window, cx).default_value("0"));
         let end = cx.new(|cx| InputState::new(window, cx).default_value("0"));
+        let timeline = cx.new(|_| SliderState::new().min(0.).max(100.).step(0.001));
+        let timeline_events = cx.subscribe(&timeline, |view, _, event, _| {
+            view.scrubbing = matches!(event, SliderEvent::Change(_));
+        });
+        let timeline_value = cx.observe(&timeline, |view, timeline, cx| {
+            let position = timeline.read(cx).value().end();
+            if position.is_finite() && position != view.timeline_position && view.total > 0. {
+                view.timeline_position = position;
+                view.seek(f64::from(position) / 100. * view.total, cx);
+            }
+        });
         let refresh = cx.spawn_in(window, async move |view, cx| {
             loop {
                 cx.background_executor()
@@ -60,7 +102,19 @@ impl Tehom {
                                     eprintln!("Preview texture: {error}");
                                 }
                             }
-                            if let Some(error) = preview.snapshot().error {
+                            let snapshot = preview.snapshot();
+                            if !view.scrubbing && view.total > 0. {
+                                let position = (snapshot.position.as_secs_f64() / view.total * 100.)
+                                    .clamp(0., 100.)
+                                    as f32;
+                                if position != view.timeline_position {
+                                    view.timeline_position = position;
+                                    view.timeline.update(cx, |state, cx| {
+                                        state.set_value(position, window, cx)
+                                    });
+                                }
+                            }
+                            if let Some(error) = snapshot.error {
                                 view.status =
                                     "Video oynatılamadı. Başka bir dosya seçebilirsin.".into();
                                 view.details = Some(error);
@@ -75,11 +129,29 @@ impl Tehom {
             }
         });
         Self {
+            page: Page::Home,
+            source_url,
+            ai_endpoint,
+            ai_model,
+            source_mode: AutomationMode::AutoDraft,
+            source_busy: false,
+            backend: None,
+            engine_snapshot: None,
+            available_models: Vec::new(),
+            engine_stop,
+            _engine_task: None,
+            _snapshot_task: None,
+            pending_range: None,
             source: None,
             preview: None,
             image: None,
             start,
             end,
+            timeline,
+            timeline_position: 0.,
+            scrubbing: false,
+            _timeline_events: timeline_events,
+            _timeline_value: timeline_value,
             total: 0.,
             metadata: String::new(),
             busy: false,
@@ -95,12 +167,18 @@ impl Tehom {
         if self.busy {
             return;
         }
+        self.page = Page::Clips;
+        self.pending_range = None;
         self.busy = true;
         self.status = "Video açılıyor…".into();
         self.details = None;
         self.preview = None;
         self.source = None;
         self.total = 0.;
+        self.timeline_position = 0.;
+        self.scrubbing = false;
+        self.timeline
+            .update(cx, |state, cx| state.set_value(0., window, cx));
         self.metadata.clear();
         if let Some(image) = self.image.take()
             && let Err(error) = window.drop_image(image)
@@ -130,11 +208,22 @@ impl Tehom {
                         );
                         view.preview = Some(preview);
                         view.source = Some(path);
-                        view.start
-                            .update(cx, |state, cx| state.set_value("0", window, cx));
-                        view.end.update(cx, |state, cx| {
-                            state.set_value(format!("{duration:.3}"), window, cx)
+                        let (start, end) = view
+                            .pending_range
+                            .take()
+                            .map(|(a, b)| (a as f64 / 1000., b as f64 / 1000.))
+                            .unwrap_or((0., duration));
+                        view.start.update(cx, |state, cx| {
+                            state.set_value(format!("{start:.3}"), window, cx)
                         });
+                        view.end.update(cx, |state, cx| {
+                            state.set_value(format!("{end:.3}"), window, cx)
+                        });
+                        if let Some(preview) = &view.preview
+                            && let Err(error) = preview.seek(Duration::from_secs_f64(start))
+                        {
+                            eprintln!("Draft preview: {error}");
+                        }
                         view.status = "Hazır. Başlangıç ve bitişi seçip MP4 kaydet.".into();
                     }
                     Err(error) => {
@@ -292,8 +381,8 @@ impl Tehom {
     }
 }
 
-impl Render for Tehom {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+impl Tehom {
+    fn render_editor(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let snapshot = self
             .preview
             .as_ref()
@@ -314,42 +403,13 @@ impl Render for Tehom {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_3()
-                                    .child(
-                                        svg()
-                                            .path("brand/icon.svg")
-                                            .size(px(36.))
-                                            .text_color(rgb(0xf2f4f8)),
-                                    )
-                                    .child(div().text_2xl().child("Tehom")),
-                            )
-                            .child(
-                                div()
-                                    .text_color(rgb(0xdde1e6))
-                                    .child("Uzun videolardan klipler oluştur."),
-                            ),
-                    )
+                    .child(div().text_xl().child("Klip düzenleyici"))
                     .child(
                         Button::new("open")
-                            .label("Dosya seç")
+                            .label("Video aç")
                             .disabled(self.busy)
                             .on_click(cx.listener(|view, _, window, cx| view.pick(window, cx))),
                     ),
-            )
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(rgb(0x78a9ff))
-                    .child("Videonu aç, bir kesit seç, bilgisayarına kaydet."),
             )
             .child(
                 div()
@@ -371,8 +431,46 @@ impl Render for Tehom {
             )
             .child(
                 div()
+                    .id("timeline-keyboard")
+                    .test_support()
+                    .focusable()
+                    .tab_stop(true)
+                    .aria_label(
+                        "Zaman çizelgesi. Oklarla ilerle, Home ve End ile başa veya sona git.",
+                    )
+                    .border_1()
+                    .border_color(rgb(0x393939))
+                    .rounded_md()
+                    .p_2()
+                    .focus(|style| style.border_color(rgb(0x78a9ff)))
+                    .on_key_down(cx.listener(|view, event: &KeyDownEvent, _, cx| {
+                        let position = view
+                            .preview
+                            .as_ref()
+                            .map(|p| p.snapshot().position.as_secs_f64())
+                            .unwrap_or(0.);
+                        let target = match event.keystroke.key.as_str() {
+                            "left" => position - 1.,
+                            "right" => position + 1.,
+                            "home" => 0.,
+                            "end" => view.total,
+                            _ => return,
+                        };
+                        cx.stop_propagation();
+                        view.seek(target, cx);
+                    }))
+                    .child(
+                        Slider::new(&self.timeline)
+                            .disabled(!ready)
+                            .accessibility_label("Videoda zaman seç")
+                            .w_full(),
+                    ),
+            )
+            .child(
+                div()
                     .flex()
                     .gap_3()
+                    .flex_wrap()
                     .items_center()
                     .child(
                         Button::new("back")
@@ -424,6 +522,7 @@ impl Render for Tehom {
                 div()
                     .flex()
                     .gap_3()
+                    .flex_wrap()
                     .items_end()
                     .child(
                         div()
@@ -524,11 +623,13 @@ impl Render for Tehom {
                     element.child(div().text_sm().child(details))
                 })
             })
+            .into_any_element()
     }
 }
 
 impl Drop for Tehom {
     fn drop(&mut self) {
+        self.engine_stop.store(true, Ordering::Release);
         if let Some(cancelled) = &self.cancellation {
             cancelled.store(true, Ordering::Release);
         }
@@ -544,14 +645,150 @@ impl AssetSource for Assets {
                 "../../../assets/brand/icon.svg"
             ))));
         }
-        assets::Assets.load(path)
+        assets::AllAssets.load(path)
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
-        let mut paths = assets::Assets.list(path)?;
+        let mut paths = assets::AllAssets.list(path)?;
         if "brand/icon.svg".starts_with(path) {
             paths.push("brand/icon.svg".into());
         }
         Ok(paths)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui_kit::test::{TestQueryExt, TestWindowExt};
+    use gpui_kit::{Bounds, TestAppContext, WindowBounds, WindowOptions, open_window, point, size};
+
+    #[gpui_kit::test]
+    fn home_leads_with_channel_automation(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let (handle, _) = cx.update(|cx| {
+            open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| Tehom::new(window, cx))
+            })
+            .unwrap()
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(
+                window.find_by_label("YouTube kanal adresi").label(),
+                Some("YouTube kanal adresi")
+            );
+            assert_eq!(window.find("add-channel").disabled(), Some(true));
+            assert_eq!(window.find_by_label("Kaynaklar").label(), Some("Kaynaklar"));
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn timeline_pointer_seeks_the_real_decoder(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("video.mp4");
+        assert!(
+            std::process::Command::new("ffmpeg")
+                .args([
+                    "-nostdin",
+                    "-v",
+                    "error",
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "testsrc2=size=160x90:rate=10",
+                    "-t",
+                    "10",
+                    "-c:v",
+                    "libx264"
+                ])
+                .arg(&input)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let preview = Preview::open(&input).unwrap();
+        cx.update(gpui_kit::init);
+        let (handle, view) = cx.update(|cx| {
+            open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds {
+                        origin: point(px(0.), px(0.)),
+                        size: size(px(1100.), px(800.)),
+                    })),
+                    ..Default::default()
+                },
+                cx,
+                |window, cx| {
+                    cx.new(|cx| {
+                        let mut view = Tehom::new(window, cx);
+                        view.page = Page::Clips;
+                        view.total = 10.;
+                        view.source = Some(input);
+                        view.preview = Some(preview);
+                        view
+                    })
+                },
+            )
+            .unwrap()
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert_ne!(
+                window.find_by_label("Videoda zaman seç").disabled(),
+                Some(true)
+            );
+            window.click("timeline-keyboard", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let position = cx.update(|cx| {
+                view.read(cx)
+                    .preview
+                    .as_ref()
+                    .unwrap()
+                    .snapshot()
+                    .position
+                    .as_secs_f64()
+            });
+            if (position - 5.).abs() < 0.2 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "pointer seek stayed at {position}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        cx.update_window(handle, |_, window, cx| {
+            window.click("timeline-keyboard", cx);
+            window.press("right", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let position = cx.update(|cx| {
+                view.read(cx)
+                    .preview
+                    .as_ref()
+                    .unwrap()
+                    .snapshot()
+                    .position
+                    .as_secs_f64()
+            });
+            if (position - 6.).abs() < 0.2 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "keyboard seek stayed at {position}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 }

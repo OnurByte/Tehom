@@ -1,42 +1,31 @@
-# Verification status
+# Requirement status
 
-This is the mandatory native-preview/export prototype, not a completed Tehom release. The full specification in master-spec.txt remains authoritative.
+The full target remains docs/master-spec.txt. This is not a completed v1 release.
 
-## Evidence obtained on Linux
+## Current evidence
 
-- GPUI Kit 0.8.1 with its pinned GPUI snapshot compiles; native window displayed a decoded local H.264/AAC MP4.
-- Real-media tests cover metadata/geometry, audio-only rejection, valid export, reversed intervals, existing output preservation, no visible unfinished MP4, cancellation cleanup, GStreamer decode with nontrivial row stride, pause, seek and worker shutdown.
-- Video work runs outside UI callbacks. The decoder keeps one latest frame, and the UI releases old GPU images.
-- Brand SVG copied byte for byte; Geist/Geist Mono embedded with OFL.
+- The preceding `f0a2207` CI run passed Linux, Windows x64, macOS Intel and Apple Silicon. Actual native preview screenshots were captured and inspected. This proves that earlier native build/runtime, not packaging or every new feature.
+- The current local workspace runs 30 passing tests: 17 automation, 10 media, 2 native UI, 1 CLI parser. Formatting, strict Clippy and builds are checked separately.
+- The desktop now leads with a channel URL and real persistent automation. It has the four-section native sidebar, unchanged user-supplied logo, Geist fonts and Oxocarbon colors. UI tests verify the channel entry and actual decoder seek from pointer/keyboard.
+- Engine fixtures exercise SQLite restart/pause/cancellation/dedup, missing model/captions, candidate validation, complete batch persistence, source retention on temporary RSS failure, actual vertical MP4 output through a local HTTP model fixture, ownership-based crash recovery and late subtitle refresh. Fixture success is not live-provider success.
+- A live public-channel RSS request returned HTTP 404 from YouTube. The configured source remains saved with an explicit retryable feed error; no fake videos or exports were produced. No installed local model server was available.
 
-The local machine initially lacked GStreamer good/libav plugins. Development validation used package-manager-sourced plugins extracted into the task's work directory, without changing the machine's installed packages. This does not establish that a standalone release bundles its runtime correctly.
+See [RSS integration evidence](evidence/rss-automation.md), [sidebar screenshot](evidence/sidebar-rss-home.png) and [earlier native preview evidence](evidence/linux-prototype.md).
 
-## Remaining prototype gate
+## Full-scope audit
 
-- Linux native form and GTK save-dialog export verified; see [recorded evidence](evidence/linux-prototype.md). Timeline and bundled-runtime spike cases remain pending. Volume control and portrait/three-hour-source decoder checks have been added; native UI and remote-platform checks for these additions remain pending.
-- Windows x64, macOS Intel and Apple Silicon actual build, real-media tests and native-window image inspection through CI.
-- X11 and Wayland evidence kept separate. A decoder test does not establish audible sound, GPU memory stability or native file-picker behavior on all systems.
-
-## Full product requirements still pending
-
-| Specification section | Required result | Status |
+| Sections | Implemented foundation | Required work still missing or unverified |
 | --- | --- | --- |
-| 1–5, 21 | Shared Rust desktop/CLI/headless engine and complete mode semantics | Initial workspace and prototype only |
-| 6–7 | Four-section UX, light/dark themes, editable drafts, accessibility/AccessKit and user studies | Prototype editing form, dark styling and native controls only |
-| 8 | YouTube/video/channel resolution, RSS, download/cancel/resume/deduplication, experimental Kick, original download | Not implemented |
-| 9 | SRT/VTT import, platform captions, language/versioning, manual ASR | Not implemented |
-| 10–11 | Local and BYOK providers, structured AI candidates, bounds/overlap/ranking validation | Not implemented |
-| 12–14 | Full preview/editor behavior, crop, captions, output profiles, SQLite and file storage | Initial preview and MP4 range export only |
-| 15 | Durable jobs, concurrency/disk limits, cancel/retry and crash recovery | Export cancellation only |
-| 16 | Headless service, TOML, scheduling, shared CLI commands | Not implemented |
-| 17 | One-command verified installation, deb/Flatpak/dmg/exe, signed manifests, update and rollback | Not implemented |
-| 18 | Full security review, OS credential store, URL/DNS safeguards and consent flows | Local path subprocess arguments and overwrite/partial-file protection only |
-| 19–20 | Full integration/E2E, native accessibility, nontechnical-user tests, three-platform release gates | Initial media tests and CI definition only |
+| 1–5, 21 | Rust workspace, shared types/media/automation, GPUI desktop and shared CLI, Manual/Auto Draft/Auto Export/Paused records | Full milestone acceptance, final crate-boundary organization, complete app/service integration |
+| 6–7 | Channel-first sidebar, real sources/jobs/drafts/settings, original SVG, Geist, dark Oxocarbon styling, native named controls | Light theme, complete keyboard/AccessKit audit, recovery-flow polish and nontechnical-user studies |
+| 8 | Strict YouTube channel/handle resolution, RSS discovery, deduplication, persisted errors, yt-dlp/caption pipeline and cancellation | Successful live channel/download run, single-video input, original-file save flow, experimental Kick, richer resume/rate/disk controls |
+| 9 | SRT/VTT parser, platform-caption selection and refresh, no automatic ASR | User transcript upload/versioning/editing, language persistence and explicitly initiated ASR/model-size flow |
+| 10–11 | Ollama and local OpenAI-compatible transport, chunking, validated 20–90s candidates, overlap filtering, max-five drafts and durable complete batches | Live local-model run, remote BYOK providers/consent/keyring, richer ranking/silence/scene analysis and prompt settings |
+| 12–13 | Native preview, play/pause/seek/volume, portrait and three-hour-source tests, manual ranges, draft opening, no-clobber export, automatic 1080×1920 H.264/AAC and cancellation | Bundled-runtime gate, sustained memory/audio checks, drag framing, captions, output profiles, progress and complete editor E2E |
+| 14–15 | SQLite WAL, migrations, source/video/draft/settings state, exclusive engine ownership, persistent mode/resume, sequential bounded worker, cancellation/retry and owned export reconciliation | Storage quota/preflight/cleanup, complete event/progress history, process-tree shutdown and remaining interruption/recovery cases |
+| 16 | Shared engine through CLI add/check/status/retry/cancel/resume and periodic daemon | TOML contract, systemd user-service installation, full self-host lifecycle tests |
+| 17 | Native CI builds/runtime screenshots | One-command installers, deb/Flatpak/dmg/exe, runtime bundling, signing/notarization, signed manifests, update/rollback and clean-install tests |
+| 18 | Allowlisted source URLs, loopback AI, bounded I/O, argument-array subprocesses, atomic output and ownership checks | Independent security review, full credential/remote consent system, third-party redistribution/license audit and update verification |
+| 19–20 | Current automated tests and earlier four-target native checks | Current-code cross-platform E2E, accessibility/user studies, complete release gate and a successful live demo |
 
-CI must produce actual results before any remote platform is marked verified. Runtime/toolchain checks do not prove release packaging, signing or installation.
-
-## Additional local decoder evidence
-
-The volume test checks invalid levels and reads the actual GStreamer playbin volume property after setting 25%. A real 90×160 portrait fixture and an encoded 10,800-second source both decode and seek. A Linux process RSS sample across 30 seeks on the three-hour source rose from 264,980 KiB to a peak of 265,176 KiB in the recorded run. This is a short repeated-seek sample, not a claim of three hours of continuous playback or a full GPU-memory audit.
-
-The first native CI run passed Linux. Its Windows tests failed because Chocolatey's upstream feed returned HTTP 503 and no FFmpeg executable was installed; the Windows setup now retries and explicitly verifies tool availability. The macOS jobs were still running when this note was written. No Windows/macOS pass is claimed.
+No social publishing, account linking, SaaS, web application shell or AppImage will be introduced. Missing work remains in scope; passing current tests does not establish v1 completion.

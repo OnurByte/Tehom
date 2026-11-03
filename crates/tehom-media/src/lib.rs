@@ -84,6 +84,70 @@ pub fn export_cancellable(
     end: f64,
     cancelled: &AtomicBool,
 ) -> io::Result<()> {
+    render(input, output, start, end, cancelled, None)
+}
+
+pub fn export_automated(
+    input: &Path,
+    output: &Path,
+    start: f64,
+    end: f64,
+    cancelled: &AtomicBool,
+    identity: &str,
+) -> io::Result<()> {
+    if identity.is_empty()
+        || identity.len() > 128
+        || !identity
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Geçersiz dışa aktarma kimliği",
+        ));
+    }
+    render(input, output, start, end, cancelled, Some(identity))
+}
+
+pub fn export_identity(path: &Path) -> io::Result<Option<String>> {
+    let path = path.canonicalize()?;
+    if !path.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Normal bir video dosyası seç",
+        ));
+    }
+    let bytes = run(
+        Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-protocol_whitelist",
+                "file,pipe",
+                "-show_entries",
+                "format_tags=comment",
+                "-of",
+                "json",
+            ])
+            .arg(path),
+        &AtomicBool::new(false),
+        Some(Duration::from_secs(30)),
+    )?;
+    let data: serde_json::Value = serde_json::from_slice(&bytes)?;
+    Ok(data["format"]["tags"]["comment"]
+        .as_str()
+        .and_then(|value| value.strip_prefix("tehom:"))
+        .map(str::to_owned))
+}
+
+fn render(
+    input: &Path,
+    output: &Path,
+    start: f64,
+    end: f64,
+    cancelled: &AtomicBool,
+    identity: Option<&str>,
+) -> io::Result<()> {
     let total = inspect_cancellable(input, cancelled)?.duration;
     if !start.is_finite() || !end.is_finite() || start < 0.0 || end <= start || end > total {
         return Err(io::Error::new(
@@ -111,40 +175,45 @@ pub fn export_cancellable(
             "Klip iptal edildi",
         ));
     }
-    run(
-        Command::new("ffmpeg")
-            .args([
-                "-nostdin",
-                "-v",
-                "error",
-                "-y",
-                "-protocol_whitelist",
-                "file,pipe",
-                "-ss",
-                &start.to_string(),
-                "-i",
-            ])
-            .arg(input.canonicalize()?)
-            .args([
-                "-t",
-                &(end - start).to_string(),
-                "-map",
-                "0:v:0",
-                "-map",
-                "0:a?",
-                "-c:v",
-                "libx264",
-                "-pix_fmt",
-                "yuv420p",
-                "-c:a",
-                "aac",
-                "-movflags",
-                "+faststart",
-            ])
-            .arg(temporary.path()),
-        cancelled,
-        None,
-    )?;
+    let mut command = Command::new("ffmpeg");
+    command
+        .args([
+            "-nostdin",
+            "-v",
+            "error",
+            "-y",
+            "-protocol_whitelist",
+            "file,pipe",
+            "-ss",
+            &start.to_string(),
+            "-i",
+        ])
+        .arg(input.canonicalize()?)
+        .args([
+            "-t",
+            &(end - start).to_string(),
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a?",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-movflags",
+            "+faststart",
+        ]);
+    if let Some(identity) = identity {
+        command.args([
+            "-vf",
+            "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1",
+            "-metadata",
+            &format!("comment=tehom:{identity}"),
+        ]);
+    }
+    run(command.arg(temporary.path()), cancelled, None)?;
     inspect_cancellable(temporary.path(), cancelled)?;
     temporary.as_file().sync_all()?;
     if cancelled.load(Ordering::Acquire) {

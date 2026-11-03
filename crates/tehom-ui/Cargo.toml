@@ -8,3 +8,13 @@ license.workspace = true
 gpui-kit = "=0.8.1"
 tehom-media = { path = "../tehom-media", features = ["preview"] }
 image = { version = "0.25", default-features = false }
+
+tehom-core = { path = "../tehom-core" }
+tehom-automation = { path = "../tehom-automation" }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync"] }
+directories = "6"
+anyhow = "1"
+
+[dev-dependencies]
+gpui-kit = { version = "=0.8.1", features = ["test-support"] }
+tempfile = "3"
