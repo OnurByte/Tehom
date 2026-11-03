@@ -47,6 +47,7 @@ cargo run -p tehom-cli -- --help
 tehom add https://www.youtube.com/@your-channel --mode auto-draft
 tehom add https://www.youtube.com/watch?v=VIDEO_ID --mode auto-export
 tehom import-video /path/to/video.mp4 --mode auto-draft
+tehom revise-clip CLIP_ID --start-ms 2000 --end-ms 24000
 tehom ai --endpoint http://127.0.0.1:11434 --model your-installed-model
 tehom check
 tehom run-once
@@ -68,3 +69,5 @@ Before downloading, Tehom requires 1 GiB available on the media volume (16 MiB f
 The platform space query uses [fs2 available_space](https://docs.rs/fs2/0.4.3/fs2/fn.available_space.html). Configurable storage quotas and managed-cache cleanup are still pending.
 
 Local model servers must support JSON-schema structured outputs (Ollama `format` or OpenAI-compatible `response_format`). Responses still pass independent timestamp/duration validation; an empty or invalid selection produces no clip.
+
+Open a library clip with **Taslağı düzenle**, adjust start/end in seconds and choose **Yeni taslak kaydet** to persist a new 20–90 second draft. Previous drafts and published files remain intact. Identical ranges reuse an existing record. Saving a revision does not queue automatic rendering; **MP4 kaydet** exports the current editor selection.

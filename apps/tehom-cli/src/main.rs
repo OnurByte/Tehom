@@ -71,6 +71,13 @@ enum Command {
         #[arg(long, value_enum, default_value = "auto-draft")]
         mode: Mode,
     },
+    ReviseClip {
+        id: i64,
+        #[arg(long)]
+        start_ms: u64,
+        #[arg(long)]
+        end_ms: u64,
+    },
     ImportTranscript {
         id: i64,
         path: PathBuf,
@@ -145,6 +152,11 @@ async fn main() -> Result<()> {
             "{}",
             serde_json::to_string_pretty(&engine.import_video(path, mode.into()).await?)?
         ),
+        Command::ReviseClip {
+            id,
+            start_ms,
+            end_ms,
+        } => println!("{}", engine.save_clip_revision(id, start_ms, end_ms).await?),
         Command::ImportTranscript { id, path } => engine.import_transcript(id, path).await?,
         Command::Retry { id } => engine.retry_video(id).await?,
         Command::Cancel { id } => engine.cancel_video(id).await?,

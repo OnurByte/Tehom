@@ -1036,3 +1036,46 @@ async fn closing_owner_releases_lock_even_if_descriptor_was_duplicated() {
     drop(duplicated);
     assert!(reopened.is_ok());
 }
+
+#[tokio::test]
+async fn edited_ranges_persist_as_new_drafts_without_changing_exports() {
+    let (dir, engine, output) = saved_draft_fixture().await;
+    let input = dir.path().join("videos/1/source.mp4");
+    sqlx::query("UPDATE videos SET local_path=? WHERE id=1")
+        .bind(input.to_str().unwrap())
+        .execute(&engine.pool)
+        .await
+        .unwrap();
+    std::fs::write(&output, b"existing published file").unwrap();
+    sqlx::query("UPDATE clips SET output_path=? WHERE id=1")
+        .bind(output.to_str().unwrap())
+        .execute(&engine.pool)
+        .await
+        .unwrap();
+    let revision = engine.save_clip_revision(1, 2000, 24000).await.unwrap();
+    assert_ne!(revision, 1);
+    assert_eq!(
+        engine.save_clip_revision(1, 2000, 24000).await.unwrap(),
+        revision
+    );
+    assert!(engine.save_clip_revision(1, 5000, 26000).await.is_err());
+    assert!(engine.save_clip_revision(1, 0, 10000).await.is_err());
+    engine.pool.close().await;
+    drop(engine);
+    let reopened = Automation::open(dir.path().into()).await.unwrap();
+    let clips = reopened.snapshot().await.unwrap().clips;
+    assert_eq!(clips.len(), 2);
+    let saved = clips.iter().find(|clip| clip.id == revision).unwrap();
+    assert_eq!((saved.start_ms, saved.end_ms), (2000, 24000));
+    assert!(saved.output_path.is_none());
+    assert_eq!(
+        clips
+            .iter()
+            .find(|clip| clip.id == 1)
+            .unwrap()
+            .output_path
+            .as_ref(),
+        Some(&output)
+    );
+    assert_eq!(std::fs::read(output).unwrap(), b"existing published file");
+}

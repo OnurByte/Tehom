@@ -583,6 +583,41 @@ impl Automation {
         pool.close().await;
         result
     }
+    pub async fn save_clip_revision(&self, id: i64, start_ms: u64, end_ms: u64) -> Result<i64> {
+        let _guard = self
+            .worker
+            .try_lock()
+            .context("İş sürerken taslak kaydedilemez; tamamlanmasını bekle")?;
+        ensure!(
+            end_ms
+                .checked_sub(start_ms)
+                .is_some_and(|length| (20_000..=90_000).contains(&length)),
+            "Taslak aralığı 20–90 saniye olmalı"
+        );
+        let row = sqlx::query("SELECT c.video_id,v.local_path FROM clips c JOIN videos v ON v.id=c.video_id WHERE c.id=?")
+            .bind(id).fetch_optional(&self.pool).await?.context("Taslak bulunamadı")?;
+        let video_id: i64 = row.get("video_id");
+        let input = row
+            .get::<Option<String>, _>("local_path")
+            .context("Özgün video dosyası bulunamadı")?;
+        let info =
+            tokio::task::spawn_blocking(move || tehom_media::inspect(std::path::Path::new(&input)))
+                .await??;
+        ensure!(
+            end_ms <= (info.duration * 1000.0).floor() as u64,
+            "Taslak aralığı videonun dışında"
+        );
+        sqlx::query("INSERT INTO clips(video_id,title,start_ms,end_ms,reason) SELECT video_id,title,?,?,reason FROM clips WHERE id=? ON CONFLICT(video_id,start_ms,end_ms) DO NOTHING")
+            .bind(start_ms as i64).bind(end_ms as i64).bind(id).execute(&self.pool).await?;
+        Ok(
+            sqlx::query_scalar("SELECT id FROM clips WHERE video_id=? AND start_ms=? AND end_ms=?")
+                .bind(video_id)
+                .bind(start_ms as i64)
+                .bind(end_ms as i64)
+                .fetch_one(&self.pool)
+                .await?,
+        )
+    }
     pub async fn import_transcript(&self, id: i64, path: PathBuf) -> Result<()> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let _guard = self

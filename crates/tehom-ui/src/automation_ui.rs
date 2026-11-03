@@ -25,6 +25,7 @@ enum Action {
     Resume(i64),
     Ai(AiConfig),
     Models,
+    SaveRevision(i64, u64, u64),
     Retry(i64),
     Import(i64, PathBuf),
     Cancel(i64),
@@ -218,6 +219,10 @@ impl Tehom {
                             backend.engine.set_ai(ai).await?;
                             "Model ayarları kaydedildi.".into()
                         }
+                        Action::SaveRevision(id, start, end) => {
+                            backend.engine.save_clip_revision(id, start, end).await?;
+                            "Yeni taslak kaydedildi. Önceki taslak ve dosyalar korundu.".into()
+                        }
                         Action::Models => {
                             models = Some(backend.engine.local_models().await?);
                             "Yerel modeller kontrol edildi.".into()
@@ -262,6 +267,38 @@ impl Tehom {
             });
         })
         .detach();
+    }
+
+    pub(super) fn save_draft_revision(
+        &mut self,
+        id: i64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let values = (
+            self.start.read(cx).value().parse::<f64>(),
+            self.end.read(cx).value().parse::<f64>(),
+        );
+        if let (Ok(start), Ok(end)) = values
+            && start.is_finite()
+            && end.is_finite()
+            && start >= 0.
+            && end > start
+            && end <= self.total
+        {
+            self.act(
+                Action::SaveRevision(
+                    id,
+                    (start * 1000.).round() as u64,
+                    (end * 1000.).floor() as u64,
+                ),
+                window,
+                cx,
+            );
+        } else {
+            self.status = "Videonun içinde geçerli başlangıç ve bitiş saniyeleri yaz.".into();
+            cx.notify();
+        }
     }
 
     fn choose_input_file(
@@ -806,20 +843,22 @@ impl Render for Tehom {
                             .gap_2()
                             .child(clip.title)
                             .child(format!(
-                                "{:.1} saniye",
+                                "{:.1}–{:.1} sn · {:.1} saniye",
+                                clip.start_ms as f64 / 1000.,
+                                clip.end_ms as f64 / 1000.,
                                 (clip.end_ms - clip.start_ms) as f64 / 1000.
                             ))
-                            .when(path.is_none(), |v| {
-                                v.when_some(original, |v, original| {
-                                    v.child(
-                                        Button::new(("draft-edit", clip.id as usize))
-                                            .label("Taslağı düzenle")
-                                            .on_click(cx.listener(move |view, _, window, cx| {
-                                                view.load(original.clone(), window, cx);
-                                                view.pending_range = Some(range);
-                                            })),
-                                    )
-                                })
+                            .when_some(original, |v, original| {
+                                v.child(
+                                    Button::new(("draft-edit", clip.id as usize))
+                                        .label("Taslağı düzenle")
+                                        .disabled(self.busy || self.source_busy)
+                                        .on_click(cx.listener(move |view, _, window, cx| {
+                                            view.load(original.clone(), window, cx);
+                                            view.pending_range = Some(range);
+                                            view.editing_clip = Some(clip.id);
+                                        })),
+                                )
                             })
                             .when_some(path, |v, path| {
                                 v.child(

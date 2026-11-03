@@ -39,6 +39,7 @@ pub struct Tehom {
     _engine_task: Option<Task<()>>,
     _snapshot_task: Option<Task<()>>,
     pending_range: Option<(u64, u64)>,
+    editing_clip: Option<i64>,
     source: Option<PathBuf>,
     preview: Option<Preview>,
     image: Option<Arc<RenderImage>>,
@@ -144,6 +145,7 @@ impl Tehom {
             _engine_task: None,
             _snapshot_task: None,
             pending_range: None,
+            editing_clip: None,
             source: None,
             preview: None,
             image: None,
@@ -171,6 +173,7 @@ impl Tehom {
         }
         self.page = Page::Clips;
         self.pending_range = None;
+        self.editing_clip = None;
         self.busy = true;
         self.status = "Video açılıyor…".into();
         self.details = None;
@@ -574,6 +577,16 @@ impl Tehom {
                                 });
                             })),
                     )
+                    .when_some(self.editing_clip, |element, id| {
+                        element.child(
+                            Button::new("save-draft")
+                                .label("Yeni taslak kaydet")
+                                .disabled(!ready || self.busy || self.source_busy)
+                                .on_click(cx.listener(move |view, _, window, cx| {
+                                    view.save_draft_revision(id, window, cx)
+                                })),
+                        )
+                    })
                     .child(
                         Button::new("save")
                             .primary()
@@ -582,6 +595,13 @@ impl Tehom {
                             .on_click(cx.listener(|view, _, window, cx| view.save(window, cx))),
                     ),
             )
+            .when(self.editing_clip.is_some(), |element| {
+                element.child(
+                    div().text_sm().child(
+                        "Yeni taslak 20–90 saniye olmalı. Önceki taslak ve dosyalar korunur.",
+                    ),
+                )
+            })
             .when(self.cancellation.is_some(), |element| {
                 element.child(
                     Button::new("cancel")
