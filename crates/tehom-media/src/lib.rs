@@ -16,6 +16,7 @@ pub struct VideoInfo {
 
 /// Check the destination volume without creating or deleting user files.
 pub fn require_space(path: &Path, required_bytes: u64) -> io::Result<()> {
+    let path = path.canonicalize()?;
     let available = fs2::available_space(path)?;
     if available < required_bytes {
         return Err(io::Error::new(
