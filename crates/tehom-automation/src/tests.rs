@@ -147,35 +147,77 @@ async fn baseline_only_queues_newest_and_later_entries_queue() {
 }
 #[tokio::test]
 async fn local_provider_request_and_response_are_real_http() {
-    use std::io::{Read, Write};
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let endpoint = format!("http://{}", listener.local_addr().unwrap());
-    let server = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
+    use std::io::{BufRead, Read, Write};
+    for openai in [false, true] {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!(
+            "http://{}{}",
+            listener.local_addr().unwrap(),
+            if openai { "/v1" } else { "" }
+        );
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = std::io::BufReader::new(&mut stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            assert!(line.contains(if openai {
+                "POST /v1/chat/completions"
+            } else {
+                "POST /api/chat"
+            }));
+            let mut length = 0;
+            loop {
+                line.clear();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse::<usize>().unwrap();
+                }
+            }
+            assert!(length > 0 && length < 8192);
+            let mut bytes = vec![0; length];
+            reader.read_exact(&mut bytes).unwrap();
+            drop(reader);
+            let request: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            let schema = if openai {
+                &request["response_format"]["json_schema"]["schema"]
+            } else {
+                &request["format"]
+            };
+            assert_eq!(schema["type"], "array");
+            assert_eq!(schema["items"]["properties"]["start_ms"]["type"], "integer");
+            assert_eq!(schema["items"]["properties"]["title"]["type"], "string");
+            let content = r#"[{"start_ms":0,"end_ms":30000,"title":"Test","reason":"Useful"}]"#;
+            let body = if openai {
+                serde_json::json!({"choices":[{"message":{"content":content}}]})
+            } else {
+                serde_json::json!({"message":{"content":content}})
+            }
+            .to_string();
+            write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let engine = Automation::open(dir.path().into()).await.unwrap();
+        let candidates = engine
+            .analyze(
+                &AiConfig {
+                    endpoint,
+                    model: "test".into(),
+                },
+                "[0-30000] hello",
+            )
+            .await
             .unwrap();
-        let mut buffer = [0; 8192];
-        let size = stream.read(&mut buffer).unwrap();
-        assert!(String::from_utf8_lossy(&buffer[..size]).contains("POST /api/chat"));
-        let body = r#"{"message":{"content":"[{\"start_ms\":0,\"end_ms\":30000,\"title\":\"Test\",\"reason\":\"Useful\"}]"}}"#;
-        write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();
-    });
-    let dir = tempfile::tempdir().unwrap();
-    let engine = Automation::open(dir.path().into()).await.unwrap();
-    let candidates = engine
-        .analyze(
-            &AiConfig {
-                endpoint,
-                model: "test".into(),
-            },
-            "[0-30000] hello",
-        )
-        .await
-        .unwrap();
-    assert_eq!(validate_candidates(candidates, 30_000).len(), 1);
-    server.join().unwrap();
+        assert_eq!(validate_candidates(candidates, 30_000).len(), 1);
+        server.join().unwrap();
+    }
 }
+
 #[test]
 fn local_ai_rejects_external_credentials_and_accepts_loopback() {
     for endpoint in [
