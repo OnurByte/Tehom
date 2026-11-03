@@ -866,3 +866,100 @@ async fn single_video_is_queued_once_and_never_polled_as_channel() {
         "needs_input"
     );
 }
+
+#[tokio::test]
+async fn imports_local_video_without_copying_or_downloading() {
+    let dir = tempfile::tempdir().unwrap();
+    let original = dir.path().join("original.mp4");
+    let status = std::process::Command::new("ffmpeg")
+        .args([
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=s=64x64:d=25",
+            "-c:v",
+            "libx264",
+            "-threads",
+            "1",
+        ])
+        .arg(&original)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let before = std::fs::read(&original).unwrap();
+    let engine = Automation::open(dir.path().join("data")).await.unwrap();
+    let source = engine
+        .import_video(original.clone(), AutomationMode::AutoDraft)
+        .await
+        .unwrap();
+    let duplicate = engine
+        .import_video(original.clone(), AutomationMode::AutoExport)
+        .await
+        .unwrap();
+    assert_eq!(source.id, duplicate.id);
+    assert!(
+        engine
+            .import_video(dir.path().into(), AutomationMode::Manual)
+            .await
+            .is_err()
+    );
+    assert_eq!(engine.check_now().await.unwrap(), 0);
+    engine
+        .set_ai(AiConfig {
+            model: "fixture".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    engine.process_next().await.unwrap();
+    let snapshot = engine.snapshot().await.unwrap();
+    assert_eq!(snapshot.videos.len(), 1);
+    assert_eq!(snapshot.videos[0].state, "needs_input");
+    assert!(
+        snapshot.videos[0]
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("transcript")
+    );
+    assert_eq!(
+        snapshot.videos[0].local_path,
+        Some(original.canonicalize().unwrap())
+    );
+    #[cfg(unix)]
+    {
+        let subtitles = dir.path().join("local.srt");
+        std::fs::write(
+            &subtitles,
+            "1\n00:00:00,000 --> 00:00:25,000\nLocal fixture transcript\n",
+        )
+        .unwrap();
+        engine
+            .import_transcript(snapshot.videos[0].id, subtitles)
+            .await
+            .unwrap();
+        let (endpoint, server) =
+            model_fixture(r#"[{"start_ms":0,"end_ms":25000,"title":"Local draft"}]"#);
+        engine
+            .set_ai(AiConfig {
+                endpoint,
+                model: "fixture".into(),
+            })
+            .await
+            .unwrap();
+        engine
+            .set_mode(source.id, AutomationMode::AutoExport)
+            .await
+            .unwrap();
+        engine.retry_video(snapshot.videos[0].id).await.unwrap();
+        engine.process_next().await.unwrap();
+        server.join().unwrap();
+        let complete = engine.snapshot().await.unwrap();
+        assert_eq!(complete.videos[0].state, "complete");
+        assert_eq!(complete.clips.len(), 1);
+        assert!(complete.clips[0].output_path.as_ref().unwrap().is_file());
+    }
+    assert_eq!(std::fs::read(original).unwrap(), before);
+}

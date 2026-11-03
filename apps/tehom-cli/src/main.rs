@@ -66,6 +66,11 @@ enum Command {
     ExportDirectory {
         path: PathBuf,
     },
+    ImportVideo {
+        path: PathBuf,
+        #[arg(long, value_enum, default_value = "auto-draft")]
+        mode: Mode,
+    },
     ImportTranscript {
         id: i64,
         path: PathBuf,
@@ -132,6 +137,10 @@ async fn main() -> Result<()> {
             }
         }
         Command::ExportDirectory { path } => engine.set_export_directory(path).await?,
+        Command::ImportVideo { path, mode } => println!(
+            "{}",
+            serde_json::to_string_pretty(&engine.import_video(path, mode.into()).await?)?
+        ),
         Command::ImportTranscript { id, path } => engine.import_transcript(id, path).await?,
         Command::Retry { id } => engine.retry_video(id).await?,
         Command::Cancel { id } => engine.cancel_video(id).await?,

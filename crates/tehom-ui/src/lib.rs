@@ -683,6 +683,7 @@ mod tests {
                 Some("YouTube kanal veya video adresi")
             );
             assert_eq!(window.find("add-channel").disabled(), Some(true));
+            assert_eq!(window.find("import-local-video").disabled(), Some(true));
             assert_eq!(window.find_by_label("Kaynaklar").label(), Some("Kaynaklar"));
         })
         .unwrap();

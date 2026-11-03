@@ -304,6 +304,47 @@ impl Automation {
         }
         Ok(bytes)
     }
+    pub async fn import_video(&self, path: PathBuf, mode: AutomationMode) -> Result<Source> {
+        let path = tokio::fs::canonicalize(path).await?;
+        let probe = path.clone();
+        tokio::task::spawn_blocking(move || tehom_media::inspect(&probe)).await??;
+        let _guard = self.checks.lock().await;
+        let stored_path = path.to_str().context("Video path is not UTF-8")?;
+        let existing: Option<i64> = sqlx::query_scalar(
+            "SELECT source_id FROM videos WHERE local_path=? AND url LIKE 'local:%'",
+        )
+        .bind(stored_path)
+        .fetch_optional(&self.pool)
+        .await?;
+        let source_id = if let Some(id) = existing {
+            id
+        } else {
+            let identity = format!("local:{}", uuid::Uuid::new_v4());
+            let title = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("Local video");
+            let mut tx = self.pool.begin().await?;
+            let id = sqlx::query("INSERT INTO sources(url,channel_id,title,mode) VALUES(?,?,?,?)")
+                .bind(stored_path)
+                .bind(&identity)
+                .bind(title)
+                .bind(mode_string(mode))
+                .execute(&mut *tx)
+                .await?
+                .last_insert_rowid();
+            sqlx::query("INSERT INTO videos(source_id,external_id,title,url,state,local_path) VALUES(?,?,?,?,'queued',?)")
+                .bind(id).bind(&identity).bind(title).bind(&identity).bind(stored_path).execute(&mut *tx).await?;
+            tx.commit().await?;
+            id
+        };
+        self.snapshot()
+            .await?
+            .sources
+            .into_iter()
+            .find(|source| source.id == source_id)
+            .context("Local video source disappeared")
+    }
     pub async fn add_source(&self, url: &str, mode: AutomationMode) -> Result<Source> {
         let _guard = self.checks.lock().await;
         if let Ok(id) = video_input(url) {
@@ -423,7 +464,10 @@ impl Automation {
         let _guard = self.checks.lock().await;
         let mut count = 0;
         for source in self.snapshot().await?.sources {
-            if source.mode == AutomationMode::Paused || source.channel_id.starts_with("video:") {
+            if source.mode == AutomationMode::Paused
+                || source.channel_id.starts_with("video:")
+                || source.channel_id.starts_with("local:")
+            {
                 continue;
             }
             let result = async {
@@ -787,7 +831,7 @@ impl Automation {
         let snapshot = self.snapshot().await?;
         ensure!(
             !snapshot.ai.model.trim().is_empty(),
-            "Needs input: select a local AI model before downloading"
+            "Needs input: select a local AI model before processing"
         );
         ai_endpoint(&snapshot.ai)?;
         ensure!(!cancel.load(Ordering::Acquire), "Cancelled");
@@ -798,16 +842,26 @@ impl Automation {
             folder.starts_with(&self.directory),
             "Media directory escaped application data"
         );
-        let input = folder.join("source.mp4");
+        let local = url.starts_with("local:");
+        let input = if local {
+            snapshot
+                .videos
+                .iter()
+                .find(|video| video.id == id)
+                .and_then(|video| video.local_path.clone())
+                .context("Needs input: local video path is missing")?
+        } else {
+            folder.join("source.mp4")
+        };
         let had_media = input.exists();
-        if !had_media {
+        if !had_media && !local {
             self.download(&folder, url, false, cancel.clone()).await?;
         }
         let canonical = tokio::fs::canonicalize(&input)
             .await
-            .context("Downloaded MP4 was not found")?;
+            .context("Needs input: video file was not found; restore it before retrying")?;
         ensure!(
-            canonical.starts_with(&folder),
+            local || canonical.starts_with(&folder),
             "Downloaded media escaped its directory"
         );
         let probe_path = canonical.clone();
@@ -829,7 +883,7 @@ impl Automation {
             if transcript.is_none() {
                 transcript = load_transcript(&folder).await?;
             }
-            if transcript.is_none() && had_media {
+            if transcript.is_none() && had_media && !local {
                 self.download(&folder, url, true, cancel.clone()).await?;
                 transcript = load_transcript(&folder).await?;
             }

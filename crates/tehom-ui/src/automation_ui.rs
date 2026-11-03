@@ -19,6 +19,7 @@ pub(super) struct Backend {
 
 enum Action {
     Add(String, AutomationMode),
+    File(PathBuf, AutomationMode),
     Check,
     Mode(i64, AutomationMode),
     Resume(i64),
@@ -197,6 +198,10 @@ impl Tehom {
                                 "Kanal kaydedildi. Akışa erişim bekleniyor; otomatik yeniden denenecek.".into()
                             } else {"Kanal eklendi. Son video ve bundan sonraki yeni videolar izleniyor.".into()}
                         }
+                        Action::File(path, mode) => {
+                            backend.engine.import_video(path, mode).await?;
+                            "Video kaydedildi. Altyazı gerekiyorsa iş listesinden yükleyebilirsin.".into()
+                        }
                         Action::Check => format!(
                             "Kaynaklar kontrol edildi. {} yeni video bulundu.",
                             backend.engine.check_now().await?
@@ -259,25 +264,41 @@ impl Tehom {
         .detach();
     }
 
-    fn choose_transcript(&mut self, id: i64, window: &Window, cx: &mut Context<Self>) {
+    fn choose_input_file(
+        &mut self,
+        subtitle_for: Option<i64>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
         let picker = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("SRT veya VTT altyazı dosyası seç".into()),
+            prompt: Some(
+                if subtitle_for.is_some() {
+                    "SRT veya VTT altyazı dosyası seç"
+                } else {
+                    "Klip oluşturmak için video seç"
+                }
+                .into(),
+            ),
         });
         cx.spawn_in(window, async move |view, cx| match picker.await {
             Ok(Ok(Some(paths))) => {
                 if let Some(path) = paths.into_iter().next() {
                     let _ = view.update_in(cx, |view, window, cx| {
-                        view.act(Action::Import(id, path), window, cx)
+                        let action = match subtitle_for {
+                            Some(id) => Action::Import(id, path),
+                            None => Action::File(path, view.source_mode),
+                        };
+                        view.act(action, window, cx)
                     });
                 }
             }
             Ok(Ok(None)) => {}
             error => {
                 let _ = view.update(cx, |view, cx| {
-                    view.status = "Altyazı dosyası seçilemedi.".into();
+                    view.status = "Dosya seçilemedi.".into();
                     view.details = Some(format!("{error:?}"));
                     cx.notify();
                 });
@@ -329,6 +350,9 @@ impl Tehom {
             .child(div().text_sm().text_color(rgb(0xdde1e6)).child(match self.source_mode {AutomationMode::AutoExport=>"Klipler seçtiğin klasöre kaydedilir. Kanal eklersen yeni videolar da otomatik işlenir.",_=>"Klip taslakları hazırlanır. Kanal eklersen yeni videolar da izlenir."}))
             .child(Button::new("add-channel").primary().label(if self.source_busy {"Ekleniyor…"} else {"Bağlantıyı ekle"}).disabled(unavailable)
                 .on_click(cx.listener(|view,_,window,cx|view.act(Action::Add(view.source_url.read(cx).value().to_string(),view.source_mode),window,cx))))
+            .child(Button::new("import-local-video").label("Dosyadan klip oluştur").disabled(unavailable)
+                .on_click(cx.listener(|view,_,window,cx| view.choose_input_file(None, window, cx))))
+            .child(div().text_sm().text_color(rgb(0xdde1e6)).child("Özgün dosya yerinde kullanılır. İş bitene kadar taşımayın veya silmeyin."))
             .into_any_element()
     }
 
@@ -360,7 +384,9 @@ impl Tehom {
                     .flex_col()
                     .gap_2()
                     .child(div().text_sm().text_color(rgb(0xdde1e6)).child(
-                        if source.channel_id.starts_with("video:") {
+                        if source.channel_id.starts_with("local:") {
+                            "Yerel video"
+                        } else if source.channel_id.starts_with("video:") {
                             "Tek video"
                         } else {
                             "Kanal · yeni videolar izleniyor"
@@ -468,7 +494,7 @@ impl Tehom {
                                     .label("Altyazı yükle")
                                     .disabled(self.source_busy)
                                     .on_click(cx.listener(move |view, _, window, cx| {
-                                        view.choose_transcript(id, window, cx)
+                                        view.choose_input_file(Some(id), window, cx)
                                     })),
                             )
                         },
