@@ -555,6 +555,7 @@ CAPTIONS
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
     path
 }
+#[cfg(unix)]
 fn model_fixture(candidates: &str) -> (String, std::thread::JoinHandle<()>) {
     use std::io::{Read, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -754,4 +755,57 @@ async fn temporary_feed_failure_keeps_source_for_automatic_retry() {
         .unwrap();
     assert_eq!(reopened.snapshot().await.unwrap().sources.len(), 1);
     assert_eq!(reopened.snapshot().await.unwrap().videos.len(), 0);
+}
+
+#[tokio::test]
+async fn uploaded_transcripts_are_versioned_and_invalid_uploads_preserve_previous() {
+    let directory = tempfile::tempdir().unwrap();
+    let engine = Automation::open(directory.path().to_path_buf())
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO sources(id,url,channel_id,title,mode) VALUES(1,'https://youtube.com/@fixture','UC1234567890123456789012','Fixture','auto_draft')").execute(&engine.pool).await.unwrap();
+    sqlx::query("INSERT INTO videos(id,source_id,external_id,title,url,state) VALUES(1,1,'abcdefghijk','Fixture','https://youtube.com/watch?v=abcdefghijk','needs_input')").execute(&engine.pool).await.unwrap();
+    let input = directory.path().join("caption.srt");
+    tokio::fs::write(&input, "1\n00:00:00,000 --> 00:00:25,000\nFirst version\n")
+        .await
+        .unwrap();
+    engine.import_transcript(1, input.clone()).await.unwrap();
+    tokio::fs::write(&input, "1\n00:00:00,000 --> 00:00:25,000\nSecond version\n")
+        .await
+        .unwrap();
+    engine.import_transcript(1, input.clone()).await.unwrap();
+    assert!(
+        engine
+            .uploaded_transcript(1)
+            .await
+            .unwrap()
+            .unwrap()
+            .contains("Second version")
+    );
+    let paths: Vec<String> =
+        sqlx::query_scalar("SELECT path FROM transcripts WHERE video_id=1 ORDER BY id")
+            .fetch_all(&engine.pool)
+            .await
+            .unwrap();
+    assert_eq!(paths.len(), 2);
+    assert!(
+        tokio::fs::read_to_string(&paths[0])
+            .await
+            .unwrap()
+            .contains("First version")
+    );
+    tokio::fs::write(&input, "broken subtitle").await.unwrap();
+    assert!(engine.import_transcript(1, input).await.is_err());
+    assert!(
+        engine
+            .uploaded_transcript(1)
+            .await
+            .unwrap()
+            .unwrap()
+            .contains("Second version")
+    );
+    assert_eq!(
+        engine.snapshot().await.unwrap().videos[0].state,
+        "needs_input"
+    );
 }

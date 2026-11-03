@@ -25,6 +25,7 @@ enum Action {
     Ai(AiConfig),
     Models,
     Retry(i64),
+    Import(i64, PathBuf),
     Cancel(i64),
     ExportDirectory(PathBuf),
 }
@@ -214,6 +215,7 @@ impl Tehom {
                             models = Some(backend.engine.local_models().await?);
                             "Yerel modeller kontrol edildi.".into()
                         }
+                        Action::Import(id,path)=>{backend.engine.import_transcript(id,path).await?;"Altyazı kaydedildi. Yeniden dene ile klipleri oluşturabilirsin.".into()}
                         Action::Retry(id) => {
                             backend.engine.retry_video(id).await?;
                             "Video yeniden kuyruğa alındı.".into()
@@ -251,6 +253,33 @@ impl Tehom {
                 }
                 cx.notify();
             });
+        })
+        .detach();
+    }
+
+    fn choose_transcript(&mut self, id: i64, window: &Window, cx: &mut Context<Self>) {
+        let picker = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("SRT veya VTT altyazı dosyası seç".into()),
+        });
+        cx.spawn_in(window, async move |view, cx| match picker.await {
+            Ok(Ok(Some(paths))) => {
+                if let Some(path) = paths.into_iter().next() {
+                    let _ = view.update_in(cx, |view, window, cx| {
+                        view.act(Action::Import(id, path), window, cx)
+                    });
+                }
+            }
+            Ok(Ok(None)) => {}
+            error => {
+                let _ = view.update(cx, |view, cx| {
+                    view.status = "Altyazı dosyası seçilemedi.".into();
+                    view.details = Some(format!("{error:?}"));
+                    cx.notify();
+                });
+            }
         })
         .detach();
     }
@@ -422,6 +451,19 @@ impl Tehom {
                     .when_some(video.error, |v, error| {
                         v.child(div().text_sm().child(error))
                     })
+                    .when(
+                        matches!(video.state.as_str(), "needs_input" | "failed"),
+                        |v| {
+                            v.child(
+                                Button::new(("upload-caption", id as usize))
+                                    .label("Altyazı yükle")
+                                    .disabled(self.source_busy)
+                                    .on_click(cx.listener(move |view, _, window, cx| {
+                                        view.choose_transcript(id, window, cx)
+                                    })),
+                            )
+                        },
+                    )
                     .child(
                         div()
                             .flex()

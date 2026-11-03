@@ -50,6 +50,9 @@ tehom check
 tehom run-once
 tehom daemon --interval-minutes 30
 tehom status
+# If a video needs captions, upload them and explicitly retry:
+tehom import-transcript VIDEO_ID /path/to/subtitles.srt
+tehom retry VIDEO_ID
 ```
 
 Use `--data /your/data/directory` to select a data directory. One engine owns a data directory at a time; close the desktop before running the daemon against the same directory. Ctrl+C cancels active daemon work. The configuration-file interface, service installer and signed distributable releases are not implemented yet.

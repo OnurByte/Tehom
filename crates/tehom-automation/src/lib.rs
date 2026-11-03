@@ -218,6 +218,7 @@ impl Automation {
             }
         }
         migration.commit().await?;
+        sqlx::query("CREATE TABLE IF NOT EXISTS transcripts(id INTEGER PRIMARY KEY,video_id INTEGER NOT NULL REFERENCES videos(id),origin TEXT NOT NULL,language TEXT,path TEXT NOT NULL UNIQUE,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)").execute(&pool).await?;
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(90))
             .connect_timeout(Duration::from_secs(15))
@@ -497,6 +498,94 @@ impl Automation {
                 .unwrap_or_else(|| self.directory.join("exports")),
         })
     }
+    pub async fn import_transcript(&self, id: i64, path: PathBuf) -> Result<()> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let _guard = self
+            .worker
+            .try_lock()
+            .context("Wait for the current video job before importing subtitles")?;
+        let state: Option<String> = sqlx::query_scalar("SELECT state FROM videos WHERE id=?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        ensure!(
+            state.as_deref().is_some_and(|state| state != "running"),
+            "Video not found or is running"
+        );
+        let path = tokio::fs::canonicalize(path).await?;
+        ensure!(
+            tokio::fs::metadata(&path).await?.is_file(),
+            "Select a regular subtitle file"
+        );
+        let extension = path
+            .extension()
+            .and_then(|v| v.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        ensure!(
+            matches!(extension.as_str(), "srt" | "vtt"),
+            "Select an SRT or VTT subtitle"
+        );
+        let mut bytes = Vec::new();
+        tokio::fs::File::open(path)
+            .await?
+            .take(2 * 1024 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .await?;
+        ensure!(bytes.len() <= 2 * 1024 * 1024, "Subtitle file is too large");
+        parse_transcript(std::str::from_utf8(&bytes)?)?;
+        let folder = self.directory.join("transcripts");
+        tokio::fs::create_dir_all(&folder).await?;
+        let folder = tokio::fs::canonicalize(folder).await?;
+        ensure!(
+            folder.starts_with(&self.directory),
+            "Subtitle directory escaped application data"
+        );
+        let destination = folder.join(format!("{id}-{}.{}", uuid::Uuid::new_v4(), extension));
+        let mut file = tokio::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&destination)
+            .await?;
+        file.write_all(&bytes).await?;
+        file.sync_all().await?;
+        drop(file);
+        let result =
+            sqlx::query("INSERT INTO transcripts(video_id,origin,path) VALUES(?,'uploaded',?)")
+                .bind(id)
+                .bind(destination.to_str().context("Invalid subtitle path")?)
+                .execute(&self.pool)
+                .await;
+        if let Err(error) = result {
+            tokio::fs::remove_file(&destination).await?;
+            return Err(error.into());
+        }
+        Ok(())
+    }
+    async fn uploaded_transcript(&self, id: i64) -> Result<Option<String>> {
+        use tokio::io::AsyncReadExt;
+        let path:Option<String>=sqlx::query_scalar("SELECT path FROM transcripts WHERE video_id=? AND origin='uploaded' ORDER BY id DESC LIMIT 1").bind(id).fetch_optional(&self.pool).await?;
+        let Some(path) = path else {
+            return Ok(None);
+        };
+        let path = tokio::fs::canonicalize(path).await?;
+        ensure!(
+            path.starts_with(&self.directory),
+            "Stored subtitle escaped application data"
+        );
+        ensure!(
+            tokio::fs::metadata(&path).await?.is_file(),
+            "Stored subtitle is not a regular file"
+        );
+        let mut bytes = Vec::new();
+        tokio::fs::File::open(path)
+            .await?
+            .take(2 * 1024 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .await?;
+        ensure!(bytes.len() <= 2 * 1024 * 1024, "Subtitle file is too large");
+        Ok(Some(parse_transcript(std::str::from_utf8(&bytes)?)?))
+    }
     pub async fn retry_video(&self, id: i64) -> Result<()> {
         ensure!(
             sqlx::query(
@@ -655,7 +744,10 @@ impl Automation {
         .fetch_all(&self.pool)
         .await?;
         let candidates = if existing.is_empty() {
-            let mut transcript = load_transcript(&folder).await?;
+            let mut transcript = self.uploaded_transcript(id).await?;
+            if transcript.is_none() {
+                transcript = load_transcript(&folder).await?;
+            }
             if transcript.is_none() && had_media {
                 self.download(&folder, url, true, cancel.clone()).await?;
                 transcript = load_transcript(&folder).await?;

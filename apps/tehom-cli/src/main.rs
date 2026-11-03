@@ -61,6 +61,10 @@ enum Command {
     ExportDirectory {
         path: PathBuf,
     },
+    ImportTranscript {
+        id: i64,
+        path: PathBuf,
+    },
     Retry {
         id: i64,
     },
@@ -124,6 +128,7 @@ async fn main() -> Result<()> {
             }
         }
         Command::ExportDirectory { path } => engine.set_export_directory(path).await?,
+        Command::ImportTranscript { id, path } => engine.import_transcript(id, path).await?,
         Command::Retry { id } => engine.retry_video(id).await?,
         Command::Cancel { id } => engine.cancel_video(id).await?,
     }
