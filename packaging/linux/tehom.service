@@ -1,0 +1,16 @@
+[Unit]
+Description=Tehom local channel automation
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart="%h/.local/bin/tehom" daemon --config "%h/.config/tehom/tehom.toml"
+Restart=on-failure
+RestartSec=10
+KillMode=control-group
+TimeoutStopSec=180
+UMask=0077
+
+[Install]
+WantedBy=default.target

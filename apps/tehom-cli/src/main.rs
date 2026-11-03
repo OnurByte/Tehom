@@ -1,8 +1,9 @@
 mod config;
+mod daemon;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use config::Config;
-use std::{path::PathBuf, time::Duration};
+use std::path::PathBuf;
 use tehom_automation::Automation;
 use tehom_core::{AiConfig, AutomationMode};
 
@@ -122,26 +123,7 @@ async fn main() -> Result<()> {
         }
         Command::Daemon { interval_minutes } => {
             let interval_minutes = interval_minutes.unwrap_or(configured_interval);
-            let mut checks = tokio::time::interval(Duration::from_secs(interval_minutes * 60));
-            checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            let worker = async {
-                loop {
-                    tokio::select! {
-                        _=checks.tick()=>if let Err(error)=engine.check_now().await {eprintln!("Kaynak kontrolü: {error}");},
-                        _=tokio::time::sleep(Duration::from_secs(2))=>if let Err(error)=engine.process_next().await {eprintln!("Klip işi: {error}");},
-                    }
-                }
-            };
-            tokio::pin!(worker);
-            tokio::select! {
-                signal=tokio::signal::ctrl_c()=>{
-                    signal?;
-                    for video in engine.snapshot().await?.videos {
-                        if video.state=="running" {engine.cancel_video(video.id).await?;}
-                    }
-                },
-                ()=&mut worker=>{},
-            }
+            daemon::run(&engine, interval_minutes).await?;
         }
         Command::Ai { endpoint, model } => engine.set_ai(AiConfig { endpoint, model }).await?,
         Command::Models => {
