@@ -13,7 +13,7 @@ The local machine initially lacked GStreamer good/libav plugins. Development val
 
 ## Remaining prototype gate
 
-- Native UI interaction/export verification after final changes.
+- Linux native form and GTK save-dialog export verified; see [recorded evidence](evidence/linux-prototype.md). Timeline/volume/portrait/long-source spike cases remain pending.
 - Windows x64, macOS Intel and Apple Silicon actual build, real-media tests and native-window image inspection through CI.
 - X11 and Wayland evidence kept separate. A decoder test does not establish audible sound, GPU memory stability or native file-picker behavior on all systems.
 
