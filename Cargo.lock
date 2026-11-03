@@ -7313,10 +7313,12 @@ dependencies = [
  "anyhow",
  "clap",
  "directories",
+ "serde",
  "serde_json",
  "tehom-automation",
  "tehom-core",
  "tokio",
+ "toml 0.8.23",
 ]
 
 [[package]]

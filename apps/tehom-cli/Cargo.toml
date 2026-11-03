@@ -13,6 +13,8 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 directories = "6"
 serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8.23"
 tehom-automation = { path = "../../crates/tehom-automation" }
 tehom-core = { path = "../../crates/tehom-core" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal"] }

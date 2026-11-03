@@ -49,10 +49,12 @@ tehom ai --endpoint http://127.0.0.1:11434 --model your-installed-model
 tehom check
 tehom run-once
 tehom daemon --interval-minutes 30
+# Or copy config/tehom.example.toml, select your model, then:
+tehom daemon --config /path/to/tehom.toml
 tehom status
 # If a video needs captions, upload them and explicitly retry:
 tehom import-transcript VIDEO_ID /path/to/subtitles.srt
 tehom retry VIDEO_ID
 ```
 
-Use `--data /your/data/directory` to select a data directory. One engine owns a data directory at a time; close the desktop before running the daemon against the same directory. Ctrl+C cancels active daemon work. The configuration-file interface, service installer and signed distributable releases are not implemented yet.
+Use `--data /your/data/directory` to select a data directory. One engine owns a data directory at a time; close the desktop before running the daemon against the same directory. Ctrl+C cancels active daemon work. Configuration accepts data.directory, automation.check_interval_minutes, export.directory and ai.endpoint/model. Relative paths resolve beside the configuration file; explicit CLI data/interval options take priority. Unknown or unsupported settings are rejected. The service installer and signed distributable releases are not implemented yet.

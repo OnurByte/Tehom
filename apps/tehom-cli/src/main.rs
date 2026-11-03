@@ -1,5 +1,7 @@
+mod config;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
+use config::Config;
 use std::{path::PathBuf, time::Duration};
 use tehom_automation::Automation;
 use tehom_core::{AiConfig, AutomationMode};
@@ -9,6 +11,8 @@ use tehom_core::{AiConfig, AutomationMode};
 struct Args {
     #[arg(long, global = true)]
     data: Option<PathBuf>,
+    #[arg(long, global = true)]
+    config: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
@@ -48,8 +52,8 @@ enum Command {
     Check,
     RunOnce,
     Daemon {
-        #[arg(long,default_value_t=30,value_parser=clap::value_parser!(u64).range(1..=1440))]
-        interval_minutes: u64,
+        #[arg(long,value_parser=clap::value_parser!(u64).range(1..=1440))]
+        interval_minutes: Option<u64>,
     },
     Ai {
         #[arg(long, default_value = "http://127.0.0.1:11434")]
@@ -75,14 +79,31 @@ enum Command {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+    let config = args
+        .config
+        .as_deref()
+        .map(Config::load)
+        .transpose()?
+        .unwrap_or_default();
+    let configured_interval = config
+        .automation
+        .map(|a| a.check_interval_minutes)
+        .unwrap_or(30);
     let data = args
         .data
+        .or_else(|| config.data.map(|d| d.directory))
         .or_else(|| {
             directories::ProjectDirs::from("org", "Tehom", "Tehom")
                 .map(|d| d.data_local_dir().to_path_buf())
         })
         .context("Veri klasörü belirlenemedi")?;
     let engine = Automation::open(data).await?;
+    if let Some(ai) = config.ai {
+        engine.set_ai(ai.into()).await?;
+    }
+    if let Some(export) = config.export {
+        engine.set_export_directory(export.directory).await?;
+    }
     match args.command {
         Command::Status => println!(
             "{}",
@@ -100,6 +121,7 @@ async fn main() -> Result<()> {
             while engine.process_next().await? {}
         }
         Command::Daemon { interval_minutes } => {
+            let interval_minutes = interval_minutes.unwrap_or(configured_interval);
             let mut checks = tokio::time::interval(Duration::from_secs(interval_minutes * 60));
             checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let worker = async {
@@ -158,5 +180,28 @@ mod tests {
                 ..
             }
         ));
+    }
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+    #[test]
+    fn reads_config_and_resolves_paths() {
+        let config = Config::parse("[data]\ndirectory='data'\n[automation]\ncheck_interval_minutes=12\n[export]\ndirectory='clips'", std::path::Path::new("/srv/config")).unwrap();
+        assert_eq!(
+            config.data.unwrap().directory,
+            PathBuf::from("/srv/config/data")
+        );
+        assert_eq!(config.automation.unwrap().check_interval_minutes, 12);
+        assert!(
+            Config::parse(
+                "[automation]\ncheck_interval_minutes=0",
+                std::path::Path::new(".")
+            )
+            .is_err()
+        );
+        assert!(Config::parse("[ai]\nprovider='cloud'", std::path::Path::new(".")).is_err());
+        assert!(Args::try_parse_from(["tehom", "daemon", "--config", "tehom.toml"]).is_ok());
     }
 }

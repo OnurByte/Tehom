@@ -1,0 +1,13 @@
+# Paths are relative to this configuration file. CLI --data overrides data.directory.
+[data]
+directory = "../data"
+
+[automation]
+check_interval_minutes = 30
+
+[export]
+directory = "../exports"
+
+[ai]
+endpoint = "http://127.0.0.1:11434"
+model = "your-installed-model"
