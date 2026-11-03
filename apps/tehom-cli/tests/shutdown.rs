@@ -28,6 +28,24 @@ fn daemon_handles_service_stop_and_releases_data_lock() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let live_status = Command::new(env!("CARGO_BIN_EXE_tehom"))
+            .args(["status", "--data"])
+            .arg(&folder)
+            .output()
+            .unwrap();
+        if live_status.status.success() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "status failed while daemon owns the lock: {}",
+            String::from_utf8_lossy(&live_status.stderr)
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(child.try_wait().unwrap().is_none());
     // Wait for signal registration, independently of database initialization.
     std::thread::sleep(Duration::from_millis(300));
     assert!(

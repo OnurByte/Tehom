@@ -963,3 +963,34 @@ async fn imports_local_video_without_copying_or_downloading() {
     }
     assert_eq!(std::fs::read(original).unwrap(), before);
 }
+
+#[tokio::test]
+async fn readonly_status_works_while_engine_owns_lock_without_recovery() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Automation::open(dir.path().join("data")).await.unwrap();
+    sqlx::raw_sql("INSERT INTO sources(id,url,channel_id,title,mode) VALUES(1,'u','UC1234567890123456789012','fixture','manual'); INSERT INTO videos(source_id,external_id,title,url,state) VALUES(1,'abcdefghijk','fixture','u','running');").execute(&engine.pool).await.unwrap();
+    let snapshot = Automation::read_snapshot(dir.path().join("data"))
+        .await
+        .unwrap();
+    assert_eq!(snapshot.videos[0].state, "running");
+    assert_eq!(engine.snapshot().await.unwrap().videos[0].state, "running");
+    assert!(Automation::open(dir.path().join("data")).await.is_err());
+    assert!(
+        Automation::read_snapshot(dir.path().join("missing"))
+            .await
+            .is_err()
+    );
+    assert!(!dir.path().join("missing").exists());
+}
+
+#[tokio::test]
+async fn closing_owner_releases_lock_even_if_descriptor_was_duplicated() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Automation::open(dir.path().into()).await.unwrap();
+    let duplicated = engine._lock.file.try_clone().unwrap();
+    engine.pool.close().await;
+    drop(engine);
+    let reopened = Automation::open(dir.path().into()).await;
+    drop(duplicated);
+    assert!(reopened.is_ok());
+}

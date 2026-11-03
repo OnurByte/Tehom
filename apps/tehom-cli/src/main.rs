@@ -103,6 +103,13 @@ async fn main() -> Result<()> {
                 .map(|d| d.data_local_dir().to_path_buf())
         })
         .context("Veri klasörü belirlenemedi")?;
+    if matches!(args.command, Command::Status) {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&Automation::read_snapshot(data).await?)?
+        );
+        return Ok(());
+    }
     let engine = Automation::open(data).await?;
     if let Some(ai) = config.ai {
         engine.set_ai(ai.into()).await?;
@@ -111,10 +118,7 @@ async fn main() -> Result<()> {
         engine.set_export_directory(export.directory).await?;
     }
     match args.command {
-        Command::Status => println!(
-            "{}",
-            serde_json::to_string_pretty(&engine.snapshot().await?)?
-        ),
+        Command::Status => unreachable!("status returns before opening the writable engine"),
         Command::Add { url, mode } => println!(
             "{}",
             serde_json::to_string_pretty(&engine.add_source(&url, mode.into()).await?)?

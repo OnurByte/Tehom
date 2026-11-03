@@ -22,12 +22,21 @@ pub struct Automation {
     pool: SqlitePool,
     #[cfg(test)]
     downloader: PathBuf,
-    _lock: Arc<std::fs::File>,
+    _lock: Arc<EngineLock>,
     directory: PathBuf,
     client: reqwest::Client,
     checks: Arc<Mutex<()>>,
     worker: Arc<Mutex<()>>,
     cancellations: Arc<Mutex<HashMap<i64, Arc<AtomicBool>>>>,
+}
+struct EngineLock {
+    file: std::fs::File,
+}
+impl Drop for EngineLock {
+    fn drop(&mut self) {
+        // Release ownership even if a concurrently spawned child inherited the descriptor.
+        let _ = self.file.unlock();
+    }
 }
 #[derive(Debug)]
 struct Entry {
@@ -273,7 +282,7 @@ impl Automation {
             pool,
             #[cfg(test)]
             downloader: PathBuf::from("yt-dlp"),
-            _lock: Arc::new(lock),
+            _lock: Arc::new(EngineLock { file: lock }),
             directory,
             client,
             checks: Arc::new(Mutex::new(())),
@@ -533,12 +542,6 @@ impl Automation {
         ensure!(sqlx::query("UPDATE sources SET mode=CASE WHEN mode='paused' THEN previous_mode ELSE mode END WHERE id=?").bind(id).execute(&self.pool).await?.rows_affected() == 1, "Source not found");
         Ok(())
     }
-    async fn setting(&self, key: &str) -> Result<Option<String>> {
-        Ok(sqlx::query_scalar("SELECT value FROM settings WHERE key=?")
-            .bind(key)
-            .fetch_optional(&self.pool)
-            .await?)
-    }
     async fn put_setting(&self, key: &str, value: &str) -> Result<()> {
         sqlx::query("INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(key).bind(value).execute(&self.pool).await?;
         Ok(())
@@ -560,64 +563,25 @@ impl Automation {
         .await
     }
     pub async fn snapshot(&self) -> Result<EngineSnapshot> {
-        let sources = sqlx::query("SELECT * FROM sources ORDER BY id")
-            .fetch_all(&self.pool)
-            .await?
-            .into_iter()
-            .map(|r| Source {
-                id: r.get("id"),
-                url: r.get("url"),
-                channel_id: r.get("channel_id"),
-                title: r.get("title"),
-                mode: parse_mode(r.get("mode")),
-                last_checked: r.get("last_checked"),
-                error: r.get("error"),
-            })
-            .collect();
-        let videos = sqlx::query("SELECT * FROM videos ORDER BY id DESC")
-            .fetch_all(&self.pool)
-            .await?
-            .into_iter()
-            .map(|r| Video {
-                id: r.get("id"),
-                source_id: r.get("source_id"),
-                external_id: r.get("external_id"),
-                title: r.get("title"),
-                url: r.get("url"),
-                state: r.get("state"),
-                error: r.get("error"),
-                local_path: r.get::<Option<String>, _>("local_path").map(PathBuf::from),
-            })
-            .collect();
-        let clips = sqlx::query("SELECT * FROM clips ORDER BY id DESC")
-            .fetch_all(&self.pool)
-            .await?
-            .into_iter()
-            .map(|r| Clip {
-                id: r.get("id"),
-                video_id: r.get("video_id"),
-                title: r.get("title"),
-                start_ms: r.get::<i64, _>("start_ms") as u64,
-                end_ms: r.get::<i64, _>("end_ms") as u64,
-                output_path: r.get::<Option<String>, _>("output_path").map(PathBuf::from),
-            })
-            .collect();
-        Ok(EngineSnapshot {
-            sources,
-            videos,
-            clips,
-            ai: self
-                .setting("ai")
-                .await?
-                .map(|s| serde_json::from_str(&s))
-                .transpose()?
-                .unwrap_or_default(),
-            export_directory: self
-                .setting("exports")
-                .await?
-                .map(PathBuf::from)
-                .unwrap_or_else(|| self.directory.join("exports")),
-        })
+        snapshot_from_pool(&self.pool, &self.directory).await
+    }
+    /// Read persisted state without acquiring the worker lock or running recovery/migrations.
+    pub async fn read_snapshot(directory: PathBuf) -> Result<EngineSnapshot> {
+        let directory = tokio::fs::canonicalize(directory)
+            .await
+            .context("Tehom data directory does not exist")?;
+        let options = SqliteConnectOptions::new()
+            .filename(directory.join("automation.sqlite3"))
+            .read_only(true)
+            .create_if_missing(false)
+            .busy_timeout(Duration::from_secs(10));
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await?;
+        let result = snapshot_from_pool(&pool, &directory).await;
+        pool.close().await;
+        result
     }
     pub async fn import_transcript(&self, id: i64, path: PathBuf) -> Result<()> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1285,3 +1249,70 @@ fn validate_candidates(candidates: Vec<Candidate>, duration: u64) -> Vec<Candida
 }
 #[cfg(test)]
 mod tests;
+
+async fn snapshot_from_pool(
+    pool: &SqlitePool,
+    directory: &std::path::Path,
+) -> Result<EngineSnapshot> {
+    let mut tx = pool.begin().await?;
+    let sources = sqlx::query("SELECT * FROM sources ORDER BY id")
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .map(|r| Source {
+            id: r.get("id"),
+            url: r.get("url"),
+            channel_id: r.get("channel_id"),
+            title: r.get("title"),
+            mode: parse_mode(r.get("mode")),
+            last_checked: r.get("last_checked"),
+            error: r.get("error"),
+        })
+        .collect();
+    let videos = sqlx::query("SELECT * FROM videos ORDER BY id DESC")
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .map(|r| Video {
+            id: r.get("id"),
+            source_id: r.get("source_id"),
+            external_id: r.get("external_id"),
+            title: r.get("title"),
+            url: r.get("url"),
+            state: r.get("state"),
+            error: r.get("error"),
+            local_path: r.get::<Option<String>, _>("local_path").map(PathBuf::from),
+        })
+        .collect();
+    let clips = sqlx::query("SELECT * FROM clips ORDER BY id DESC")
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .map(|r| Clip {
+            id: r.get("id"),
+            video_id: r.get("video_id"),
+            title: r.get("title"),
+            start_ms: r.get::<i64, _>("start_ms") as u64,
+            end_ms: r.get::<i64, _>("end_ms") as u64,
+            output_path: r.get::<Option<String>, _>("output_path").map(PathBuf::from),
+        })
+        .collect();
+    Ok(EngineSnapshot {
+        sources,
+        videos,
+        clips,
+        ai: sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key='ai'")
+            .fetch_optional(&mut *tx)
+            .await?
+            .map(|s| serde_json::from_str(&s))
+            .transpose()?
+            .unwrap_or_default(),
+        export_directory: sqlx::query_scalar::<_, String>(
+            "SELECT value FROM settings WHERE key='exports'",
+        )
+        .fetch_optional(&mut *tx)
+        .await?
+        .map(PathBuf::from)
+        .unwrap_or_else(|| directory.join("exports")),
+    })
+}
