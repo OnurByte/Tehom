@@ -18,3 +18,6 @@ toml = "0.8.23"
 tehom-automation = { path = "../../crates/tehom-automation" }
 tehom-core = { path = "../../crates/tehom-core" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal"] }
+
+[dev-dependencies]
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }

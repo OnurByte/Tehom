@@ -7315,6 +7315,7 @@ dependencies = [
  "directories",
  "serde",
  "serde_json",
+ "sqlx",
  "tehom-automation",
  "tehom-core",
  "tokio",
