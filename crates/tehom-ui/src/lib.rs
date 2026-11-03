@@ -61,7 +61,9 @@ pub struct Tehom {
 
 impl Tehom {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let source_url = cx.new(|cx| InputState::new(window, cx).placeholder("youtube.com/@kanal"));
+        let source_url = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("YouTube kanal veya video bağlantısı")
+        });
         let ai_endpoint =
             cx.new(|cx| InputState::new(window, cx).default_value("http://127.0.0.1:11434"));
         let ai_model = cx.new(|cx| InputState::new(window, cx).placeholder("Yerel model adı"));
@@ -675,8 +677,10 @@ mod tests {
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
             assert_eq!(
-                window.find_by_label("YouTube kanal adresi").label(),
-                Some("YouTube kanal adresi")
+                window
+                    .find_by_label("YouTube kanal veya video adresi")
+                    .label(),
+                Some("YouTube kanal veya video adresi")
             );
             assert_eq!(window.find("add-channel").disabled(), Some(true));
             assert_eq!(window.find_by_label("Kaynaklar").label(), Some("Kaynaklar"));

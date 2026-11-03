@@ -5,7 +5,7 @@ The full target remains docs/master-spec.txt. This is not a completed v1 release
 ## Current evidence
 
 - The preceding `f0a2207` CI run passed Linux, Windows x64, macOS Intel and Apple Silicon. Actual native preview screenshots were captured and inspected. This proves that earlier native build/runtime, not packaging or every new feature.
-- The current local workspace runs 34 passing tests: 18 automation, 10 media, 2 native UI, 4 CLI/config/shutdown. Formatting, strict Clippy and builds are checked separately.
+- The current local workspace runs 36 passing tests: 20 automation, 10 media, 2 native UI, 4 CLI/config/shutdown. Formatting, strict Clippy and builds are checked separately.
 - The desktop now leads with a channel URL and real persistent automation. It has the four-section native sidebar, unchanged user-supplied logo, Geist fonts and Oxocarbon colors. UI tests verify the channel entry and actual decoder seek from pointer/keyboard.
 - Engine fixtures exercise SQLite restart/pause/cancellation/dedup, missing model/captions, candidate validation, complete batch persistence, source retention on temporary RSS failure, actual vertical MP4 output through a local HTTP model fixture, ownership-based crash recovery and late subtitle refresh. Fixture success is not live-provider success.
 - A live public-channel RSS request returned HTTP 404 from YouTube. The configured source remains saved with an explicit retryable feed error; no fake videos or exports were produced. No installed local model server was available.
@@ -18,7 +18,7 @@ See [RSS integration evidence](evidence/rss-automation.md), [sidebar screenshot]
 | --- | --- | --- |
 | 1–5, 21 | Rust workspace, shared types/media/automation, GPUI desktop and shared CLI, Manual/Auto Draft/Auto Export/Paused records | Full milestone acceptance, final crate-boundary organization, complete app/service integration |
 | 6–7 | Channel-first sidebar, real sources/jobs/drafts/settings, original SVG, Geist, dark Oxocarbon styling, native named controls | Light theme, complete keyboard/AccessKit audit, recovery-flow polish and nontechnical-user studies |
-| 8 | Strict YouTube channel/handle resolution, RSS discovery, deduplication, persisted errors, yt-dlp/caption pipeline and cancellation | Successful live channel/download run, single-video input, original-file save flow, experimental Kick, richer resume/rate/disk controls |
+| 8 | Strict YouTube channel/handle and single-video input, RSS discovery, deduplication, persisted errors, yt-dlp/caption pipeline and cancellation | Successful live channel/download run, original-file save flow, experimental Kick, richer resume/rate/disk controls |
 | 9 | SRT/VTT parser, versioned user uploads through desktop/CLI, platform-caption selection and refresh, no automatic ASR | Transcript editing, language persistence and explicitly initiated ASR/model-size flow |
 | 10–11 | Ollama and local OpenAI-compatible transport, chunking, validated 20–90s candidates, overlap filtering, max-five drafts and durable complete batches | Live local-model run, remote BYOK providers/consent/keyring, richer ranking/silence/scene analysis and prompt settings |
 | 12–13 | Native preview, play/pause/seek/volume, portrait and three-hour-source tests, manual ranges, draft opening, no-clobber export, automatic 1080×1920 H.264/AAC and cancellation | Bundled-runtime gate, sustained memory/audio checks, drag framing, captions, output profiles, progress and complete editor E2E |

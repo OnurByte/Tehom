@@ -809,3 +809,60 @@ async fn uploaded_transcripts_are_versioned_and_invalid_uploads_preserve_previou
         "needs_input"
     );
 }
+
+#[test]
+fn single_video_urls_are_canonical_and_strict() {
+    for url in [
+        "https://youtu.be/abcdefghijk?si=share",
+        "https://www.youtube.com/watch?v=abcdefghijk&t=10",
+        "https://youtube.com/shorts/abcdefghijk",
+    ] {
+        assert_eq!(video_input(url).unwrap(), "abcdefghijk");
+    }
+    for url in [
+        "http://youtube.com/watch?v=abcdefghijk",
+        "https://youtube.com:443/watch?v=abcdefghijk",
+        "https://user@youtube.com/watch?v=abcdefghijk",
+        "https://youtube.com.evil/watch?v=abcdefghijk",
+        "https://youtu.be/abcdefghijk/other",
+        "https://youtube.com/watch?v=abcdefghijk&v=lmnopqrstuv",
+        "https://youtube.com/watch?v=short",
+    ] {
+        assert!(video_input(url).is_err(), "{url}");
+    }
+}
+#[tokio::test]
+async fn single_video_is_queued_once_and_never_polled_as_channel() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Automation::open(dir.path().into()).await.unwrap();
+    let source = engine
+        .add_source(
+            "https://youtu.be/abcdefghijk?si=share",
+            AutomationMode::AutoDraft,
+        )
+        .await
+        .unwrap();
+    let duplicate = engine
+        .add_source(
+            "https://youtube.com/watch?v=abcdefghijk",
+            AutomationMode::AutoExport,
+        )
+        .await
+        .unwrap();
+    assert_eq!(source.id, duplicate.id);
+    assert_eq!(engine.check_now().await.unwrap(), 0);
+    let snapshot = engine.snapshot().await.unwrap();
+    assert_eq!(snapshot.sources.len(), 1);
+    assert_eq!(snapshot.videos.len(), 1);
+    assert_eq!(snapshot.videos[0].state, "queued");
+    assert_eq!(
+        snapshot.videos[0].url,
+        "https://www.youtube.com/watch?v=abcdefghijk"
+    );
+    assert_eq!(snapshot.sources[0].mode, AutomationMode::AutoDraft);
+    engine.process_next().await.unwrap();
+    assert_eq!(
+        engine.snapshot().await.unwrap().videos[0].state,
+        "needs_input"
+    );
+}

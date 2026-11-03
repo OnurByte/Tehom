@@ -191,7 +191,9 @@ impl Tehom {
                     let message = match action {
                         Action::Add(url, mode) => {
                             let source=backend.engine.add_source(&url,mode).await?;
-                            if source.error.is_some() {
+                            if source.channel_id.starts_with("video:") {
+                                "Video kaydedildi. İş durumunu aşağıdan takip edebilirsin.".into()
+                            } else if source.error.is_some() {
                                 "Kanal kaydedildi. Akışa erişim bekleniyor; otomatik yeniden denenecek.".into()
                             } else {"Kanal eklendi. Son video ve bundan sonraki yeni videolar izleniyor.".into()}
                         }
@@ -317,15 +319,15 @@ impl Tehom {
     fn source_form(&self, cx: &mut Context<Self>) -> AnyElement {
         let unavailable = self.backend.is_none() || self.source_busy;
         div().flex().flex_col().gap_4().p_5().bg(rgb(0x262626)).rounded_lg()
-            .child(div().text_lg().child("YouTube kanalını ekle"))
-            .child(Input::new(&self.source_url).id("channel-url").aria_label("YouTube kanal adresi").disabled(unavailable))
+            .child(div().text_lg().child("YouTube kanalını veya videonu ekle"))
+            .child(Input::new(&self.source_url).id("channel-url").aria_label("YouTube kanal veya video adresi").disabled(unavailable))
             .child(div().flex().gap_2()
                 .child(Button::new("mode-draft").label("Otomatik taslak").when(self.source_mode==AutomationMode::AutoDraft,|b|b.primary())
                     .on_click(cx.listener(|view,_,_,cx|{view.source_mode=AutomationMode::AutoDraft;cx.notify();})))
                 .child(Button::new("mode-export").label("Otomatik MP4").when(self.source_mode==AutomationMode::AutoExport,|b|b.primary())
                     .on_click(cx.listener(|view,_,_,cx|{view.source_mode=AutomationMode::AutoExport;cx.notify();}))))
-            .child(div().text_sm().text_color(rgb(0xdde1e6)).child(match self.source_mode {AutomationMode::AutoExport=>"Yeni videolardan uygun klipler oluşturulup seçtiğin klasöre kaydedilir.",_=>"Yeni videolardan klip taslakları hazırlanır. Son kararı sen verirsin."}))
-            .child(Button::new("add-channel").primary().label(if self.source_busy {"Ekleniyor…"} else {"Kanalı ekle"}).disabled(unavailable)
+            .child(div().text_sm().text_color(rgb(0xdde1e6)).child(match self.source_mode {AutomationMode::AutoExport=>"Klipler seçtiğin klasöre kaydedilir. Kanal eklersen yeni videolar da otomatik işlenir.",_=>"Klip taslakları hazırlanır. Kanal eklersen yeni videolar da izlenir."}))
+            .child(Button::new("add-channel").primary().label(if self.source_busy {"Ekleniyor…"} else {"Bağlantıyı ekle"}).disabled(unavailable)
                 .on_click(cx.listener(|view,_,window,cx|view.act(Action::Add(view.source_url.read(cx).value().to_string(),view.source_mode),window,cx))))
             .into_any_element()
     }
@@ -345,7 +347,7 @@ impl Tehom {
                     div()
                         .p_5()
                         .text_color(rgb(0xdde1e6))
-                        .child("Henüz bir kanal eklenmedi."),
+                        .child("Henüz bir kaynak eklenmedi."),
                 )
             })
             .children(sources.into_iter().map(|source| {
@@ -357,6 +359,13 @@ impl Tehom {
                     .flex()
                     .flex_col()
                     .gap_2()
+                    .child(div().text_sm().text_color(rgb(0xdde1e6)).child(
+                        if source.channel_id.starts_with("video:") {
+                            "Tek video"
+                        } else {
+                            "Kanal · yeni videolar izleniyor"
+                        },
+                    ))
                     .child(div().text_lg().child(source.title))
                     .child(div().text_sm().text_color(rgb(0xdde1e6)).child(source.url))
                     .child(div().text_sm().child(match source.mode {

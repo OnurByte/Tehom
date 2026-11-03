@@ -69,6 +69,50 @@ fn video_id(s: &str) -> bool {
         && s.bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
+fn video_input(input: &str) -> Result<String> {
+    let input = input.trim();
+    ensure!(
+        !input.contains('%') && !input.contains("/../") && !input.contains("/./"),
+        "Use a direct YouTube video URL"
+    );
+    let authority = input
+        .split("//")
+        .nth(1)
+        .and_then(|v| v.split('/').next())
+        .unwrap_or("");
+    ensure!(
+        !authority.contains(':') && !authority.contains('@'),
+        "Credentials and ports are not allowed"
+    );
+    let url = reqwest::Url::parse(input).context("Invalid video URL")?;
+    ensure!(
+        url.scheme() == "https"
+            && matches!(
+                url.host_str(),
+                Some("youtube.com" | "www.youtube.com" | "m.youtube.com" | "youtu.be")
+            ),
+        "Only HTTPS YouTube videos are supported"
+    );
+    let id = if url.host_str() == Some("youtu.be") {
+        url.path().strip_prefix('/').unwrap_or("").to_owned()
+    } else if url.path() == "/watch" {
+        let values: Vec<_> = url
+            .query_pairs()
+            .filter(|(key, _)| key == "v")
+            .map(|(_, value)| value.into_owned())
+            .collect();
+        ensure!(values.len() == 1, "Use exactly one video ID");
+        values[0].clone()
+    } else {
+        url.path()
+            .strip_prefix("/shorts/")
+            .or_else(|| url.path().strip_prefix("/live/"))
+            .unwrap_or("")
+            .to_owned()
+    };
+    ensure!(video_id(&id), "Invalid YouTube video ID");
+    Ok(id)
+}
 fn channel_input(input: &str) -> Result<String> {
     let input = input.trim();
     if channel_id(input) {
@@ -262,6 +306,39 @@ impl Automation {
     }
     pub async fn add_source(&self, url: &str, mode: AutomationMode) -> Result<Source> {
         let _guard = self.checks.lock().await;
+        if let Ok(id) = video_input(url) {
+            let existing: Option<i64> =
+                sqlx::query_scalar("SELECT source_id FROM videos WHERE external_id=?")
+                    .bind(&id)
+                    .fetch_optional(&self.pool)
+                    .await?;
+            let source_id = if let Some(source_id) = existing {
+                source_id
+            } else {
+                let canonical = format!("https://www.youtube.com/watch?v={id}");
+                let mut tx = self.pool.begin().await?;
+                let source_id =
+                    sqlx::query("INSERT INTO sources(url,channel_id,title,mode) VALUES(?,?,?,?)")
+                        .bind(&canonical)
+                        .bind(format!("video:{id}"))
+                        .bind(format!("Video {id}"))
+                        .bind(mode_string(mode))
+                        .execute(&mut *tx)
+                        .await?
+                        .last_insert_rowid();
+                sqlx::query("INSERT INTO videos(source_id,external_id,title,url,state) VALUES(?,?,?,?,'queued')")
+                    .bind(source_id).bind(&id).bind(format!("Video {id}")).bind(&canonical).execute(&mut *tx).await?;
+                tx.commit().await?;
+                source_id
+            };
+            return self
+                .snapshot()
+                .await?
+                .sources
+                .into_iter()
+                .find(|source| source.id == source_id)
+                .context("Video source disappeared");
+        }
         let mut id = channel_input(url)?;
         if !channel_id(&id) {
             let html = String::from_utf8(self.fetch(&id, 4 * 1024 * 1024).await?)?;
@@ -346,7 +423,7 @@ impl Automation {
         let _guard = self.checks.lock().await;
         let mut count = 0;
         for source in self.snapshot().await?.sources {
-            if source.mode == AutomationMode::Paused {
+            if source.mode == AutomationMode::Paused || source.channel_id.starts_with("video:") {
                 continue;
             }
             let result = async {

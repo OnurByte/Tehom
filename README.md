@@ -7,7 +7,7 @@
 
 Local-first, native Rust video clipping with GPUI Kit. **Under development; not a finished application or published release.**
 
-The primary workflow is **YouTube channel URL → RSS → automatic drafts or MP4 clips**. The native sidebar has Home, Sources, Clips and Settings. Sources, jobs, drafts and settings persist locally in SQLite. Choose a local AI model once; missing models or captions stop for input. Automatic exports produce 1080×1920 H.264/AAC MP4s. Local manual video editing is also available.
+The primary workflow is **YouTube channel URL → RSS → automatic drafts or MP4 clips**. Single YouTube videos (watch, youtu.be, shorts and live links) can also be queued through the same input. The native sidebar has Home, Sources, Clips and Settings. Sources, jobs, drafts and settings persist locally in SQLite. Choose a local AI model once; missing models or captions stop for input. Automatic exports produce 1080×1920 H.264/AAC MP4s. Local manual video editing is also available.
 
 This is still under development. RSS failures are shown and retried; no fake success is generated. A live RSS attempt currently returned HTTP 404 from YouTube, and no live local model was available. The tested end-to-end model/export flow uses explicitly synthetic local fixtures. See [integration evidence](docs/evidence/rss-automation.md), [the full specification](docs/master-spec.txt) and [remaining requirements](docs/status.md).
 
@@ -45,6 +45,7 @@ AGPL-3.0-or-later. Geist fonts are distributed under the included OFL. Original 
 ```sh
 cargo run -p tehom-cli -- --help
 tehom add https://www.youtube.com/@your-channel --mode auto-draft
+tehom add https://www.youtube.com/watch?v=VIDEO_ID --mode auto-export
 tehom ai --endpoint http://127.0.0.1:11434 --model your-installed-model
 tehom check
 tehom run-once
