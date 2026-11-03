@@ -13,7 +13,7 @@ The local machine initially lacked GStreamer good/libav plugins. Development val
 
 ## Remaining prototype gate
 
-- Linux native form and GTK save-dialog export verified; see [recorded evidence](evidence/linux-prototype.md). Timeline/volume/portrait/long-source spike cases remain pending.
+- Linux native form and GTK save-dialog export verified; see [recorded evidence](evidence/linux-prototype.md). Timeline and bundled-runtime spike cases remain pending. Volume control and portrait/three-hour-source decoder checks have been added; native UI and remote-platform checks for these additions remain pending.
 - Windows x64, macOS Intel and Apple Silicon actual build, real-media tests and native-window image inspection through CI.
 - X11 and Wayland evidence kept separate. A decoder test does not establish audible sound, GPU memory stability or native file-picker behavior on all systems.
 
@@ -34,3 +34,9 @@ The local machine initially lacked GStreamer good/libav plugins. Development val
 | 19–20 | Full integration/E2E, native accessibility, nontechnical-user tests, three-platform release gates | Initial media tests and CI definition only |
 
 CI must produce actual results before any remote platform is marked verified. Runtime/toolchain checks do not prove release packaging, signing or installation.
+
+## Additional local decoder evidence
+
+The volume test checks invalid levels and reads the actual GStreamer playbin volume property after setting 25%. A real 90×160 portrait fixture and an encoded 10,800-second source both decode and seek. A Linux process RSS sample across 30 seeks on the three-hour source rose from 264,980 KiB to a peak of 265,176 KiB in the recorded run. This is a short repeated-seek sample, not a claim of three hours of continuous playback or a full GPU-memory audit.
+
+The first native CI run passed Linux. Its Windows tests failed because Chocolatey's upstream feed returned HTTP 503 and no FFmpeg executable was installed; the Windows setup now retries and explicitly verifies tool availability. The macOS jobs were still running when this note was written. No Windows/macOS pass is claimed.

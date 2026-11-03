@@ -176,6 +176,17 @@ impl Tehom {
         .detach();
     }
 
+    fn adjust_volume(&mut self, change: f64, cx: &mut Context<Self>) {
+        if let Some(preview) = &self.preview
+            && let Err(error) =
+                preview.set_volume((preview.snapshot().volume + change).clamp(0., 1.))
+        {
+            self.status = "Ses düzeyi değiştirilemedi.".into();
+            self.details = Some(error.to_string());
+        }
+        cx.notify();
+    }
+
     fn seek(&mut self, seconds: f64, cx: &mut Context<Self>) {
         if let Some(preview) = &self.preview
             && let Err(error) = preview.seek(Duration::from_secs_f64(seconds.clamp(0., self.total)))
@@ -394,7 +405,20 @@ impl Render for Tehom {
                                 cx.listener(move |view, _, _, cx| view.seek(position + 5., cx)),
                             ),
                     )
-                    .child(format!("{position:.2} / {:.2} saniye", self.total)),
+                    .child(format!("{position:.2} / {:.2} saniye", self.total))
+                    .child(
+                        Button::new("volume-down")
+                            .label("Sesi azalt")
+                            .disabled(!ready)
+                            .on_click(cx.listener(|view, _, _, cx| view.adjust_volume(-0.1, cx))),
+                    )
+                    .child(format!("Ses: %{:.0}", snapshot.volume * 100.))
+                    .child(
+                        Button::new("volume-up")
+                            .label("Sesi artır")
+                            .disabled(!ready)
+                            .on_click(cx.listener(|view, _, _, cx| view.adjust_volume(0.1, cx))),
+                    ),
             )
             .child(
                 div()

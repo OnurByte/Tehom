@@ -23,6 +23,7 @@ pub struct Snapshot {
     pub position: Duration,
     pub duration: Duration,
     pub paused: bool,
+    pub volume: f64,
     pub ended: bool,
     pub error: Option<String>,
 }
@@ -36,6 +37,7 @@ struct Shared {
 
 enum Control {
     Paused(bool),
+    Volume(f64),
     Seek(Duration),
 }
 
@@ -137,6 +139,7 @@ impl Preview {
         }
         *lock(&shared.snapshot) = Snapshot {
             paused: true,
+            volume: 1.0,
             duration: pipeline
                 .query_duration::<gst::ClockTime>()
                 .map(|t| t.into())
@@ -164,6 +167,15 @@ impl Preview {
     }
     pub fn set_paused(&self, paused: bool) -> io::Result<()> {
         self.send(Control::Paused(paused))
+    }
+    pub fn set_volume(&self, volume: f64) -> io::Result<()> {
+        if !volume.is_finite() || !(0.0..=1.0).contains(&volume) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Ses düzeyi 0 ile 1 arasında olmalı",
+            ));
+        }
+        self.send(Control::Volume(volume))
     }
     pub fn seek(&self, position: Duration) -> io::Result<()> {
         if position > self.snapshot().duration {
@@ -214,6 +226,10 @@ fn run_worker(pipeline: &gst::Element, receiver: &mpsc::Receiver<Control>, share
                             .map(|_| ())
                             .map_err(|error| error.to_string())
                     }
+                    Control::Volume(volume) => {
+                        pipeline.set_property("volume", volume);
+                        Ok(())
+                    }
                     Control::Seek(position) => {
                         lock(&shared.snapshot).ended = false;
                         pipeline
@@ -254,6 +270,7 @@ fn run_worker(pipeline: &gst::Element, receiver: &mpsc::Receiver<Control>, share
             .query_duration::<gst::ClockTime>()
             .map(|t| t.into())
             .unwrap_or(snapshot.duration);
+        snapshot.volume = pipeline.property::<f64>("volume");
         snapshot.paused = pipeline.state(gst::ClockTime::ZERO).1 == gst::State::Paused;
     }
 }
@@ -314,6 +331,18 @@ mod tests {
         assert_eq!((frame.width, frame.height), (162, 94));
         assert_eq!(frame.bgra.len(), 162 * 94 * 4);
         assert!(preview.snapshot().paused);
+        assert!(preview.set_volume(f64::NAN).is_err());
+        assert!(preview.set_volume(-0.1).is_err());
+        assert!(preview.set_volume(1.1).is_err());
+        preview.set_volume(0.25).unwrap();
+        let volume_deadline = Instant::now() + Duration::from_secs(2);
+        while (preview.snapshot().volume - 0.25).abs() > 0.001 {
+            assert!(
+                Instant::now() < volume_deadline,
+                "volume did not reach the audio pipeline"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
         preview.seek(Duration::from_millis(1500)).unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         while preview

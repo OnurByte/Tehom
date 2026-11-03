@@ -1,7 +1,9 @@
 name: Native preview and export
 on:
   push:
+    paths-ignore: ['docs/**', '**/*.md']
   pull_request:
+    paths-ignore: ['docs/**', '**/*.md']
   workflow_dispatch:
 permissions:
   contents: read
@@ -41,8 +43,15 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          choco install ffmpeg pkgconfiglite --no-progress -y
-          if ($LASTEXITCODE -notin @(0, 3010)) { throw 'Dependency installation failed' }
+          Import-Module "$env:ChocolateyInstall/helpers/chocolateyProfile.psm1"
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            choco install ffmpeg pkgconfiglite --no-progress -y
+            $installExit = $LASTEXITCODE
+            Update-SessionEnvironment
+            if (($installExit -in @(0, 3010)) -and (Get-Command ffmpeg -ErrorAction SilentlyContinue) -and (Get-Command ffprobe -ErrorAction SilentlyContinue)) { break }
+            if ($attempt -eq 3) { throw 'FFmpeg/ffprobe installation was not successful' }
+            Start-Sleep -Seconds 10
+          }
           $installer = "$env:RUNNER_TEMP/gstreamer.exe"
           Invoke-WebRequest 'https://gstreamer.freedesktop.org/data/pkg/windows/1.28.8/msvc/gstreamer-1.0-msvc-x86_64-1.28.8.exe' -OutFile $installer
           $root = "$env:RUNNER_TEMP/gstreamer"
@@ -54,6 +63,9 @@ jobs:
       - name: Format, lint, test and build
         shell: bash
         run: |
+          ffmpeg -version
+          ffprobe -version
+          pkg-config --modversion gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0
           cargo fmt --all --check
           cargo clippy --workspace --all-targets --locked -- -D warnings
           cargo test --workspace --locked
