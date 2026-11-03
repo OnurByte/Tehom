@@ -1,0 +1,10 @@
+[package]
+name = "tehom-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gpui-kit = "=0.8.1"
+tehom-media = { path = "../tehom-media", features = ["preview"] }
+image = { version = "0.25", default-features = false }

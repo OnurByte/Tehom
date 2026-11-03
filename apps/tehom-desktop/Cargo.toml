@@ -1,0 +1,10 @@
+[package]
+name = "tehom-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gpui-kit = "=0.8.1"
+
+tehom-ui = { path = "../../crates/tehom-ui" }

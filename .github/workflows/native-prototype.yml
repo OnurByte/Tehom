@@ -1,0 +1,112 @@
+name: Native preview and export
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, macos-15, macos-15-intel, windows-2025]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: 2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.99.1
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld pkg-config libasound2-dev libfontconfig1-dev libfreetype6-dev libxkbcommon-x11-dev libwayland-dev libxcb1-dev libvulkan-dev mesa-vulkan-drivers libssl-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good gstreamer1.0-libav ffmpeg xvfb imagemagick
+      - name: macOS dependencies
+        if: runner.os == 'macOS'
+        run: |
+          brew install ffmpeg
+          curl -fL https://gstreamer.freedesktop.org/data/pkg/osx/1.28.8/gstreamer-1.0-1.28.8-universal.pkg -o "$RUNNER_TEMP/gstreamer.pkg"
+          curl -fL https://gstreamer.freedesktop.org/data/pkg/osx/1.28.8/gstreamer-1.0-devel-1.28.8-universal.pkg -o "$RUNNER_TEMP/gstreamer-devel.pkg"
+          sudo installer -pkg "$RUNNER_TEMP/gstreamer.pkg" -target /
+          sudo installer -pkg "$RUNNER_TEMP/gstreamer-devel.pkg" -target /
+          echo '/Library/Frameworks/GStreamer.framework/Versions/1.0/bin' >> "$GITHUB_PATH"
+          echo 'PKG_CONFIG_PATH=/Library/Frameworks/GStreamer.framework/Versions/1.0/lib/pkgconfig' >> "$GITHUB_ENV"
+          echo 'RUSTFLAGS=-C link-arg=-Wl,-rpath,/Library/Frameworks/GStreamer.framework/Versions/1.0/lib' >> "$GITHUB_ENV"
+      - name: Windows dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install ffmpeg pkgconfiglite --no-progress -y
+          if ($LASTEXITCODE -notin @(0, 3010)) { throw 'Dependency installation failed' }
+          $installer = "$env:RUNNER_TEMP/gstreamer.exe"
+          Invoke-WebRequest 'https://gstreamer.freedesktop.org/data/pkg/windows/1.28.8/msvc/gstreamer-1.0-msvc-x86_64-1.28.8.exe' -OutFile $installer
+          $root = "$env:RUNNER_TEMP/gstreamer"
+          $process = Start-Process $installer -ArgumentList @('/VERYSILENT', '/NORESTART', '/CURRENTUSER', '/TYPE=devel', "/DIR=$root") -PassThru -Wait
+          if ($process.ExitCode -ne 0) { throw "GStreamer installation failed: $($process.ExitCode)" }
+          "$root/bin" >> $env:GITHUB_PATH
+          "PKG_CONFIG_PATH=$($root.Replace('\','/'))/lib/pkgconfig" >> $env:GITHUB_ENV
+          "GSTREAMER_1_0_ROOT_MSVC_X86_64=$root" >> $env:GITHUB_ENV
+      - name: Format, lint, test and build
+        shell: bash
+        run: |
+          cargo fmt --all --check
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cargo test --workspace --locked
+          cargo build --workspace --locked
+      - name: Generate preview fixture
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          ffmpeg -nostdin -v error -y -f lavfi -i testsrc2=size=640x360:rate=30 -f lavfi -i sine=frequency=440 -t 12 -c:v libx264 -c:a aac artifacts/source.mp4
+      - name: Linux native window
+        if: runner.os == 'Linux'
+        run: |
+          xvfb-run -a bash -euc '
+            target/debug/tehom-desktop "$PWD/artifacts/source.mp4" > artifacts/startup.log 2>&1 &
+            app_pid=$!
+            trap "kill $app_pid 2>/dev/null || true" EXIT
+            sleep 8
+            kill -0 "$app_pid"
+            import -window root artifacts/preview.png
+          '
+      - name: macOS native window
+        if: runner.os == 'macOS'
+        run: |
+          target/debug/tehom-desktop "$PWD/artifacts/source.mp4" > artifacts/startup.log 2>&1 &
+          app_pid=$!
+          trap 'kill "$app_pid" 2>/dev/null || true' EXIT
+          sleep 8
+          kill -0 "$app_pid"
+          screencapture -x artifacts/preview.png
+      - name: Windows native window
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $process = Start-Process 'target/debug/tehom-desktop.exe' -ArgumentList @("$env:GITHUB_WORKSPACE/artifacts/source.mp4") -PassThru -RedirectStandardError 'artifacts/startup.log'
+          try {
+            Start-Sleep -Seconds 8
+            if ($process.HasExited) { throw "Native app exited: $($process.ExitCode)" }
+            Add-Type -AssemblyName System.Windows.Forms
+            Add-Type -AssemblyName System.Drawing
+            $screen = [System.Windows.Forms.SystemInformation]::VirtualScreen
+            $image = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
+            $graphics = [System.Drawing.Graphics]::FromImage($image)
+            $graphics.CopyFromScreen($screen.Left, $screen.Top, 0, 0, $image.Size)
+            $image.Save("$env:GITHUB_WORKSPACE/artifacts/preview.png")
+            $graphics.Dispose()
+            $image.Dispose()
+          } finally {
+            if (!$process.HasExited) { Stop-Process -Id $process.Id }
+          }
+      - name: Save native runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.runner }}
+          path: artifacts/
+          if-no-files-found: ignore

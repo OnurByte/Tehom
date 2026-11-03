@@ -1,0 +1,11 @@
+[workspace]
+members = ["apps/tehom-desktop", "crates/tehom-media", "crates/tehom-ui"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+
+[profile.dev]
+debug = 0

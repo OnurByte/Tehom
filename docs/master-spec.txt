@@ -1,0 +1,1049 @@
+Tehom — Rust + GPUI Master Implementation Plan
+
+Product specification + implementation roadmap
+ Rust-first
+ Local-first
+ Open source
+
+Proje: Tehom
+Tür: Yerel çalışan, açık kaynaklı, AI destekli video keşif ve otomatik klip üretim uygulaması
+Arayüz: Native GPUI + GPUI Kit
+Hedef sistemler: Linux, macOS, Windows
+Dağıtım: Önce tek komutla kurulum; ayrıca .deb, Flatpak, .dmg, Windows .exe
+Lisans önerisi: AGPL-3.0-or-later
+Çalışma biçimi: Manuel, otomatik taslak ve tam otomatik dosya dışa aktarma
+SaaS: Yok
+Zorunlu kullanıcı hesabı: Yok
+Kodlama ajanı için talimat: Bu doküman Tehom'un güncel ana şartnamesidir. Önceki planlardaki Tauri, Svelte, TypeScript, sosyal medya OAuth bağlantıları, Shorts/TikTok/Reels yayınlama, paylaşım takvimi ve platform kotaları geçersizdir. Var olan bir kod tabanı bulunursa önce incele; çalışan parçaları gereksiz yere yeniden yazma. Her aşama gerçek test ve çalışır çıktı ile doğrulanmalıdır.
+
+1. Ürün tanımı ve kapsam
+Tehom'un amacı, bir yayıncının uzun videolarından kullanışlı kısa klipler üretmek için gereken teknik işleri otomatikleştirmek.
+
+Kullanıcının göreceği temel deneyim:
+1. Tehom'u kur.
+2. YouTube kanal bağlantısını, Kick yayıncı bağlantısını veya tek bir video bağlantısını yapıştır. İsterse bilgisayarından dosya seç.
+3. Yerel AI modelini ya da kendi API anahtarını bir kez yapılandır.
+4. Klipleri oluştur düğmesine bas veya kaynak için otomatik izlemeyi aç.
+5. Tehom videoyu incelesin, uygun kesitleri bulsun ve taslaklar oluştursun.
+6. Kullanıcı klipleri izlesin, isterse düzeltip MP4 olarak indirsin.
+7. Otomatik mod açıksa uygun klipler seçilen klasöre kendiliğinden kaydedilsin.
+Bu sürümde olacaklar
+- Kanal ve video URL'si üzerinden içerik keşfi.
+- YouTube ve uygun olduğunda Kick VOD desteği.
+- Yerel video dosyası içe aktarma.
+- Orijinal videoyu indirme.
+- Mevcut altyazıları/transkriptleri kullanma.
+- Yerel AI ve BYOK.
+- AI ile klip seçimi ve sıralaması.
+- Kırpma, kadraj ve altyazı düzenleme.
+- MP4 dışa aktarma ve indirme.
+- Tam otomatik kaynak izleme ve klip dosyası üretimi.
+- Taslak kütüphanesi, geçmiş, hata kurtarma.
+- Yerel masaüstü uygulaması.
+- İsteğe bağlı başsız (headless) self-host servisi.
+Bilerek çıkarılanlar
+Özellik	Karar
+YouTube Shorts'a yükleme	Kapsam dışı
+TikTok'a yükleme	Kapsam dışı
+Instagram Reels'e yükleme	Kapsam dışı
+Sosyal medya hesap bağlama/OAuth	Kapsam dışı
+Paylaşım zamanlayıcısı ve günlük paylaşım kotaları	Kapsam dışı
+Platform algoritmasına özel hashtag/açıklama	Kapsam dışı
+SaaS ve bulut üzerinden hesap sistemi	Yasak
+Tauri, Electron, React, Svelte, TypeScript	Kullanılmayacak
+AppImage	Üretilmeyecek
+
+Önemli ayrım: 9:16 dikey MP4 üretmek devam edecek. Bu genel bir video dışa aktarma biçimi; TikTok veya Reels entegrasyonu değil.
+2. Neden GPUI + GPUI Kit?
+Kullanıcının verdiği iki kaynak:
+- zed-industries/awesome-gpui
+- longbridge/gpui-kit
+Araştırma sonucu:
+- GPUI: Zed'in geliştirdiği, Rust tabanlı GPU hızlandırmalı native arayüz sistemi. Ancak hâlâ 1.0 öncesinde ve API kırılmaları bekleniyor. 
+  
+  GitHub
+- GPUI Kit: Formlar, butonlar, navigasyon, diyaloglar, listeler, erişilebilirlik ve test araçları içeren 75'ten fazla native bileşen sağlıyor. GPUI ile uyumlu sürümü kendisi bağlıyor. 
+  
+  GitHub
+- Güncel hedef sürüm: GPUI Kit 0.8.1; kodlama başlamadan sürüm ve bağımlılık uyumluluğu kilit dosyasıyla doğrulanacak. 
+  
+  GitHub
+Kesin teknoloji kararı
+Arayüz için doğrudan sıfırdan GPUI bileşenleri yazmak yerine GPUI Kit kullanılacak. Özelleştirilmiş kontroller gerektiğinde GPUI'nin alt katmanına inilecek.
+
+Böylece:
+- Arayüzün kendisi Rust olacak.
+- WebView, HTML/CSS uygulama kabuğu ve JavaScript frontend bulunmayacak.
+- GPUI Kit'in hazır kontrolleri kullanılacak.
+- Video işleme ve AI işleri arayüz iş parçacığını bloke etmeyecek.
+- Linux, macOS ve Windows için ayrı arayüz kod tabanları oluşmayacak.
+gpui-shell adlı JavaScript eklenti sistemi kullanılmayacak.
+Self-host konusunda teknik sınır
+GPUI Kit'in WebAssembly gösterimleri var ancak proje belgeleri bunu henüz üretim amaçlı tarayıcı uygulamaları için desteklenen bir dağıtım yolu olarak tanımlamıyor. 
+
+GPUI Kit
+
+Bu yüzden v1 mimarisi:
+- Desktop: GPUI ile yerel uygulama.
+- Self-host: Rust CLI/headless servis.
+- Tarayıcı dashboard'u: Bu sürümde yok.
+Self-host edilen motor kaynakları izleyip klipleri sunucudaki klasöre yazabilecek. Sonradan aynı motor için uzaktan GPUI istemcisi geliştirilebilir.
+3. Kesin teknoloji yığını
+Katman	Teknoloji	Görevi
+Uygulama dili	Rust stable	Tüm birinci taraf uygulama kodu
+Native arayüz	GPUI	GPU hızlandırmalı pencere, çizim, etkileşim
+Bileşen sistemi	GPUI Kit	Hazır kontroller, tema, erişilebilirlik
+Asenkron görevler	Tokio	Ağ, dosya, zamanlayıcı ve işçiler
+Veri depolama	SQLite + SQLx	Kaynaklar, klipler, işler, tercihler
+HTTP istemcisi	reqwest	RSS, AI sağlayıcıları, API istekleri
+JSON / veri modelleri	Serde	Yapılandırma ve AI çıktıları
+RSS / Atom	feed-rs	Kanal güncellemeleri
+Dosya izleme	notify	İçe aktarma klasörleri
+İzleme / log	tracing	Hata ayıklama ve iş geçmişi
+Sırlar	keyring	BYOK anahtarlarını OS kasasında saklama
+Video analizi	ffprobe	Süre, codec, çözünürlük, akış bilgileri
+Video işleme	FFmpeg	Kesme, kadraj, altyazı, kodlama
+Video indirme	yt-dlp	Desteklenen kaynaklardan indirme
+Yerel AI	Ollama, LM Studio, llama.cpp, vLLM	Kullanıcının yerel model sunucusu
+Uzak AI	OpenAI, Anthropic, Gemini, OpenRouter	İsteğe bağlı BYOK
+Yerel ASR	whisper.cpp	Kullanıcı tarafından elle başlatılan yedek çözüm
+Paketleme	cargo-packager adayı + özel release araçları	Native paket üretimi
+Testler	Rust testleri + GPUI Kit test altyapısı	Birim, entegrasyon, arayüz doğrulama
+
+“Full Rust” sınırı: Tehom'un kendi backend'i, arayüzü, görev motoru, CLI'ı ve self-host servisi Rust ile yazılacak. FFmpeg, yt-dlp ve isteğe bağlı ASR motoru gibi gerekli üçüncü taraf çalıştırılabilir araçlar ise kendi dillerinde kalabilir. Bunları Rust'ta yeniden yazmak ilk sürümün kapsamı değil.
+
+Özellikle YouTube için yt-dlp'nin güncel çözümü harici JavaScript yürütme desteği kullanabiliyor; yt-dlp'nin resmî belgeleri Deno'yu öneriyor. Bu, Tehom'a JavaScript frontend eklemek anlamına gelmez. Gerekli yardımcı araç paket içinde yönetilecek veya kullanıcının açıkça görebileceği şekilde kurulacak. 
+
+GitHub
+ 
+GitHub
+
+4. Mimari
+Tek Rust workspace kullanılacak. Masaüstü uygulaması, CLI ve self-host servisi aynı işleme motorunu paylaşacak.
+#chatgpt-mermaid-_r_1kr_{font-family:-apple-system-body,ui-sans-serif,-apple-system,system-ui,"Segoe UI",Helvetica,"Apple Color Emoji",Arial,sans-serif,"Segoe UI Emoji","Segoe UI Symbol";font-size:16px;fill:rgb(237, 237, 237);}@keyframes edge-animation-frame{from{stroke-dashoffset:0;}}@keyframes dash{to{stroke-dashoffset:0;}}#chatgpt-mermaid-_r_1kr_ .edge-animation-slow{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 50s linear infinite;stroke-linecap:round;}#chatgpt-mermaid-_r_1kr_ .edge-animation-fast{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 20s linear infinite;stroke-linecap:round;}#chatgpt-mermaid-_r_1kr_ .error-icon{fill:rgb(48, 48, 48);}#chatgpt-mermaid-_r_1kr_ .error-text{fill:rgb(237, 237, 237);stroke:rgb(237, 237, 237);}#chatgpt-mermaid-_r_1kr_ .edge-thickness-normal{stroke-width:1px;}#chatgpt-mermaid-_r_1kr_ .edge-thickness-thick{stroke-width:3.5px;}#chatgpt-mermaid-_r_1kr_ .edge-pattern-solid{stroke-dasharray:0;}#chatgpt-mermaid-_r_1kr_ .edge-thickness-invisible{stroke-width:0;fill:none;}#chatgpt-mermaid-_r_1kr_ .edge-pattern-dashed{stroke-dasharray:3;}#chatgpt-mermaid-_r_1kr_ .edge-pattern-dotted{stroke-dasharray:2;}#chatgpt-mermaid-_r_1kr_ .marker{fill:rgb(175, 175, 175);stroke:rgb(175, 175, 175);}#chatgpt-mermaid-_r_1kr_ .marker.cross{stroke:rgb(175, 175, 175);}#chatgpt-mermaid-_r_1kr_ svg{font-family:-apple-system-body,ui-sans-serif,-apple-system,system-ui,"Segoe UI",Helvetica,"Apple Color Emoji",Arial,sans-serif,"Segoe UI Emoji","Segoe UI Symbol";font-size:16px;}#chatgpt-mermaid-_r_1kr_ p{margin:0;}#chatgpt-mermaid-_r_1kr_ .label{font-family:-apple-system-body,ui-sans-serif,-apple-system,system-ui,"Segoe UI",Helvetica,"Apple Color Emoji",Arial,sans-serif,"Segoe UI Emoji","Segoe UI Symbol";color:rgb(237, 237, 237);}#chatgpt-mermaid-_r_1kr_ .cluster-label text{fill:rgb(237, 237, 237);}#chatgpt-mermaid-_r_1kr_ .cluster-label span{color:rgb(237, 237, 237);}#chatgpt-mermaid-_r_1kr_ .cluster-label span p{background-color:transparent;}#chatgpt-mermaid-_r_1kr_ .label text,#chatgpt-mermaid-_r_1kr_ span{fill:rgb(237, 237, 237);color:rgb(237, 237, 237);}#chatgpt-mermaid-_r_1kr_ .node rect,#chatgpt-mermaid-_r_1kr_ .node circle,#chatgpt-mermaid-_r_1kr_ .node ellipse,#chatgpt-mermaid-_r_1kr_ .node polygon,#chatgpt-mermaid-_r_1kr_ .node path{fill:rgb(9, 23, 44);stroke:rgb(31, 78, 148);stroke-width:1px;}#chatgpt-mermaid-_r_1kr_ .rough-node .label text,#chatgpt-mermaid-_r_1kr_ .node .label text,#chatgpt-mermaid-_r_1kr_ .image-shape .label,#chatgpt-mermaid-_r_1kr_ .icon-shape .label{text-anchor:middle;}#chatgpt-mermaid-_r_1kr_ .node .katex path{fill:#000;stroke:#000;stroke-width:1px;}#chatgpt-mermaid-_r_1kr_ .rough-node .label,#chatgpt-mermaid-_r_1kr_ .node .label,#chatgpt-mermaid-_r_1kr_ .image-shape .label,#chatgpt-mermaid-_r_1kr_ .icon-shape .label{text-align:center;}#chatgpt-mermaid-_r_1kr_ .node.clickable{cursor:pointer;}#chatgpt-mermaid-_r_1kr_ .root .anchor path{fill:rgb(175, 175, 175)!important;stroke-width:0;stroke:rgb(175, 175, 175);}#chatgpt-mermaid-_r_1kr_ .arrowheadPath{fill:rgb(175, 175, 175);}#chatgpt-mermaid-_r_1kr_ .edgePath .path{stroke:rgb(175, 175, 175);stroke-width:1px;}#chatgpt-mermaid-_r_1kr_ .flowchart-link{stroke:rgb(175, 175, 175);fill:none;}#chatgpt-mermaid-_r_1kr_ .edgeLabel{background-color:rgb(0, 0, 0);text-align:center;}#chatgpt-mermaid-_r_1kr_ .edgeLabel p{background-color:rgb(0, 0, 0);}#chatgpt-mermaid-_r_1kr_ .edgeLabel rect{opacity:0.5;background-color:rgb(0, 0, 0);fill:rgb(0, 0, 0);}#chatgpt-mermaid-_r_1kr_ .labelBkg{background-color:rgba(0, 0, 0, 0.5);}#chatgpt-mermaid-_r_1kr_ .cluster rect{fill:rgb(48, 48, 48);stroke:rgba(255, 255, 255, 0.15);stroke-width:1px;}#chatgpt-mermaid-_r_1kr_ .cluster text{fill:rgb(237, 237, 237);}#chatgpt-mermaid-_r_1kr_ .cluster span{color:rgb(237, 237, 237);}#chatgpt-mermaid-_r_1kr_ div.mermaidTooltip{position:absolute;text-align:center;max-width:200px;padding:2px;font-family:-apple-system-body,ui-sans-serif,-apple-system,system-ui,"Segoe UI",Helvetica,"Apple Color Emoji",Arial,sans-serif,"Segoe UI Emoji","Segoe UI Symbol";font-size:12px;background:rgb(48, 48, 48);border:1px solid rgba(255, 255, 255, 0.15);border-radius:2px;pointer-events:none;z-index:100;}#chatgpt-mermaid-_r_1kr_ .flowchartTitleText{text-anchor:middle;font-size:18px;fill:rgb(237, 237, 237);}#chatgpt-mermaid-_r_1kr_ rect.text{fill:none;stroke-width:0;}#chatgpt-mermaid-_r_1kr_ .icon-shape,#chatgpt-mermaid-_r_1kr_ .image-shape{background-color:rgb(0, 0, 0);text-align:center;}#chatgpt-mermaid-_r_1kr_ .icon-shape p,#chatgpt-mermaid-_r_1kr_ .image-shape p{background-color:rgb(0, 0, 0);padding:2px;}#chatgpt-mermaid-_r_1kr_ .icon-shape .label rect,#chatgpt-mermaid-_r_1kr_ .image-shape .label rect{opacity:0.5;background-color:rgb(0, 0, 0);fill:rgb(0, 0, 0);}#chatgpt-mermaid-_r_1kr_ .label-icon{display:inline-block;height:1em;overflow:visible;vertical-align:-0.125em;}#chatgpt-mermaid-_r_1kr_ .node .label-icon path{fill:currentColor;stroke:revert;stroke-width:revert;}#chatgpt-mermaid-_r_1kr_ .node .neo-node{stroke:rgb(31, 78, 148);}#chatgpt-mermaid-_r_1kr_ [data-look="neo"].node rect,#chatgpt-mermaid-_r_1kr_ [data-look="neo"].cluster rect,#chatgpt-mermaid-_r_1kr_ [data-look="neo"].node polygon{stroke:url(#chatgpt-mermaid-_r_1kr_-gradient);filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#chatgpt-mermaid-_r_1kr_ [data-look="neo"].swimlane.cluster rect{filter:none;}#chatgpt-mermaid-_r_1kr_ [data-look="neo"].node path{stroke:url(#chatgpt-mermaid-_r_1kr_-gradient);stroke-width:1px;}#chatgpt-mermaid-_r_1kr_ [data-look="neo"].node .outer-path{filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#chatgpt-mermaid-_r_1kr_ [data-look="neo"].node .neo-line path{stroke:rgb(31, 78, 148);filter:none;}#chatgpt-mermaid-_r_1kr_ [data-look="neo"].node circle{stroke:url(#chatgpt-mermaid-_r_1kr_-gradient);filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#chatgpt-mermaid-_r_1kr_ [data-look="neo"].node circle .state-start{fill:#000000;}#chatgpt-mermaid-_r_1kr_ [data-look="neo"].icon-shape .icon{fill:url(#chatgpt-mermaid-_r_1kr_-gradient);filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#chatgpt-mermaid-_r_1kr_ [data-look="neo"].icon-shape .icon-neo path{stroke:url(#chatgpt-mermaid-_r_1kr_-gradient);filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#chatgpt-mermaid-_r_1kr_ .node text{font-size:14px;font-weight:600;letter-spacing:normal;fill:rgb(153, 206, 255);}#chatgpt-mermaid-_r_1kr_ .edgeLabels text{font-size:13px;font-weight:600;letter-spacing:-0.08px;fill:rgb(153, 206, 255);}#chatgpt-mermaid-_r_1kr_ .node tspan[font-weight="normal"],#chatgpt-mermaid-_r_1kr_ .edgeLabels tspan[font-weight="normal"]{font-weight:600;}#chatgpt-mermaid-_r_1kr_ .edgeLabel .label rect{opacity:1;rx:13px;ry:13px;fill:rgb(0, 14, 26);stroke:rgb(26, 62, 95);stroke-width:1px;}#chatgpt-mermaid-_r_1kr_ .node rect,#chatgpt-mermaid-_r_1kr_ .node circle,#chatgpt-mermaid-_r_1kr_ .node ellipse,#chatgpt-mermaid-_r_1kr_ .node polygon,#chatgpt-mermaid-_r_1kr_ .node path{fill:rgb(0, 40, 77);stroke:rgba(255, 255, 255, 0.1);stroke-width:1px;}#chatgpt-mermaid-_r_1kr_ .node rect{rx:16px;ry:16px;}#chatgpt-mermaid-_r_1kr_ .mermaid-decision .label-container{fill:rgb(0, 14, 26);stroke:rgb(26, 62, 95);stroke-dasharray:2,2;}#chatgpt-mermaid-_r_1kr_ .edgePaths .flowchart-link{stroke:rgb(175, 175, 175);stroke-width:1px;stroke-linecap:round;stroke-linejoin:round;}#chatgpt-mermaid-_r_1kr_ .marker{fill:rgb(175, 175, 175);stroke:rgb(175, 175, 175);}#chatgpt-mermaid-_r_1kr_ :root{--mermaid-font-family:-apple-system-body,ui-sans-serif,-apple-system,system-ui,"Segoe UI",Helvetica,"Apple Color Emoji",Arial,sans-serif,"Segoe UI Emoji","Segoe UI Symbol";}GPUI DesktopTehom CoreRust CLIHeadless ServiceKaynak keşfi ve indirmeTranskript + AI analiziKlip düzenleme + renderSQLite + Yerel Dosyalar
+
+
+
+
+
+Workspace yapısı
+tehom/
+├── Cargo.toml
+├── Cargo.lock
+├── rust-toolchain.toml
+├── LICENSE
+├── AGENTS.md
+├── README.md
+├── crates/
+│   ├── tehom-core/
+│   ├── tehom-db/
+│   ├── tehom-sources/
+│   ├── tehom-download/
+│   ├── tehom-media/
+│   ├── tehom-transcript/
+│   ├── tehom-ai/
+│   ├── tehom-clips/
+│   ├── tehom-jobs/
+│   ├── tehom-storage/
+│   ├── tehom-security/
+│   └── tehom-ui/
+├── apps/
+│   ├── tehom-desktop/
+│   ├── tehom-cli/
+│   └── tehom-headless/
+├── assets/
+│   ├── brand/
+│   │   └── icon.svg
+│   ├── fonts/
+│   └── icons/
+├── packaging/
+│   ├── linux/
+│   ├── macos/
+│   ├── windows/
+│   └── flatpak/
+├── install/
+│   ├── install.sh
+│   └── install.ps1
+├── tests/
+│   ├── fixtures/
+│   ├── integration/
+│   └── e2e/
+├── docs/
+│   ├── architecture.md
+│   ├── product.md
+│   ├── design.md
+│   ├── security.md
+│   └── distribution.md
+└── .github/
+    └── workflows/
+
+
+Sorumluluk sınırları
+- tehom-core: Ortak türler, iş kuralları, hata tipleri.
+- tehom-db: SQLite migration, sorgular, transaction.
+- tehom-sources: URL çözümleme, kanal keşfi, RSS, yeni video tespiti.
+- tehom-download: yt-dlp adaptörü, indirme durumu, tekrar deneme.
+- tehom-media: FFmpeg/ffprobe, önizleme, kodlama.
+- tehom-transcript: VTT/SRT ayrıştırma, metin zamanlaması, isteğe bağlı ASR.
+- tehom-ai: Sağlayıcılar, prompt profilleri, yapılandırılmış çıktı.
+- tehom-clips: Kesit seçimi, doğrulama, tekrarları eleme.
+- tehom-jobs: Kalıcı işler, otomasyon, iptal ve yeniden başlatma.
+- tehom-storage: Dosya dizinleri, kota, temizlik.
+- tehom-security: Güvenli URL, sır saklama, komut çalıştırma sınırları.
+- tehom-ui: GPUI görünümleri ve native etkileşim.
+- apps/*: Ürünün ayrı çalıştırılabilir giriş noktaları.
+Kural: UI hiçbir FFmpeg komutunu, SQL sorgusunu veya indirme komutunu doğrudan oluşturmayacak. Rust servis arayüzlerini çağıracak.
+
+5. Ürünün çalışma modları
+Önceki sosyal medya yayın modları kaldırıldı.
+Mod	Ne yapar?	Çıktı
+Manual	Kullanıcı URL/dosya ekler, klip üretimini başlatır	İncelenebilir taslaklar
+Auto Draft	Kaynağı izler, yeni videolardan klipler oluşturur	Taslak kütüphanesi
+Auto Export	Kaynağı izler, uygun klipleri üretip kaydeder	Klasörde hazır MP4 dosyaları
+Paused	Yeni otomatik iş başlatmaz	Mevcut taslaklar korunur
+
+Auto Export davranışı
+Örneğin kullanıcı bir YouTube kanalını ekledi:
+Kaynak: youtube.com/@ornek
+Mod: Auto Export
+Çıkış klasörü: ~/Videos/Tehom/
+Video başına en fazla: 5 klip
+Klip uzunluğu: 20–90 saniye
+Format: 9:16 MP4
+
+
+Yeni video bulunduğunda:
+1. İçerik kaydı oluşturulur.
+2. Video indirilir.
+3. Varsa transkript alınır.
+4. AI klip adayları önerir.
+5. Kesitler doğrulanır ve sıralanır.
+6. Tekrarlayan veya sorunlu adaylar elenir.
+7. Render tamamlanır.
+8. MP4 dosyaları seçilen klasöre kaydedilir.
+9. Arayüzde sonuç görünür.
+Auto Export, otomatik paylaşım değildir. Hiçbir sosyal medya hesabına dosya yüklenmeyecek.
+Önemli ASR sınırı
+Önceki karar korunuyor: yedek ASR yalnızca manuel başlatılacak.
+
+Transkript bulunamadığında Tehom sessizce Whisper çalıştırmayacak.
+
+Kullanıcıya şu seçenekler gösterilecek:
+- Videoyu elle kırp.
+- Bir SRT/VTT dosyası yükle.
+- Yedek konuşma çözümlemesini başlat.
+- Uygunsa transkriptsiz, sınırlı ses/görüntü analizi dene.
+Son seçenek, konuşmanın anlamını güvenilir şekilde bildiğini iddia etmeyecek.
+
+Auto Export modunda analiz için yeterli veri yoksa video “İnceleme gerekiyor” durumuna geçecek. Eksik veriye rağmen rastgele klip dışa aktarılmayacak.
+
+6. Son kullanıcı deneyimi
+Ana tasarım ilkesi:
+
+Kullanıcı video klip üretmek için RSS, FFmpeg, JSON, codec veya API kavramlarını öğrenmek zorunda kalmamalı.
+
+Bu yaklaşım, Microsoft Research'ün insan-AI etkileşim ilkeleriyle uyumlu: sistemin ne yaptığını anlaşılır göstermesi, kullanıcıya kontrol vermesi ve hataları düzeltmesine izin vermesi gerekiyor. 
+
+Microsoft Research
+
+İlk açılış
+İlk ekran:
+Tehom
+
+Uzun videolardan klipler oluştur.
+YouTube, Kick veya video bağlantısı
+
+URL
+
+
+Dosya seç
+
+
+Kanal ekle
+
+
+
+Klipleri oluştur
+
+
+Bu yalnızca önerilen ekran düzeninin şematik gösterimidir.
+İlk açılışta kullanıcıya teknik yapılandırma formu gösterilmeyecek.
+Model kurulumu
+Kullanıcı ilk AI işlemini başlattığında:
+1. Tehom yerel model sunucularını localhost üzerinden algılamaya çalışır.
+2. Bulunursa “Yerel model bulundu” mesajı gösterir.
+3. Bulunmazsa:
+   - Yerel model kurulumu hakkında kısa rehber,
+   - API anahtarıyla kullanma,
+   - AI olmadan manuel düzenlemeye devam etme
+   seçenekleri sunulur.
+
+Tehom kendiliğinden büyük bir modeli indirip disk alanı tüketmeyecek.
+Navigasyon
+Dört ana bölüm yeterli:
+Bölüm	İçerik
+Home	URL ekleme, hızlı klip oluşturma, devam eden işler
+Sources	Takip edilen kanallar, izleme modu, geçmiş
+Clips	Taslaklar, önizleme, düzenleme, indirme
+Settings	AI, indirme klasörü, performans, depolama
+
+İlk sürümde ayrı bir “Analytics”, “Growth”, “Social Accounts” veya “Publishing” sayfası bulunmayacak.
+Klip ekranı
+Klip kartında yalnızca:
+- Önizleme görseli.
+- Süre.
+- Kaynak video adı.
+- Oluşturulma durumu.
+- İzle, Düzenle, İndir.
+Ayrıntı açıldığında:
+- Video oynatıcı.
+- Başlangıç/bitiş tutamaçları.
+- Kadraj önizlemesi.
+- Transkript/altyazı.
+- Klibi yeniden oluştur.
+- MP4 indir.
+İlk sürümde çok kanallı profesyonel kurgu zaman çizelgesi yapılmayacak.
+Hata mesajları
+Teknik hata	Kullanıcıya gösterilecek
+yt-dlp exit 1	“Video indirilemedi. Bağlantıyı veya erişim durumunu kontrol et.”
+model connection refused	“AI modeline bağlanılamıyor.”
+ffmpeg codec unsupported	“Bu video biçimi şu anda işlenemiyor.”
+disk full	“Klip için yeterli disk alanı yok.”
+transcript unavailable	“Altyazı bulunamadı. İstersen bir dosya yükleyebilir veya konuşma çözümlemesini başlatabilirsin.”
+
+Her hatada, mümkün olduğunda, Yeniden dene ve Ayrıntılar olacak.
+
+Geliştirici logları ayrı tutulacak.
+Kullanılabilirlik araştırmasının somut karşılığı
+Dietvorst, Simmons ve Massey'nin algoritma kullanımına ilişkin araştırması, insanlara algoritmanın sonucunu az da olsa değiştirme hakkı verilmesinin kabulü artırabildiğini gösteriyor. Bu nedenle Tehom'da AI seçimi son karar değil; kullanıcı kesiti, sıralamayı ve kadrajı değiştirebilecek. Bu araştırma doğrudan video editörleriyle yapılmış bir deney değil, tasarım için dayanak. 
+
+faculty.wharton.upenn.edu
+
+
+7. Tasarım dili ve marka
+Marka
+- Ad: Tehom
+- Yazım: Tehom
+- CLI: tehom
+- GitHub repo adı: Tehom
+- Görsel kimlik: Monokrom geometrik düğüm sembolü.
+- Yazı tipi: Geist + Geist Mono.
+- Ana renk sistemi: Oxocarbon.
+- Tarz: Minimal, teknik ama kullanımı kolay.
+İkon
+Kesin kaynak: Kullanıcının verdiği 512×512, transparan SVG.
+
+Uygulama ajanı şu kuralları uygulamalı:
+1. SVG'nin viewBox="0 0 512 512" değerini koru.
+2. Geometrik path d verisini değiştirme.
+3. fill-rule="evenodd" değerini koru.
+4. Kaynak SVG'de currentColor kullanılabilir.
+5. Platform ikonları için belirlenmiş renkli türevler üret.
+6. Transparan SVG'yi GitHub, README ve arayüzde kullan.
+7. macOS/Windows/Linux uygulama ikonları için aynı geometriden raster boyutlar türet.
+8. Sembolü yeniden çizme, basitleştirme veya yeni logo uydurma.
+Kaynak dosya hedefi:
+
+assets/brand/icon.svg
+
+Bu dosya, önceki mesajda sağlanan geometrik knot SVG'nin birebir kopyası olacak. Plan bir depoya aktarılırken özgün SVG de repo içine eklenmeli; bu doküman tek başına SVG path verisini içermez.
+Oxocarbon
+Önerilen temel tokenlar:
+Kullanım	Renk
+Dark background	#161616
+Surface	#262626
+Elevated surface	#393939
+Primary text	#f2f4f8
+Secondary text	#dde1e6
+Purple accent	#be95ff
+Blue accent	#78a9ff
+Green success	#42be65
+Red error	#ee5396
+
+Açık tema da tasarlanmalı, fakat dark tema ilk odak olabilir.
+GPUI Kit tema uygulaması
+Tema, CSS değişkenleri şeklinde değil, Rust içindeki semantik tasarım tokenlarıyla oluşturulacak.
+- Spacing: 4/8/12/16/24/32.
+- Köşe yarıçapları: 6/10/14.
+- Animasyon: hafif, işlevsel.
+- Monospace yalnızca teknik alanlarda.
+- Simge sistemi: GPUI Kit'in ikon kataloğu.
+- Erişilebilir odak çerçevesi her etkileşimli bileşende.
+GPUI Kit'in tema, asset ve test altyapısı bu kullanım için belgelenmiş durumda. 
+
+GPUI Kit
+ 
+GPUI Kit
+
+Erişilebilirlik
+- Klavye ile eksiksiz navigasyon.
+- Görünür odak durumu.
+- Ekran okuyucu etiketleri.
+- Sadece renkle durum bildirmeme.
+- Yüksek kontrast.
+- Gerekli yerlerde açıklayıcı metin.
+- Animasyon azaltma tercihi.
+- Ölçeklenebilir arayüz.
+WCAG 2.2 web standardı doğrudan GPUI'ya uygulanmış sayılmaz; ilgili erişilebilirlik ilkeleri yerel arayüze uyarlanacak ve AccessKit üzerinden test edilecek. 
+
+W3C
+
+
+8. Kaynak keşfi ve indirme motoru
+Desteklenen girişler
+Öncelik sırası:
+1. Yerel video dosyası.
+2. Tekil YouTube video URL'si.
+3. YouTube kanal URL'si.
+4. Desteklenen Kick VOD URL'si.
+5. Kick yayıncı profili üzerinden VOD keşfi — deneysel.
+6. Doğrudan medya URL'si — güvenlik doğrulamasından sonra.
+YouTube kanal izleme
+- Kanal URL'sini normalize et.
+- Mümkünse kanal ID'sini çöz.
+- RSS/Atom üzerinden yeni video kayıtlarını keşfet.
+- Her kayıt için platform video ID'sini sakla.
+- Daha önce işlenmiş video tekrar kuyruğa alınmasın.
+- RSS başarısızsa kontrollü tekrar denensin.
+- Kaynağın son başarılı kontrol zamanı kaydedilsin.
+RSS yalnızca yeni içerik keşfi için kullanılacak; eksiksiz geçmiş arşivini garanti etmeyecek.
+Kick
+Kick için önce tekil VOD indirmesini doğrula.
+
+Kanalın tüm VOD'larını kararlı biçimde keşfetme konusu ayrı bir entegrasyon testi gerektiriyor. Erişim veya VOD saklama davranışı değişebileceğinden Kick otomatik izleme başlangıçta experimental işaretli olacak.
+İndirme
+yt-dlp bağımsız bir yürütülebilir araç olarak yönetilecek.
+
+İndirme yöneticisi:
+- Başarısız ve kısmi indirmeleri tanısın.
+- Uygun olduğunda indirmeye devam etsin.
+- Aynı videoyu gereksiz yere yeniden indirmesin.
+- Disk alanını kontrol etsin.
+- Dosya boyutunu ve formatı doğrulasın.
+- Tamamlanan dosyayı atomik olarak etkinleştirsin.
+- Kaynağa uygun hız sınırları uygulasın.
+Kullanıcının erişim ve kullanım hakkına sahip olmadığı videolar için korumaları aşma sözü verilmeyecek.
+Orijinal videoyu indirme
+Kliplerden bağımsız bir işlem olarak:
+
+Video → Orijinali indir
+
+Kullanıcı işlenmiş klipleri de, indirilebilir durumdaki orijinal video dosyasını da ayrı ayrı kaydedebilecek.
+
+9. Transkript sistemi
+Sıralama:
+1. Kullanıcının yüklediği SRT/VTT.
+2. İndirilebilir durumdaki mevcut altyazı.
+3. Daha önce yerel veritabanına kaydedilmiş transkript.
+4. Kullanıcının manuel başlattığı ASR.
+YouTube'un resmi Captions API'sinde altyazı indirme işlemi yetkilendirme gerektirebilir; herhangi bir videonun transkriptine API üzerinden sınırsız erişim varsayılmayacak. 
+
+developers.google.com
+
+Veri modeli
+pub struct TranscriptSegment {
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub text: String,
+    pub source: TranscriptSource,
+}
+
+pub enum TranscriptSource {
+    Uploaded,
+    PlatformSubtitle,
+    ManualAsr,
+}
+
+
+Kabul koşulları
+- Negatif veya ters zaman aralıkları reddedilir.
+- VTT/SRT timestamp dönüşümü test edilir.
+- Dil bilgisi saklanır.
+- Transkript düzenlemeleri orijinalden ayrı sürümlenir.
+- ASR sırasında kullanıcıya model boyutu ve yaklaşık disk ihtiyacı gösterilir.
+- ASR varsayılan olarak otomasyona eklenmez.
+
+10. AI sistemi
+Sağlayıcı arayüzü
+Her sağlayıcı ortak Rust trait'iyle çalışacak.
+#[async_trait::async_trait]
+pub trait ClipAnalyzer: Send + Sync {
+    async fn analyze(
+        &self,
+        request: AnalysisRequest,
+    ) -> Result<AnalysisResult, AnalysisError>;
+}
+
+
+Desteklenecekler
+Yerel:
+- Ollama.
+- LM Studio.
+- llama.cpp server.
+- vLLM.
+İsteğe bağlı uzak sağlayıcılar:
+- OpenAI.
+- Anthropic.
+- Gemini.
+- OpenRouter.
+Ollama ve benzeri sistemlerin yapılandırılmış çıktı olanakları kullanılabilecek; fakat her modelin aynı JSON uyumluluğu ve bağlam uzunluğuna sahip olduğu varsayılmayacak.
+Modelin üreteceği veri
+pub struct ClipCandidate {
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub proposed_title: Option<String>,
+    pub reason: String,
+    pub confidence: Option<f32>,
+}
+
+
+confidence değeri modelden geliyorsa bunun kalibre edilmiş bir olasılık olduğu iddia edilmeyecek.
+İş kuralları
+AI yalnızca öneri sunar.
+
+Kod tarafı mutlaka kontrol eder:
+- Başlangıç zamanının bitişten küçük olması.
+- Kesitin video süresi içinde kalması.
+- İzin verilen minimum ve maksimum süre.
+- Aşırı kesişen kliplerin ele alınması.
+- Boş transkript üzerinde anlamsız istem çalıştırılmaması.
+- Kaynakta olmayan iddiaların kullanıcıya kesin gerçek olarak sunulmaması.
+- Çıktının şemaya uyması.
+Kullanıcıya AI ayarları
+Basit görünüm:
+- AI modeli
+- Klip sayısı
+- Klip uzunluğu
+- İçerikte ne aransın?
+Örnek doğal dil istemi:
+Komik tepkileri, şaşırtıcı anları ve tek başına anlaşılabilecek konuşmaları seç.
+
+İleri ayarlar ayrı bölümde:
+- Model endpoint'i.
+- API anahtarı.
+- Temperature.
+- Context ayarları.
+- Prompt şablonları.
+- Tekrar deneme politikası.
+- Zaman/ağ maliyeti sınırları.
+Teknik model ayarları ilk ekranda bulunmayacak.
+
+11. Klip seçme ve doğrulama
+Önerilen ilk analiz yaklaşımı:
+1. Transkripti zaman pencerelerine ayır.
+2. Çok uzun videolarda parçalı analiz yap.
+3. Her pencere için klip önerileri üret.
+4. Tekrar eden önerileri birleştir.
+5. Kesitlerin başlangıç ve bitişini doğrula.
+6. Sahne kesmelerini ve ses seviyesini yardımcı sinyal olarak kullan.
+7. Kullanıcıya nihai adayları sun.
+Sistem her klibi aynı uzunlukta üretmeye zorlanmayacak.
+Sıralama sinyalleri
+- Bağımsız anlaşılabilirlik.
+- Konuşma bütünlüğü.
+- Anlamlı başlangıç ve bitiş.
+- Gereksiz sessizlik miktarı.
+- Tekrar düzeyi.
+- Kullanıcı istemine uygunluk.
+- Sahne/kadraj uygunluğu.
+“%97 viral olma ihtimali” gibi ölçülmemiş istatistikler üretilmeyecek.
+Tekrarları önleme
+- Aynı video ID'si için yeniden işleme kontrolü.
+- Zaman aralığı benzerliği.
+- Transkript benzerliği.
+- Oluşturulmuş klibin içerik hash'i.
+- Kullanıcının daha önce reddettiği aralıkların tercihe bağlı dikkate alınması.
+
+12. Native video oynatıcı: zorunlu teknik araştırma
+GPUI seçiminin asıl zor kısmı arayüz değil, video önizleme ve zaman çizelgesidir.
+
+awesome-gpui listesinde video projeleri bulunuyor. Bunlar başlangıç noktasıdır; uygulamaya doğrudan alınmadan önce test edilecek. 
+
+GitHub
+
+Adaylar
+Aday	Avantaj	Risk
+gpui-video-player	GPUI için hazır video oynatıcı	GStreamer bağımlılığı ve GPUI sürüm uyumu
+Alhazen GPUI video bileşenleri	FFmpeg tabanlı alternatif	Daha az olgun ekosistem
+Özel FFmpeg frame önizleme	Kontrol ve bağımlılık yönetimi	Ses, seek ve oynatma senkronunu geliştirmek pahalı
+
+gpui-video-player GStreamer üzerine kurulu. Bu yaklaşım çalışabilir, fakat kullanıcının ayrıca codec/plugin kurmasını gerektirebilir. 
+
+GitHub
+
+Önce yapılacak spike
+Üç platformda küçük bir GPUI demo hazırlanacak:
+- Video açma.
+- Play/pause.
+- Timeline üzerinde seek.
+- Ses kontrolü.
+- Başlangıç/bitiş belirleme.
+- Dikey video görüntüleme.
+- Birkaç saatlik kaynak videoda bellek kullanımı.
+- Pencere kapandığında kaynak temizliği.
+Kabul: Tercih edilen oynatıcı Linux, macOS ve Windows'ta gerçek paket içinde sorunsuz çalışmadan ürün mimarisine kilitlenmeyecek.
+
+Bu doğrulama başarısızsa ilk sürümde FFmpeg tabanlı kare önizlemesi ve basit kesit seçimi kullanılabilir. Profesyonel video editörü geliştirmek ayrı bir proje hâline getirilmeyecek.
+
+13. Video render sistemi
+Varsayılan çıktı
+- Konteyner: MP4.
+- Video: H.264.
+- Ses: AAC.
+- Varsayılan dikey çözünürlük: 1080×1920.
+- Alternatifler: Orijinal oran, 16:9, 1:1.
+- Altyazı: Kapalı, gömülü veya ayrı SRT.
+- Filigran: Yok.
+Kadraj
+İlk sürüm:
+- Merkez kırpma.
+- Kullanıcının sürükleyerek kadraj belirlemesi.
+- Yatay/dikey konum ayarı.
+- Önizleme.
+Sonraki aşama:
+- Konuşan kişiyi takip etme.
+- Yüz/nesne konumuna göre otomatik kadraj.
+- Çoklu konuşmacı düzenleri.
+Otomatik yüz takip sistemi v0.1'in ön koşulu olmayacak.
+Render gereksinimleri
+- İlerleme göstergesi.
+- İptal etme.
+- Çıktıyı yeniden oluşturma.
+- Render sırasında arayüzün akıcı kalması.
+- İşlem bitmeden tamamlanmış MP4 olarak göstermeme.
+- Hata durumunda yarım dosyaları ayırma.
+- Tamamlanan dosyayı atomik isimlendirme.
+- Çıktı klasörünü açma.
+FFmpeg kullanılırken dağıtılan ikili dosyanın codec ve derleme seçeneklerine göre LGPL/GPL yükümlülükleri ayrıca denetlenmeli. 
+
+ffmpeg.org
+
+
+14. Yerel veri sistemi
+SQLite tabloları
+Tablo	Temel alanlar
+sources	id, kind, normalized_url, mode, enabled
+videos	id, source_id, external_id, duration_ms, local_path
+transcripts	id, video_id, language, origin, path
+clip_candidates	id, video_id, start_ms, end_ms, score, status
+clips	id, candidate_id, edit_spec_json, output_path
+jobs	id, kind, state, attempts, progress, error_code
+settings	key, value
+model_profiles	id, provider, endpoint, model_name
+events	id, job_id, level, message, created_at
+
+API anahtarları SQLite içine düz metin olarak yazılmayacak.
+Dosya düzeni
+Tehom/
+├── database/
+│   └── tehom.db
+├── originals/
+├── transcripts/
+├── previews/
+├── drafts/
+├── exports/
+├── temp/
+└── logs/
+
+
+İşletim sistemine göre varsayılan uygulama verisi ve kullanıcı video klasörleri kullanılacak. Bütün platformlarda zorla aynı ev dizini yolu kullanılmayacak.
+Kalıcılık
+- SQLite WAL.
+- Migration ve migration rollback stratejisi.
+- Transaction temelli iş rezervasyonu.
+- Dosya yolu değişikliklerinde kayıt tutarlılığı.
+- Orijinal video silindiğinde taslakların durumunu doğru gösterme.
+- Otomatik temizlemeden önce kullanıcı tercihini uygulama.
+
+15. İş kuyruğu ve otomasyon
+İş durumları
+#chatgpt-mermaid-_r_1nm_{font-family:-apple-system-body,ui-sans-serif,-apple-system,system-ui,"Segoe UI",Helvetica,"Apple Color Emoji",Arial,sans-serif,"Segoe UI Emoji","Segoe UI Symbol";font-size:16px;fill:rgb(237, 237, 237);}@keyframes edge-animation-frame{from{stroke-dashoffset:0;}}@keyframes dash{to{stroke-dashoffset:0;}}#chatgpt-mermaid-_r_1nm_ .edge-animation-slow{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 50s linear infinite;stroke-linecap:round;}#chatgpt-mermaid-_r_1nm_ .edge-animation-fast{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 20s linear infinite;stroke-linecap:round;}#chatgpt-mermaid-_r_1nm_ .error-icon{fill:rgb(48, 48, 48);}#chatgpt-mermaid-_r_1nm_ .error-text{fill:rgb(237, 237, 237);stroke:rgb(237, 237, 237);}#chatgpt-mermaid-_r_1nm_ .edge-thickness-normal{stroke-width:1px;}#chatgpt-mermaid-_r_1nm_ .edge-thickness-thick{stroke-width:3.5px;}#chatgpt-mermaid-_r_1nm_ .edge-pattern-solid{stroke-dasharray:0;}#chatgpt-mermaid-_r_1nm_ .edge-thickness-invisible{stroke-width:0;fill:none;}#chatgpt-mermaid-_r_1nm_ .edge-pattern-dashed{stroke-dasharray:3;}#chatgpt-mermaid-_r_1nm_ .edge-pattern-dotted{stroke-dasharray:2;}#chatgpt-mermaid-_r_1nm_ .marker{fill:rgb(175, 175, 175);stroke:rgb(175, 175, 175);}#chatgpt-mermaid-_r_1nm_ .marker.cross{stroke:rgb(175, 175, 175);}#chatgpt-mermaid-_r_1nm_ svg{font-family:-apple-system-body,ui-sans-serif,-apple-system,system-ui,"Segoe UI",Helvetica,"Apple Color Emoji",Arial,sans-serif,"Segoe UI Emoji","Segoe UI Symbol";font-size:16px;}#chatgpt-mermaid-_r_1nm_ p{margin:0;}#chatgpt-mermaid-_r_1nm_ defs [id$="-barbEnd"]{fill:rgb(175, 175, 175);stroke:rgb(175, 175, 175);}#chatgpt-mermaid-_r_1nm_ g.stateGroup text{fill:rgb(31, 78, 148);stroke:none;font-size:10px;}#chatgpt-mermaid-_r_1nm_ g.stateGroup text{fill:rgb(237, 237, 237);stroke:none;font-size:10px;}#chatgpt-mermaid-_r_1nm_ g.stateGroup .state-title{font-weight:bolder;fill:rgb(237, 237, 237);}#chatgpt-mermaid-_r_1nm_ g.stateGroup rect{fill:rgb(9, 23, 44);stroke:rgb(31, 78, 148);}#chatgpt-mermaid-_r_1nm_ g.stateGroup line{stroke:rgb(175, 175, 175);stroke-width:1;}#chatgpt-mermaid-_r_1nm_ .transition{stroke:rgb(175, 175, 175);stroke-width:1;fill:none;}#chatgpt-mermaid-_r_1nm_ .stateGroup .composit{fill:transparent;border-bottom:1px;}#chatgpt-mermaid-_r_1nm_ .stateGroup .alt-composit{fill:#e0e0e0;border-bottom:1px;}#chatgpt-mermaid-_r_1nm_ .state-note{stroke:rgb(58, 132, 63);fill:rgb(48, 48, 48);}#chatgpt-mermaid-_r_1nm_ .state-note text{fill:rgb(237, 237, 237);stroke:none;font-size:10px;}#chatgpt-mermaid-_r_1nm_ .stateLabel .box{stroke:none;stroke-width:0;fill:rgb(9, 23, 44);opacity:0.5;}#chatgpt-mermaid-_r_1nm_ .edgeLabel .label rect{fill:rgb(9, 23, 44);opacity:0.5;}#chatgpt-mermaid-_r_1nm_ .edgeLabel{background-color:rgb(0, 0, 0);text-align:center;}#chatgpt-mermaid-_r_1nm_ .edgeLabel p{background-color:rgb(0, 0, 0);}#chatgpt-mermaid-_r_1nm_ .edgeLabel rect{opacity:0.5;background-color:rgb(0, 0, 0);fill:rgb(0, 0, 0);}#chatgpt-mermaid-_r_1nm_ .edgeLabel .label text{fill:rgb(237, 237, 237);}#chatgpt-mermaid-_r_1nm_ .label div .edgeLabel{color:rgb(237, 237, 237);}#chatgpt-mermaid-_r_1nm_ .stateLabel text{fill:rgb(237, 237, 237);font-size:10px;font-weight:bold;}#chatgpt-mermaid-_r_1nm_ .node circle.state-start{fill:rgb(175, 175, 175);stroke:rgb(175, 175, 175);}#chatgpt-mermaid-_r_1nm_ .node .fork-join{fill:rgb(175, 175, 175);stroke:rgb(175, 175, 175);}#chatgpt-mermaid-_r_1nm_ .node circle.state-end{fill:rgb(31, 78, 148);stroke:transparent;stroke-width:1.5;}#chatgpt-mermaid-_r_1nm_ .end-state-inner{fill:transparent;stroke-width:1.5;}#chatgpt-mermaid-_r_1nm_ .node rect{fill:rgb(9, 23, 44);stroke:rgb(31, 78, 148);stroke-width:1px;}#chatgpt-mermaid-_r_1nm_ .node polygon{fill:rgb(9, 23, 44);stroke:rgb(31, 78, 148);stroke-width:1px;}#chatgpt-mermaid-_r_1nm_ [id$="-barbEnd"]{fill:rgb(175, 175, 175);}#chatgpt-mermaid-_r_1nm_ .statediagram-cluster rect{fill:rgb(9, 23, 44);stroke:rgb(31, 78, 148);stroke-width:1px;}#chatgpt-mermaid-_r_1nm_ .cluster-label,#chatgpt-mermaid-_r_1nm_ .nodeLabel{color:rgb(237, 237, 237);}#chatgpt-mermaid-_r_1nm_ .statediagram-cluster rect.outer{rx:5px;ry:5px;}#chatgpt-mermaid-_r_1nm_ .statediagram-state .divider{stroke:rgb(31, 78, 148);}#chatgpt-mermaid-_r_1nm_ .statediagram-state .title-state{rx:5px;ry:5px;}#chatgpt-mermaid-_r_1nm_ .statediagram-cluster.statediagram-cluster .inner{fill:transparent;}#chatgpt-mermaid-_r_1nm_ .statediagram-cluster.statediagram-cluster-alt .inner{fill:rgb(48, 48, 48);}#chatgpt-mermaid-_r_1nm_ .statediagram-cluster .inner{rx:0;ry:0;}#chatgpt-mermaid-_r_1nm_ .statediagram-state rect.basic{rx:5px;ry:5px;}#chatgpt-mermaid-_r_1nm_ .statediagram-state rect.divider{stroke-dasharray:10,10;fill:rgb(48, 48, 48);}#chatgpt-mermaid-_r_1nm_ .note-edge{stroke-dasharray:5;}#chatgpt-mermaid-_r_1nm_ .statediagram-note rect{fill:rgb(48, 48, 48);stroke:rgb(58, 132, 63);stroke-width:1px;rx:0;ry:0;}#chatgpt-mermaid-_r_1nm_ .statediagram-note rect{fill:rgb(48, 48, 48);stroke:rgb(58, 132, 63);stroke-width:1px;rx:0;ry:0;}#chatgpt-mermaid-_r_1nm_ .statediagram-note text{fill:rgb(237, 237, 237);}#chatgpt-mermaid-_r_1nm_ .statediagram-note .nodeLabel{color:rgb(237, 237, 237);}#chatgpt-mermaid-_r_1nm_ .statediagram .edgeLabel{color:red;}#chatgpt-mermaid-_r_1nm_ [id$="-dependencyStart"],#chatgpt-mermaid-_r_1nm_ [id$="-dependencyEnd"]{fill:rgb(175, 175, 175);stroke:rgb(175, 175, 175);stroke-width:1;}#chatgpt-mermaid-_r_1nm_ .statediagramTitleText{text-anchor:middle;font-size:18px;fill:rgb(237, 237, 237);}#chatgpt-mermaid-_r_1nm_ [data-look="neo"].statediagram-cluster rect{fill:rgb(9, 23, 44);stroke:url(#chatgpt-mermaid-_r_1nm_-gradient);stroke-width:1;}#chatgpt-mermaid-_r_1nm_ [data-look="neo"].statediagram-cluster rect.outer{rx:5px;ry:5px;filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#chatgpt-mermaid-_r_1nm_ .node .neo-node{stroke:rgb(31, 78, 148);}#chatgpt-mermaid-_r_1nm_ [data-look="neo"].node rect,#chatgpt-mermaid-_r_1nm_ [data-look="neo"].cluster rect,#chatgpt-mermaid-_r_1nm_ [data-look="neo"].node polygon{stroke:url(#chatgpt-mermaid-_r_1nm_-gradient);filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#chatgpt-mermaid-_r_1nm_ [data-look="neo"].swimlane.cluster rect{filter:none;}#chatgpt-mermaid-_r_1nm_ [data-look="neo"].node path{stroke:url(#chatgpt-mermaid-_r_1nm_-gradient);stroke-width:1px;}#chatgpt-mermaid-_r_1nm_ [data-look="neo"].node .outer-path{filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#chatgpt-mermaid-_r_1nm_ [data-look="neo"].node .neo-line path{stroke:rgb(31, 78, 148);filter:none;}#chatgpt-mermaid-_r_1nm_ [data-look="neo"].node circle{stroke:url(#chatgpt-mermaid-_r_1nm_-gradient);filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#chatgpt-mermaid-_r_1nm_ [data-look="neo"].node circle .state-start{fill:#000000;}#chatgpt-mermaid-_r_1nm_ [data-look="neo"].icon-shape .icon{fill:url(#chatgpt-mermaid-_r_1nm_-gradient);filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#chatgpt-mermaid-_r_1nm_ [data-look="neo"].icon-shape .icon-neo path{stroke:url(#chatgpt-mermaid-_r_1nm_-gradient);filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#chatgpt-mermaid-_r_1nm_ :root{--mermaid-font-family:-apple-system-body,ui-sans-serif,-apple-system,system-ui,"Segoe UI",Helvetica,"Apple Color Emoji",Arial,sans-serif,"Segoe UI Emoji","Segoe UI Symbol";}QueuedRunningCompletedRetryableNeedsInputFailedCancelled
+
+
+
+
+
+İş türleri:
+- discover
+- download
+- fetch_transcript
+- analyze
+- validate_candidates
+- generate_preview
+- render
+- export
+- cleanup
+Kurallar
+- İşler SQLite'ta kalıcı olacak.
+- Uygulama kapanınca tamamlanan iş kaybolmayacak.
+- Başarısız iş tekrar denenebilecek.
+- Ağ hataları ile geçersiz kullanıcı girdisi ayrılacak.
+- Aynı video için iki eşzamanlı iş engellenecek.
+- CPU yoğun render işleri sınırlanacak.
+- Kullanıcı işi iptal edebilecek.
+- İptal edilen iş yeniden kendiliğinden başlamayacak.
+- İşlem ortasında kapanma sonrası güvenli kurtarma yapılacak.
+Kaynak sınırları
+Varsayılanlar başlangıç önerisi:
+- Aynı anda 1 aktif render.
+- Aynı anda en fazla 2 indirme.
+- Kaynak başına tek keşif işi.
+- Disk alanı yetersizse yeni indirme başlatmama.
+- Kullanıcı tarafından değiştirilebilir indirme ve export sınırları.
+Bu değerler donanıma göre sonradan ayarlanabilecek.
+
+16. Self-host mimarisi
+Self-host desteği için tarayıcı arayüzü şart koşulmayacak.
+Kullanım
+tehom daemon --config tehom.toml
+
+
+veya kullanıcı servisi olarak:
+systemctl --user start tehom
+
+
+Örnek yapılandırma
+[data]
+directory = "/srv/tehom"
+
+[automation]
+enabled = true
+default_mode = "auto_draft"
+check_interval_minutes = 30
+max_concurrent_downloads = 2
+max_concurrent_renders = 1
+
+[export]
+directory = "/srv/tehom/exports"
+format = "mp4"
+orientation = "vertical"
+
+[ai]
+provider = "ollama"
+model = "user-selected-model"
+endpoint = "http://127.0.0.1:11434"
+
+[server]
+enabled = false
+listen = "127.0.0.1:8787"
+
+
+Bu örnek etkin bir kurulum dosyası değil; uygulanacak yapılandırma şemasını gösteriyor.
+Self-host özellikleri
+- Zamanlanmış kanal kontrolü.
+- Otomatik indirme.
+- Otomatik klip analizi.
+- Taslak üretimi.
+- İsteğe bağlı otomatik MP4 export.
+- CLI ile durum görüntüleme.
+- Log ve hata yönetimi.
+- Kullanıcı hesabı olmadan yerel kullanım.
+Uzak erişim API'si ileride açılırsa:
+- Varsayılan olarak yalnız localhost.
+- Güçlü token doğrulaması.
+- TLS'nin güvenli bir ters proxy üzerinden sağlanması.
+- Uzak API'nin internete yanlışlıkla açık gelmemesi.
+- Dosya erişimi için yol sınırlandırması.
+Self-host ile desktop motoru farklı implementasyonlar olmayacak.
+
+17. Kurulum ve dağıtım
+Öncelik: tek komut
+Linux/macOS:
+curl -fsSL https://INSTALL_DOMAIN/install.sh | sh
+
+
+Windows PowerShell:
+irm https://INSTALL_DOMAIN/install.ps1 | iex
+
+
+INSTALL_DOMAIN yalnızca yer tutucudur. Gerçek adres yayınlanmadan README'ye çalışan komut gibi konulmayacak.
+
+Bu komutlar:
+- Rust/Cargo gerektirmeyecek.
+- Sistem mimarisini algılayacak.
+- Uygun release paketini seçecek.
+- Dosya bütünlüğünü doğrulayacak.
+- Kullanıcı kapsamına kurulumu tercih edecek.
+- Uygulama menüsü entegrasyonu oluşturacak.
+- Güncelleme yolunu hazırlayacak.
+Güvenlik notu: curl | sh ve irm | iex, indirilen kurulum betiğine güvenmeyi gerektirir. Ayrıca indirip inceleyerek çalıştırma seçeneği ve yayımlanmış imza doğrulama talimatları da sunulacak.
+Ek paketler
+Sistem	Öncelikli kurulum	Alternatif
+Linux	Tek komut	.deb, Flatpak
+macOS	Tek komut	.dmg
+Windows	Tek komut	İmzalı .exe
+Self-host	Rust CLI / servis	İsteğe bağlı container
+
+AppImage kesinlikle yok.
+Paketleme aracı
+cargo-packager, Tauri uygulaması gerektirmeyen Rust paketleme seçeneği olarak değerlendirilecek. Debian, macOS ve Windows paket biçimleri için altyapısı mevcut. Yine de hedef sürüm, imzalama ve yan araç paketleme uyumu gerçek CI üzerinde doğrulanacak. 
+
+GitHub
+
+Flatpak, kendi manifesti ve sandbox izinleriyle ayrı yönetilecek.
+Güncelleme
+tehom update --check
+tehom update
+tehom rollback
+tehom --version
+
+
+- Sürüm bazlı kurulum.
+- İmzalı manifest.
+- SHA-256 doğrulama.
+- Kesintide önceki sürümü koruma.
+- Stable/preview ayrımı.
+- Kullanıcı verilerini program dosyalarından ayrı tutma.
+- Paket yöneticisiyle kurulmuş uygulamayı farklı installer ile izinsiz değiştirmeme.
+Gerçek platform doğrulamaları
+- Linux: X11 + Wayland, Debian tabanlı dağıtım, Flatpak izinleri.
+- macOS: Intel ve Apple Silicon; imzalama/notarization.
+- Windows: x64; ARM64 yalnızca gerçek build/test tamamlanırsa.
+- Menüler, bildirimler, dosya seçim pencereleri ve ikonlar.
+- FFmpeg/yt-dlp bağımlılıkları.
+- Temiz kurulum, güncelleme, kaldırma, rollback.
+
+18. Güvenlik ve gizlilik
+Local-first gerçek bir davranış olmalı.
+- Zorunlu telemetri yok.
+- Zorunlu Tehom hesabı yok.
+- Zorunlu bulut AI yok.
+- Kullanıcı izin vermeden video/transkript uzak AI sağlayıcısına gönderilmez.
+- API anahtarları loglarda ve komut satırı argümanlarında görünmez.
+- Dış süreçlere sırlar --token xxx biçiminde geçirilmez.
+- Hassas bilgiler için stdin veya güvenli aktarım kullanılır.
+- İndirilen dosyalar sınırlı dizinlerde tutulur.
+- URL girişleri SSRF ve yerel ağ erişimi bakımından sınırlandırılır.
+- ffmpeg ve yt-dlp, shell string birleştirme yerine argüman listeleriyle başlatılır.
+- Kullanıcı dosya adları komut veya dosya yolu oluşturmak için doğrudan kullanılmaz.
+- Geçici dosya temizliği kontrollü yapılır.
+- Güncelleme imzası doğrulanmadan çalıştırılabilir dosya etkinleştirilmez.
+Yerel ve uzak model arasındaki fark arayüzde açıkça yazılacak:
+- Yerel model: Analiz içeriği seçilen yerel sunucuya gönderilir.
+- BYOK: Analiz için gerekli içerik seçilen dış sağlayıcıya iletilir.
+
+19. Test stratejisi
+Rust testleri
+Her modül için:
+- Unit test.
+- Integration test.
+- Gerçek küçük medya fixture'ları.
+- Hata ve yeniden deneme testleri.
+- Veri migration testleri.
+GPUI testleri
+GPUI Kit, headless bileşen ve UI etkileşim testleri sağlıyor. Bunlar navigasyon, durum ve erişilebilirlik testlerinde kullanılacak. Windows'ta headless render desteğiyle ilgili sınırlamalar bulunduğundan gerçek Windows masaüstü testleri de zorunlu olacak. 
+
+GitHub
+ 
+GPUI Kit
+
+Kullanıcı testleri
+Hedef: Uygulamayı daha önce görmemiş, teknik olmayan kullanıcılar.
+
+Her kullanıcıya açıklama yapılmadan şu görevler verilecek:
+1. Bir video bağlantısı ekle.
+2. Klip oluştur.
+3. Kliplerden birini izle.
+4. Başlangıç ve bitiş zamanını değiştir.
+5. MP4 dosyasını indir.
+6. Bir kanal için Auto Draft'ı aç.
+7. Otomasyonu durdur.
+Ölçümler:
+- Görev tamamlama oranı.
+- Tamamlama süresi.
+- Yardım isteme sayısı.
+- Yanlış tıklamalar.
+- Hatalardan toparlanma.
+- Kullanıcının işlemin sonucunu doğru anlayıp anlamaması.
+Hedef eşikler proje kabul kriteridir; akademik araştırmalardan alınmış evrensel rakamlar değildir:
+- Test katılımcılarının en az %90'ı ilk MP4 indirme görevini yardım almadan tamamlayabilmeli.
+- Katılımcıların tamamı “Auto Export”un dosyayı nereye kaydettiğini açıklayabilmeli.
+- İşlem başarısızlığında hata nedeni ve sonraki adım anlaşılabilmeli.
+
+20. Uygulama yol haritası
+Aşağıdaki sıra sürüm numaralarını şişirmeden ilerlemek için öneriliyor.
+v0.1.0 — Native temel
+İlk çalışan sürüm
+
+- [ ] Rust workspace, GPUI Kit pencere, Oxocarbon tema.
+- [ ] Tehom ikonu ve fontlar.
+- [ ] Yerel dosya açma.
+- [ ] Video meta verisi.
+- [ ] Video oynatıcı araştırması ve doğrulanmış ilk sürüm.
+- [ ] Manuel başlangıç/bitiş seçimi.
+- [ ] FFmpeg ile MP4 dışa aktarma.
+- [ ] SQLite proje kaydı.
+Kabul: Kullanıcı yerel bir videodan klip oluşturup indirebiliyor.
+
+v0.2.0 — Kaynaklar ve indirme
+Temel işlev
+
+- [ ] YouTube tekil video URL'si.
+- [ ] Kanal çözümleme ve RSS.
+- [ ] yt-dlp entegrasyonu.
+- [ ] Orijinal video indirme.
+- [ ] İndirme durumu ve iptal.
+- [ ] Tekrar işlemeyi önleme.
+- [ ] Kick VOD deneysel desteği.
+Kabul: Tek URL'den kaynak videoya ulaşıp yerel klip üretilebiliyor.
+
+v0.3.0 — AI klipler
+Ürün değeri
+
+- [ ] Mevcut altyazıların alınması.
+- [ ] SRT/VTT içe aktarma.
+- [ ] Ollama ve OpenAI-compatible adaptör.
+- [ ] BYOK sağlayıcıları.
+- [ ] Yapılandırılmış klip önerileri.
+- [ ] Zaman aralığı doğrulama.
+- [ ] Taslak kütüphanesi.
+- [ ] Manuel ASR seçeneği.
+Kabul: Gerçek transkript üzerinden doğrulanabilir AI klip adayları üretiliyor.
+
+v0.4.0 — Otomasyon
+Otonom dosya üretimi
+
+- [ ] Kalıcı iş kuyruğu.
+- [ ] Auto Draft.
+- [ ] Auto Export.
+- [ ] Otomasyon durdur/devam et.
+- [ ] Kaynak başına ayarlar.
+- [ ] Çökme sonrası iş kurtarma.
+- [ ] Disk ve CPU sınırları.
+Kabul: Yeni video bulunduğunda, kullanıcı başında olmadan klip dosyası oluşabiliyor.
+
+v0.5.0 — Düzenleme ve UX
+Kullanılabilirlik
+
+- [ ] Geliştirilmiş zaman çizelgesi.
+- [ ] Kadraj ayarı.
+- [ ] Altyazı düzenleme.
+- [ ] Dikey/yatay/genel çıktı profilleri.
+- [ ] Klipleri karşılaştırma.
+- [ ] Hata düzeltme akışları.
+- [ ] Erişilebilirlik düzeltmeleri.
+- [ ] Teknik olmayan kullanıcı testleri.
+Kabul: Kullanıcı AI önerisini kolayca düzeltebiliyor ve doğru dosyayı indirebiliyor.
+
+v0.6.0 — Self-host ve dağıtım
+Topluluk sürümü
+
+- [ ] Headless Rust uygulaması.
+- [ ] systemd user service.
+- [ ] CLI üzerinden otomasyon yönetimi.
+- [ ] Tek komutla Linux/macOS/Windows kurulumu.
+- [ ] .deb, .dmg, Windows .exe.
+- [ ] Flatpak doğrulaması.
+- [ ] İmzalı release ve güncelleme.
+- [ ] CI üzerinde gerçek kurulum testleri.
+Kabul: Tehom'u çalıştırmak için kod derlemek veya Rust kurmak gerekmiyor.
+
+v1.0.0 — Kararlı sürüm
+Release gate
+
+- [ ] Desteklenen üç platformda E2E testler.
+- [ ] Kurulum/güncelleme/rollback.
+- [ ] Kaynak/AI/render hata kurtarma.
+- [ ] Erişilebilirlik ve kullanıcı testleri.
+- [ ] Güvenlik incelemesi.
+- [ ] Üçüncü taraf lisans ve dağıtım denetimi.
+- [ ] Belgelenmiş sınırlamalar ve gerçek demo.
+Kabul: Temel iş akışları gerçek sistemlerde doğrulanmış, veri kaybına neden olan bilinen kritik hata yok.
+
+21. AI coding agent için görev sözleşmesi
+Bu bölüm doğrudan uygulama talimatıdır.
+Başlamadan önce
+- [ ] Repoda AGENTS.md varsa oku.
+- [ ] Mevcut kodu ve Git durumunu incele.
+- [ ] Önceden uygulanmış işlevleri belirle.
+- [ ] docs/architecture.md, docs/product.md, docs/design.md oluştur.
+- [ ] Bu plandaki kapsam dışı özellikleri açıkça kaydet.
+- [ ] Sürüm ve dependency pinleme politikasını oluştur.
+- [ ] Video oynatıcı riskini çözmek için önce gerçek bir GPUI prototipi hazırla.
+Temel arayüzler
+Aşağıdaki isimler başlangıç sözleşmesidir; uygulama sırasında tipler tek bir tehom-core kaynağında tanımlanacak.
+pub trait SourceProvider {
+    async fn resolve(&self, url: &str) -> Result<Source, SourceError>;
+    async fn discover(&self, source: &Source)
+        -> Result<Vec<VideoRecord>, SourceError>;
+}
+
+pub trait MediaDownloader {
+    async fn download(&self, video: &VideoRecord)
+        -> Result<DownloadedMedia, DownloadError>;
+}
+
+pub trait TranscriptProvider {
+    async fn fetch(&self, video: &VideoRecord)
+        -> Result<Option<Transcript>, TranscriptError>;
+}
+
+pub trait ClipRenderer {
+    async fn render(&self, request: RenderRequest)
+        -> Result<RenderedClip, RenderError>;
+}
+
+
+Trait imzaları ve asenkron trait kullanımı hedef Rust sürümüyle derlenerek doğrulanmalı; bu kesit derlenmiş bir uygulama iddiası değildir.
+İş sırası
+Her teslim edilebilir görevde:
+1. Girdileri ve beklenen davranışı belirle.
+2. Başarısızlık durumları için test yaz.
+3. Testin önce başarısız olduğunu doğrula.
+4. En küçük çalışan implementasyonu yap.
+5. Testleri çalıştır.
+6. Gerçek entegrasyonu gerekiyorsa fixture ve canlı denemeyle doğrula.
+7. Sonucu belgeleyip ayrı commit oluştur.
+Özellikle test edilecek hatalar
+- [ ] Geçersiz kanal URL'si uygulamayı çökertmiyor.
+- [ ] Aynı video iki kez işlendiğinde yinelenen kayıt oluşmuyor.
+- [ ] Transkript yoksa ASR kendiliğinden başlamıyor.
+- [ ] AI geçersiz zaman aralıkları döndürürse kesit üretilmiyor.
+- [ ] FFmpeg render sırasında kapatılırsa yarım dosya başarılı görünmüyor.
+- [ ] Disk dolduğunda kullanıcı dosyalarını kaybetmiyor.
+- [ ] Uygulama yeniden açılınca taslaklar ve işler korunuyor.
+- [ ] Auto Export, hiçbir sosyal medya servisine istek atmıyor.
+- [ ] Kullanıcı BYOK seçmediyse video içeriği uzak AI servisine gitmiyor.
+- [ ] Üç platformun release paketleri gerekli yan araçları gerçekten çalıştırabiliyor.
+Kod kalite kuralları
+- cargo fmt --check
+- cargo clippy --workspace --all-targets
+- cargo test --workspace
+- Platforma özgü UI entegrasyon testleri.
+- Güvenlik ve lisans taraması.
+- Reproducible release manifesti.
+- Yapılmayan testler “geçti” diye raporlanmayacak.
+- Sahte veriyle çalışan ekranlar tamamlanmış özellik sayılmayacak.
+- Test edilen sürüm/commit net biçimde yazılacak.
+
+22. Kaynaklar
+GPUI ve tasarım
+- GPUI — Zed resmî README
+- awesome-gpui — proje dizini
+- GPUI Kit — resmî repo
+- GPUI Kit — kurulum
+- GPUI Kit — bileşen ve test belgeleri
+- GPUI Kit — WebAssembly sınırlamaları
+- GPUI video player
+Video, indirme ve paketleme
+- yt-dlp
+- yt-dlp EJS gereksinimleri
+- FFmpeg
+- FFmpeg licensing
+- cargo-packager
+- cargo-packager documentation
+Kullanılabilirlik ve akademik dayanak
+- Amershi ve diğerleri — Guidelines for Human-AI Interaction, CHI 2019
+- Dietvorst, Simmons ve Massey — Overcoming Algorithm Aversion, Management Science
+- W3C — WCAG 2.2
+
+Nihai ürün kararı
+Tehom'un v1 hedefi şu:
+
+Kullanıcının bir video veya kanal bağlantısı ekleyerek, ister manuel ister otomatik biçimde, kendi bilgisayarında ya da kendi sunucusunda AI destekli klipler üretip dosya olarak indirebildiği native Rust uygulaması.
+
+GPUI + GPUI Kit arayüzü; Rust işleme motoru; yerel veya BYOK AI; video indirme; transkript öncelikli analiz; manuel ASR; otomatik taslak ve otomatik export.
+
+İlk sürümün sınırı klip dosyasının başarıyla üretilmesidir. Sosyal medya yayınlama altyapısı bu yol haritasına dahil değildir.
+
+Kodlama ajanı için ilk gerçek iş: GPUI/GPUI Kit üzerinde üç platformlu video önizleme prototipi ve FFmpeg ile MP4 export doğrulaması. Bu iki temel kanıtlanmadan tam uygulamaya başlanmamalı.
