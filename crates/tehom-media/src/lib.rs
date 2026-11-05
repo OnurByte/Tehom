@@ -248,6 +248,36 @@ fn render(
     Ok(())
 }
 
+/// Explain a failed launch in the user's words: the platform text ("program not found") names
+/// neither the program nor the fix.
+fn spawn_error(program: &std::ffi::OsStr, error: io::Error) -> io::Error {
+    let name = Path::new(program)
+        .file_stem()
+        .unwrap_or(program)
+        .to_string_lossy()
+        .into_owned();
+    match error.kind() {
+        io::ErrorKind::NotFound => {
+            let what = if matches!(name.as_str(), "ffmpeg" | "ffprobe") {
+                "FFmpeg (ffmpeg ve ffprobe)"
+            } else {
+                name.as_str()
+            };
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "{name} bulunamadı. {what} kurulu ve PATH içinde olmalı; kurup Tehom'u yeniden aç."
+                ),
+            )
+        }
+        io::ErrorKind::PermissionDenied => io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("{name} çalıştırılamadı: izin verilmedi. Dosya izinlerini kontrol et."),
+        ),
+        _ => io::Error::new(error.kind(), format!("{name} başlatılamadı: {error}")),
+    }
+}
+
 fn run(
     command: &mut Command,
     cancelled: &AtomicBool,
@@ -265,7 +295,8 @@ fn run(
         .stdin(Stdio::null())
         .stdout(stdout.try_clone()?)
         .stderr(stderr.try_clone()?)
-        .spawn()?;
+        .spawn()
+        .map_err(|error| spawn_error(command.get_program(), error))?;
     let started = Instant::now();
     let status = (|| {
         loop {
@@ -409,6 +440,29 @@ mod atomic_tests {
 
 #[cfg(feature = "preview")]
 pub mod preview;
+
+#[cfg(test)]
+mod missing_program_tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_program_is_named_with_the_fix_not_the_platform_text() {
+        let error = run(
+            &mut Command::new("tehom-no-such-program"),
+            &AtomicBool::new(false),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        let message = error.to_string();
+        assert!(
+            message.contains("tehom-no-such-program bulunamadı"),
+            "{message}"
+        );
+        assert!(message.contains("PATH"), "{message}");
+        assert!(!message.contains("program not found"), "{message}");
+    }
+}
 
 #[cfg(all(test, unix))]
 mod process_tests {
