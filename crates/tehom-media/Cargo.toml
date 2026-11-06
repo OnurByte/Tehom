@@ -27,3 +27,6 @@ optional = true
 [dependencies.url]
 version = "2"
 optional = true
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
