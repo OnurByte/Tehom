@@ -406,6 +406,10 @@ async fn synthetic_media_and_local_http_model_export_a_valid_mp4() {
     .unwrap();
     assert!(engine.process_next().await.unwrap());
     server.join().unwrap();
+    // Spec §21: Auto Export contacts only the local model, never a social service.
+    let requests = engine.requests.lock().unwrap().clone();
+    assert_eq!(requests.len(), 1, "{requests:?}");
+    assert!(requests[0].starts_with("http://127.0.0.1:"), "{requests:?}");
     let snapshot = engine.snapshot().await.unwrap();
     assert_eq!(
         snapshot.videos[0].state, "complete",
@@ -424,6 +428,36 @@ async fn synthetic_media_and_local_http_model_export_a_valid_mp4() {
         1,
         "retry must reuse drafts without contacting the stopped fixture model"
     );
+    assert_eq!(engine.requests.lock().unwrap().len(), 1);
+}
+#[test]
+fn outbound_requests_are_limited_to_youtube_and_loopback() {
+    for allowed in [
+        "https://www.youtube.com/feeds/videos.xml?channel_id=UC1234567890123456789012",
+        "https://www.youtube.com/@example",
+        "http://127.0.0.1:11434/api/chat",
+        "http://[::1]:8080/v1/chat/completions",
+        "http://localhost:11434/api/tags",
+    ] {
+        assert!(outbound(allowed).is_ok(), "{allowed}");
+    }
+    for refused in [
+        "https://www.tiktok.com/upload",
+        "https://open.tiktokapis.com/v2/post/publish/video/init/",
+        "https://graph.facebook.com/v19.0/me/videos",
+        "https://graph.instagram.com/me/media",
+        "https://www.googleapis.com/upload/youtube/v3/videos",
+        "https://upload.twitter.com/1.1/media/upload.json",
+        "https://api.x.com/2/tweets",
+        "https://kick.com/api/v2/channels",
+        "http://www.youtube.com/@plaintext",
+        "https://www.youtube.com:8443/@port",
+        "https://user:pass@www.youtube.com/@creds",
+        "https://www.youtube.com.evil.example/@lookalike",
+        "http://192.168.1.10:11434/api/chat",
+    ] {
+        assert!(outbound(refused).is_err(), "{refused}");
+    }
 }
 #[tokio::test]
 async fn legacy_source_migration_and_pause_resume_preserve_mode_and_cancelled_jobs() {

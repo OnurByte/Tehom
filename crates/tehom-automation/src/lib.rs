@@ -25,6 +25,9 @@ pub struct Automation {
     _lock: Arc<EngineLock>,
     directory: PathBuf,
     client: reqwest::Client,
+    /// Every URL the engine sent a request to, for outbound-policy tests.
+    #[cfg(test)]
+    requests: Arc<std::sync::Mutex<Vec<String>>>,
     checks: Arc<Mutex<()>>,
     worker: Arc<Mutex<()>>,
     cancellations: Arc<Mutex<HashMap<i64, Arc<AtomicBool>>>>,
@@ -168,6 +171,30 @@ fn channel_input(input: &str) -> Result<String> {
         .context("Use /channel/UC… or /@handle")?;
     Ok(format!("https://www.youtube.com/@{handle}"))
 }
+fn is_loopback_host(url: &reqwest::Url) -> bool {
+    url.host_str().is_some_and(|s| {
+        s == "localhost"
+            || s.trim_matches(['[', ']'])
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback())
+    })
+}
+/// The only network destinations the engine may contact: the public YouTube
+/// site for discovery and the user's loopback AI server. Exports are files;
+/// nothing is ever sent to a publishing or social service.
+fn outbound(url: &str) -> Result<reqwest::Url> {
+    let url = reqwest::Url::parse(url).context("Invalid request URL")?;
+    let youtube = url.scheme() == "https"
+        && url.host_str() == Some("www.youtube.com")
+        && url.port().is_none();
+    let local = matches!(url.scheme(), "http" | "https") && is_loopback_host(&url);
+    ensure!(
+        url.username().is_empty() && url.password().is_none() && (youtube || local),
+        "Outbound request refused: {}",
+        url.host_str().unwrap_or("unknown host")
+    );
+    Ok(url)
+}
 fn ai_endpoint(config: &AiConfig) -> Result<reqwest::Url> {
     let url = reqwest::Url::parse(&config.endpoint).context("Invalid local AI endpoint")?;
     ensure!(
@@ -179,10 +206,7 @@ fn ai_endpoint(config: &AiConfig) -> Result<reqwest::Url> {
         "Invalid local AI endpoint"
     );
     ensure!(
-        url.host_str().is_some_and(|s| s == "localhost"
-            || s.trim_matches(['[', ']'])
-                .parse::<std::net::IpAddr>()
-                .is_ok_and(|ip| ip.is_loopback())),
+        is_loopback_host(&url),
         "AI endpoint must use a loopback address"
     );
     Ok(url)
@@ -285,12 +309,24 @@ impl Automation {
             _lock: Arc::new(EngineLock { file: lock }),
             directory,
             client,
+            #[cfg(test)]
+            requests: Arc::default(),
             checks: Arc::new(Mutex::new(())),
             worker: Arc::new(Mutex::new(())),
             cancellations: Arc::new(Mutex::new(HashMap::new())),
         })
     }
+    fn checked(&self, url: &str) -> Result<reqwest::Url> {
+        let url = outbound(url)?;
+        #[cfg(test)]
+        self.requests
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(url.to_string());
+        Ok(url)
+    }
     async fn fetch(&self, url: &str, limit: usize) -> Result<Vec<u8>> {
+        let url = self.checked(url)?;
         let mut response = self
             .client
             .get(url)
@@ -1147,6 +1183,7 @@ impl Automation {
             body["options"] = serde_json::json!({"temperature":0});
             body["format"] = schema;
         }
+        let url = self.checked(&url)?;
         let mut response = self
             .client
             .post(url)
