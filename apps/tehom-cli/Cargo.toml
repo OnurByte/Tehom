@@ -20,4 +20,5 @@ tehom-core = { path = "../../crates/tehom-core" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal"] }
 
 [dev-dependencies]
+tempfile = "3"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }

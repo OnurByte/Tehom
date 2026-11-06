@@ -7328,6 +7328,7 @@ dependencies = [
  "sqlx",
  "tehom-automation",
  "tehom-core",
+ "tempfile",
  "tokio",
  "toml 0.8.23",
 ]

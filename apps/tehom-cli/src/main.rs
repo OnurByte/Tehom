@@ -1,5 +1,6 @@
 mod config;
 mod daemon;
+mod service;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use config::Config;
@@ -88,10 +89,31 @@ enum Command {
     Cancel {
         id: i64,
     },
+    /// Linux systemd user service management.
+    #[command(subcommand)]
+    Service(ServiceCommand),
+}
+#[derive(Subcommand)]
+enum ServiceCommand {
+    /// Writes ~/.config/systemd/user/tehom.service for `daemon --config`.
+    Install {
+        /// Also run `systemctl --user daemon-reload` and `enable --now`.
+        #[arg(long)]
+        enable: bool,
+    },
+    /// Removes the unit only if Tehom generated it.
+    Uninstall {
+        /// Run `systemctl --user disable --now` before removing the unit.
+        #[arg(long)]
+        disable: bool,
+    },
 }
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+    if let Command::Service(command) = &args.command {
+        return manage_service(command, args.config.as_deref());
+    }
     let config = args
         .config
         .as_deref()
@@ -125,7 +147,9 @@ async fn main() -> Result<()> {
         engine.set_export_directory(export.directory).await?;
     }
     match args.command {
-        Command::Status => unreachable!("status returns before opening the writable engine"),
+        Command::Status | Command::Service(_) => {
+            unreachable!("handled before opening the writable engine")
+        }
         Command::Add { url, mode } => println!(
             "{}",
             serde_json::to_string_pretty(&engine.add_source(&url, mode.into()).await?)?
@@ -160,6 +184,63 @@ async fn main() -> Result<()> {
         Command::ImportTranscript { id, path } => engine.import_transcript(id, path).await?,
         Command::Retry { id } => engine.retry_video(id).await?,
         Command::Cancel { id } => engine.cancel_video(id).await?,
+    }
+    Ok(())
+}
+
+fn manage_service(command: &ServiceCommand, config: Option<&std::path::Path>) -> Result<()> {
+    anyhow::ensure!(
+        cfg!(target_os = "linux"),
+        "systemd kullanıcı servisi yalnızca Linux'ta desteklenir"
+    );
+    let directory = service::unit_directory()?;
+    match command {
+        ServiceCommand::Install { enable } => {
+            let config = config.context("Servis kurulumu için --config gerekli")?;
+            // Validate before installing so the daemon does not fail at boot.
+            Config::load(config)?;
+            let config = config.canonicalize()?;
+            let binary = std::env::current_exe()
+                .context("Çalışan tehom dosyası bulunamadı")?
+                .canonicalize()?;
+            let text = service::unit(&binary, &config)?;
+            match service::install(&directory, &text)? {
+                service::Installed::Created => println!(
+                    "Servis yazıldı: {}",
+                    directory.join(service::UNIT_NAME).display()
+                ),
+                service::Installed::AlreadyPresent => println!("Servis zaten kurulu"),
+            }
+            if *enable {
+                service::systemctl(&["daemon-reload"])?;
+                service::systemctl(&["enable", "--now", service::UNIT_NAME])?;
+                println!("Servis etkinleştirildi");
+            } else {
+                println!(
+                    "Başlatmak için: systemctl --user daemon-reload && systemctl --user enable --now {}",
+                    service::UNIT_NAME
+                );
+            }
+        }
+        ServiceCommand::Uninstall { disable } => {
+            if *disable {
+                service::systemctl(&["disable", "--now", service::UNIT_NAME])?;
+            }
+            match service::uninstall(&directory)? {
+                service::Removed::Removed => {
+                    println!("Servis dosyası silindi");
+                    if *disable {
+                        service::systemctl(&["daemon-reload"])?;
+                    } else {
+                        println!(
+                            "Çalışıyorsa durdurun: systemctl --user disable --now {}",
+                            service::UNIT_NAME
+                        );
+                    }
+                }
+                service::Removed::NotInstalled => println!("Kurulu servis yok"),
+            }
+        }
     }
     Ok(())
 }
