@@ -40,8 +40,9 @@ enum Command {
     Status,
     Add {
         url: String,
-        #[arg(long, value_enum, default_value = "auto-draft")]
-        mode: Mode,
+        /// Defaults to automation.default_mode, else auto-draft.
+        #[arg(long, value_enum)]
+        mode: Option<Mode>,
     },
     Mode {
         id: i64,
@@ -69,8 +70,9 @@ enum Command {
     },
     ImportVideo {
         path: PathBuf,
-        #[arg(long, value_enum, default_value = "auto-draft")]
-        mode: Mode,
+        /// Defaults to automation.default_mode, else auto-draft.
+        #[arg(long, value_enum)]
+        mode: Option<Mode>,
     },
     ReviseClip {
         id: i64,
@@ -125,8 +127,22 @@ async fn main() -> Result<()> {
         .unwrap_or_default();
     let configured_interval = config
         .automation
+        .as_ref()
         .map(|a| a.check_interval_minutes)
         .unwrap_or(30);
+    let automation_enabled = config.automation.as_ref().is_none_or(|a| a.enabled);
+    let default_mode: AutomationMode = config
+        .automation
+        .as_ref()
+        .and_then(|a| a.default_mode.as_ref())
+        .map(Into::into)
+        .unwrap_or(AutomationMode::AutoDraft);
+    if matches!(args.command, Command::Daemon { .. }) {
+        anyhow::ensure!(
+            automation_enabled,
+            "Otomasyon yapılandırmada kapalı (automation.enabled = false); daemon başlatılmadı"
+        );
+    }
     let data = args
         .data
         .or_else(|| config.data.map(|d| d.directory))
@@ -146,8 +162,8 @@ async fn main() -> Result<()> {
     if let Some(ai) = config.ai {
         engine.set_ai(ai.into()).await?;
     }
-    if let Some(export) = config.export {
-        engine.set_export_directory(export.directory).await?;
+    if let Some(directory) = config.export.and_then(|export| export.directory) {
+        engine.set_export_directory(directory).await?;
     }
     match args.command {
         Command::Status | Command::Service(_) => {
@@ -155,7 +171,11 @@ async fn main() -> Result<()> {
         }
         Command::Add { url, mode } => println!(
             "{}",
-            serde_json::to_string_pretty(&engine.add_source(&url, mode.into()).await?)?
+            serde_json::to_string_pretty(
+                &engine
+                    .add_source(&url, mode.map_or(default_mode, Into::into))
+                    .await?
+            )?
         ),
         Command::Mode { id, mode } => engine.set_mode(id, mode.into()).await?,
         Command::Resume { id } => engine.resume_source(id).await?,
@@ -177,7 +197,11 @@ async fn main() -> Result<()> {
         Command::ExportDirectory { path } => engine.set_export_directory(path).await?,
         Command::ImportVideo { path, mode } => println!(
             "{}",
-            serde_json::to_string_pretty(&engine.import_video(path, mode.into()).await?)?
+            serde_json::to_string_pretty(
+                &engine
+                    .import_video(path, mode.map_or(default_mode, Into::into))
+                    .await?
+            )?
         ),
         Command::ReviseClip {
             id,
@@ -205,7 +229,11 @@ fn manage_service(command: &ServiceCommand, config: Option<&std::path::Path>) ->
         ServiceCommand::Install { enable } => {
             let config = config.context("Servis kurulumu için --config gerekli")?;
             // Validate before installing so the daemon does not fail at boot.
-            Config::load(config)?;
+            let parsed = Config::load(config)?;
+            anyhow::ensure!(
+                parsed.automation.as_ref().is_none_or(|a| a.enabled),
+                "automation.enabled = false olan yapılandırma için servis kurulmaz"
+            );
             let config = config.canonicalize()?;
             let binary = std::env::current_exe()
                 .context("Çalışan tehom dosyası bulunamadı")?
@@ -271,7 +299,7 @@ mod tests {
         assert!(matches!(
             args.command,
             Command::Add {
-                mode: Mode::AutoExport,
+                mode: Some(Mode::AutoExport),
                 ..
             }
         ));

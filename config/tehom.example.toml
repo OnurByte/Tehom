@@ -3,11 +3,28 @@
 directory = "../data"
 
 [automation]
+# false keeps `tehom daemon` and `tehom service install` from running.
+enabled = true
+# Mode for `add`/`import-video` without --mode: manual, auto_draft, auto_export, paused.
+default_mode = "auto_draft"
 check_interval_minutes = 30
+# Upper bounds; the engine currently runs one download/render at a time.
+max_concurrent_downloads = 2
+max_concurrent_renders = 1
 
 [export]
 directory = "../exports"
+# Only mp4 / vertical (1080x1920) output exists today; other values are rejected.
+format = "mp4"
+orientation = "vertical"
 
 [ai]
+# ollama (native API) or openai-compatible (endpoint ending in /v1). Loopback only.
+provider = "ollama"
 endpoint = "http://127.0.0.1:11434"
 model = "your-installed-model"
+
+[server]
+# No remote API exists; enabled = true is rejected. listen must be loopback.
+enabled = false
+listen = "127.0.0.1:8787"
