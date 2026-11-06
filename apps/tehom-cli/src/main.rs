@@ -82,6 +82,9 @@ enum Command {
     ImportTranscript {
         id: i64,
         path: PathBuf,
+        /// Language tag of the subtitle, such as tr or en-US.
+        #[arg(long)]
+        language: Option<String>,
     },
     Retry {
         id: i64,
@@ -181,7 +184,11 @@ async fn main() -> Result<()> {
             start_ms,
             end_ms,
         } => println!("{}", engine.save_clip_revision(id, start_ms, end_ms).await?),
-        Command::ImportTranscript { id, path } => engine.import_transcript(id, path).await?,
+        Command::ImportTranscript { id, path, language } => {
+            engine
+                .import_transcript(id, path, language.as_deref())
+                .await?
+        }
         Command::Retry { id } => engine.retry_video(id).await?,
         Command::Cancel { id } => engine.cancel_video(id).await?,
     }

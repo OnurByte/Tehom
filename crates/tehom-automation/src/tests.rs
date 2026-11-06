@@ -417,6 +417,10 @@ async fn synthetic_media_and_local_http_model_export_a_valid_mp4() {
         snapshot.videos[0].error
     );
     assert_eq!(snapshot.clips.len(), 1);
+    assert_eq!(
+        snapshot.videos[0].transcript_language.as_deref(),
+        Some("en")
+    );
     let output = snapshot.clips[0].output_path.as_ref().unwrap();
     assert!((tehom_media::duration(output).unwrap() - 20.0).abs() < 0.2);
     engine.retry_video(1).await.unwrap();
@@ -845,11 +849,36 @@ async fn uploaded_transcripts_are_versioned_and_invalid_uploads_preserve_previou
     tokio::fs::write(&input, "1\n00:00:00,000 --> 00:00:25,000\nFirst version\n")
         .await
         .unwrap();
-    engine.import_transcript(1, input.clone()).await.unwrap();
+    engine
+        .import_transcript(1, input.clone(), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.snapshot().await.unwrap().videos[0].transcript_language,
+        None
+    );
     tokio::fs::write(&input, "1\n00:00:00,000 --> 00:00:25,000\nSecond version\n")
         .await
         .unwrap();
-    engine.import_transcript(1, input.clone()).await.unwrap();
+    for invalid in ["", "turkish", "../tr", "tr_TR", "TR", "tr-"] {
+        assert!(
+            engine
+                .import_transcript(1, input.clone(), Some(invalid))
+                .await
+                .is_err(),
+            "{invalid}"
+        );
+    }
+    engine
+        .import_transcript(1, input.clone(), Some("tr"))
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.snapshot().await.unwrap().videos[0]
+            .transcript_language
+            .as_deref(),
+        Some("tr")
+    );
     assert!(
         engine
             .uploaded_transcript(1)
@@ -871,7 +900,12 @@ async fn uploaded_transcripts_are_versioned_and_invalid_uploads_preserve_previou
             .contains("First version")
     );
     tokio::fs::write(&input, "broken subtitle").await.unwrap();
-    assert!(engine.import_transcript(1, input).await.is_err());
+    assert!(
+        engine
+            .import_transcript(1, input, Some("en"))
+            .await
+            .is_err()
+    );
     assert!(
         engine
             .uploaded_transcript(1)
@@ -1013,7 +1047,7 @@ async fn imports_local_video_without_copying_or_downloading() {
         )
         .unwrap();
         engine
-            .import_transcript(snapshot.videos[0].id, subtitles)
+            .import_transcript(snapshot.videos[0].id, subtitles, None)
             .await
             .unwrap();
         let (endpoint, server) =
@@ -1112,4 +1146,36 @@ async fn edited_ranges_persist_as_new_drafts_without_changing_exports() {
         Some(&output)
     );
     assert_eq!(std::fs::read(output).unwrap(), b"existing published file");
+}
+
+#[test]
+fn language_tags_and_caption_file_names() {
+    for valid in ["tr", "en", "en-US", "pt-BR", "zh-Hans", "en-orig", "fil"] {
+        assert!(language_tag(valid), "{valid}");
+    }
+    for invalid in [
+        "", "e", "english", "EN", "en_US", "en-", "-en", "en--US", "../tr", "tr.vtt",
+    ] {
+        assert!(!language_tag(invalid), "{invalid}");
+    }
+    let language = |name: &str| caption_language(std::path::Path::new(name));
+    assert_eq!(language("/v/source.tr.vtt").as_deref(), Some("tr"));
+    assert_eq!(language("/v/source.en-US.srt").as_deref(), Some("en-US"));
+    assert_eq!(language("/v/source.vtt"), None);
+    assert_eq!(language("/v/other.en.vtt"), None);
+}
+#[tokio::test]
+async fn turkish_platform_captions_are_preferred_and_recorded() {
+    let directory = tempfile::tempdir().unwrap();
+    let folder = tokio::fs::canonicalize(directory.path()).await.unwrap();
+    let caption = |text: &str| format!("WEBVTT\n\n00:00:00.000 --> 00:00:25.000\n{text}\n");
+    tokio::fs::write(folder.join("source.en.vtt"), caption("English"))
+        .await
+        .unwrap();
+    tokio::fs::write(folder.join("source.tr.vtt"), caption("Türkçe"))
+        .await
+        .unwrap();
+    let (text, path) = load_transcript(&folder).await.unwrap().unwrap();
+    assert!(text.contains("Türkçe"));
+    assert_eq!(caption_language(&path).as_deref(), Some("tr"));
 }

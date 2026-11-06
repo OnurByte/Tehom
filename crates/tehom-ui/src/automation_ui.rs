@@ -227,7 +227,7 @@ impl Tehom {
                             models = Some(backend.engine.local_models().await?);
                             "Yerel modeller kontrol edildi.".into()
                         }
-                        Action::Import(id,path)=>{backend.engine.import_transcript(id,path).await?;"Altyazı kaydedildi. Yeniden dene ile klipleri oluşturabilirsin.".into()}
+                        Action::Import(id,path)=>{backend.engine.import_transcript(id,path,None).await?;"Altyazı kaydedildi. Yeniden dene ile klipleri oluşturabilirsin.".into()}
                         Action::Retry(id) => {
                             backend.engine.retry_video(id).await?;
                             "Video yeniden kuyruğa alındı.".into()

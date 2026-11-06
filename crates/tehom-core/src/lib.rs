@@ -31,6 +31,9 @@ pub struct Video {
     pub state: String,
     pub error: Option<String>,
     pub local_path: Option<PathBuf>,
+    /// Language of the transcript in use: the latest upload, else platform captions.
+    #[serde(default)]
+    pub transcript_language: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

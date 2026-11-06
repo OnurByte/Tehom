@@ -654,8 +654,19 @@ impl Automation {
                 .await?,
         )
     }
-    pub async fn import_transcript(&self, id: i64, path: PathBuf) -> Result<()> {
+    pub async fn import_transcript(
+        &self,
+        id: i64,
+        path: PathBuf,
+        language: Option<&str>,
+    ) -> Result<()> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        if let Some(language) = language {
+            ensure!(
+                language_tag(language),
+                "Language must be a tag such as tr or en-US"
+            );
+        }
         let _guard = self
             .worker
             .try_lock()
@@ -706,17 +717,36 @@ impl Automation {
         file.write_all(&bytes).await?;
         file.sync_all().await?;
         drop(file);
-        let result =
-            sqlx::query("INSERT INTO transcripts(video_id,origin,path) VALUES(?,'uploaded',?)")
-                .bind(id)
-                .bind(destination.to_str().context("Invalid subtitle path")?)
-                .execute(&self.pool)
-                .await;
+        let result = sqlx::query(
+            "INSERT INTO transcripts(video_id,origin,language,path) VALUES(?,'uploaded',?,?)",
+        )
+        .bind(id)
+        .bind(language)
+        .bind(destination.to_str().context("Invalid subtitle path")?)
+        .execute(&self.pool)
+        .await;
         if let Err(error) = result {
             tokio::fs::remove_file(&destination).await?;
             return Err(error.into());
         }
         Ok(())
+    }
+    /// Loads platform captions and records which file and language were used.
+    async fn platform_transcript(
+        &self,
+        id: i64,
+        folder: &std::path::Path,
+    ) -> Result<Option<String>> {
+        let Some((text, path)) = load_transcript(folder).await? else {
+            return Ok(None);
+        };
+        sqlx::query("INSERT INTO transcripts(video_id,origin,language,path) VALUES(?,'platform',?,?) ON CONFLICT(path) DO UPDATE SET language=excluded.language")
+            .bind(id)
+            .bind(caption_language(&path))
+            .bind(path.to_str().context("Invalid subtitle path")?)
+            .execute(&self.pool)
+            .await?;
+        Ok(Some(text))
     }
     async fn uploaded_transcript(&self, id: i64) -> Result<Option<String>> {
         use tokio::io::AsyncReadExt;
@@ -916,11 +946,11 @@ impl Automation {
         let candidates = if existing.is_empty() {
             let mut transcript = self.uploaded_transcript(id).await?;
             if transcript.is_none() {
-                transcript = load_transcript(&folder).await?;
+                transcript = self.platform_transcript(id, &folder).await?;
             }
             if transcript.is_none() && had_media && !local {
                 self.download(&folder, url, true, cancel.clone()).await?;
-                transcript = load_transcript(&folder).await?;
+                transcript = self.platform_transcript(id, &folder).await?;
             }
             let transcript = transcript.context("Needs input: this video has no usable platform subtitles; provide a transcript (ASR is never started automatically)")?;
             let mut candidates = Vec::new();
@@ -1213,7 +1243,22 @@ impl Automation {
             .context("Local AI must return a JSON array of clip candidates")
     }
 }
-async fn load_transcript(folder: &std::path::Path) -> Result<Option<String>> {
+/// A conservative BCP 47 shape: primary language plus optional subtags.
+fn language_tag(tag: &str) -> bool {
+    let mut parts = tag.split('-');
+    let primary = parts.next().unwrap_or("");
+    tag.len() <= 35
+        && (2..=3).contains(&primary.len())
+        && primary.bytes().all(|b| b.is_ascii_lowercase())
+        && parts.all(|p| (1..=8).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_alphanumeric()))
+}
+/// yt-dlp names captions `source.<lang>.<ext>`.
+fn caption_language(path: &std::path::Path) -> Option<String> {
+    let stem = path.file_stem()?.to_str()?;
+    let language = stem.strip_prefix("source.")?;
+    language_tag(language).then(|| language.to_owned())
+}
+async fn load_transcript(folder: &std::path::Path) -> Result<Option<(String, PathBuf)>> {
     let mut subtitles = Vec::new();
     let mut directory = tokio::fs::read_dir(folder).await?;
     while let Some(entry) = directory.next_entry().await? {
@@ -1241,8 +1286,8 @@ async fn load_transcript(folder: &std::path::Path) -> Result<Option<String>> {
         if tokio::fs::metadata(&canonical).await?.len() > 8 * 1024 * 1024 {
             continue;
         }
-        if let Ok(parsed) = parse_transcript(&tokio::fs::read_to_string(canonical).await?) {
-            return Ok(Some(parsed));
+        if let Ok(parsed) = parse_transcript(&tokio::fs::read_to_string(&canonical).await?) {
+            return Ok(Some((parsed, canonical)));
         }
     }
     Ok(None)
@@ -1357,7 +1402,8 @@ async fn snapshot_from_pool(
             error: r.get("error"),
         })
         .collect();
-    let videos = sqlx::query("SELECT * FROM videos ORDER BY id DESC")
+    // Uploaded subtitles take priority over platform captions, as in processing.
+    let videos = sqlx::query("SELECT v.*,(SELECT language FROM transcripts t WHERE t.video_id=v.id ORDER BY t.origin='uploaded' DESC,t.id DESC LIMIT 1) AS transcript_language FROM videos v ORDER BY v.id DESC")
         .fetch_all(&mut *tx)
         .await?
         .into_iter()
@@ -1370,6 +1416,7 @@ async fn snapshot_from_pool(
             state: r.get("state"),
             error: r.get("error"),
             local_path: r.get::<Option<String>, _>("local_path").map(PathBuf::from),
+            transcript_language: r.get("transcript_language"),
         })
         .collect();
     let clips = sqlx::query("SELECT * FROM clips ORDER BY id DESC")
