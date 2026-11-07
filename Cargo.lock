@@ -7497,7 +7497,7 @@ dependencies = [
 
 [[package]]
 name = "tehom-automation"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "feed-rs",
@@ -7515,7 +7515,7 @@ dependencies = [
 
 [[package]]
 name = "tehom-cli"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -7534,14 +7534,14 @@ dependencies = [
 
 [[package]]
 name = "tehom-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "tehom-desktop"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "gpui-kit",
  "tehom-ui",
@@ -7549,7 +7549,7 @@ dependencies = [
 
 [[package]]
 name = "tehom-media"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "fs2",
  "gstreamer",
@@ -7563,7 +7563,7 @@ dependencies = [
 
 [[package]]
 name = "tehom-ui"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "directories",
