@@ -307,12 +307,18 @@ impl Tehom {
                 match result {
                     Ok((snapshot, message, models)) => {
                         view.engine_snapshot = Some(snapshot);
+                        if view.onboarding.is_some() {
+                            view.guide_note = Some(message.clone());
+                        }
                         view.status = message;
                         if let Some(models) = models {
                             view.available_models = models;
                         }
                     }
                     Err(error) => {
+                        if view.onboarding.is_some() {
+                            view.guide_note = Some(error.clone());
+                        }
                         view.status =
                             "That did not finish. Check the link and your settings.".into();
                         view.details = Some(error);
@@ -702,7 +708,7 @@ impl Tehom {
                     .gap_3()
                     .child(div().text_lg().child("AI"))
                     .child(div().text_sm().text_color(p.muted).child(
-                        "Choose where clip selection runs: a model on this computer, or your own API key.",
+                        "Choose who picks the clips: an API key, your Codex or Claude Code subscription, or a model on this computer.",
                     ))
                     .child(div().flex().flex_wrap().gap_2().children(
                         AiProvider::ALL.into_iter().enumerate().map(|(index, option)| {
@@ -776,8 +782,13 @@ impl Tehom {
                     })
                     .when(provider.program().is_some(), |card| {
                         card.child(div().text_sm().text_color(p.muted).child(format!(
-                            "Uses the {} CLI you are signed in to on this computer, with no tools enabled. No API key is needed.",
-                            provider.label()
+                            "Uses the {} CLI you are signed in to on this computer, {}. No API key is needed. Leave the model empty for its default.",
+                            provider.label(),
+                            if provider == AiProvider::ClaudeCode {
+                                "with no tools enabled"
+                            } else {
+                                "in its read-only sandbox"
+                            }
                         )))
                     })
                     .when(provider.is_remote(), |card| {
@@ -858,7 +869,6 @@ impl Tehom {
             .gap_4()
             .child(div().text_3xl().child("Settings"))
             .child(self.ai_card(cx))
-            .child(self.about_card(cx))
             .child(
                 div()
                     .p_5()
@@ -915,6 +925,7 @@ impl Tehom {
                         ),
                     )),
             )
+            .child(self.about_card(cx))
             .into_any_element()
     }
 }
