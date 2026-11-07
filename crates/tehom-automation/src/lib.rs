@@ -1258,6 +1258,18 @@ fn caption_language(path: &std::path::Path) -> Option<String> {
     let language = stem.strip_prefix("source.")?;
     language_tag(language).then(|| language.to_owned())
 }
+/// Records which referenced files still exist, so a deleted original or a
+/// moved export is shown as missing rather than as a usable draft.
+fn with_file_availability(mut videos: Vec<Video>, mut clips: Vec<Clip>) -> (Vec<Video>, Vec<Clip>) {
+    let regular = |path: &Option<PathBuf>| path.as_deref().is_some_and(std::path::Path::is_file);
+    for video in &mut videos {
+        video.local_available = regular(&video.local_path);
+    }
+    for clip in &mut clips {
+        clip.output_available = regular(&clip.output_path);
+    }
+    (videos, clips)
+}
 async fn load_transcript(folder: &std::path::Path) -> Result<Option<(String, PathBuf)>> {
     let mut subtitles = Vec::new();
     let mut directory = tokio::fs::read_dir(folder).await?;
@@ -1417,6 +1429,7 @@ async fn snapshot_from_pool(
             error: r.get("error"),
             local_path: r.get::<Option<String>, _>("local_path").map(PathBuf::from),
             transcript_language: r.get("transcript_language"),
+            local_available: false,
         })
         .collect();
     let clips = sqlx::query("SELECT * FROM clips ORDER BY id DESC")
@@ -1430,8 +1443,10 @@ async fn snapshot_from_pool(
             start_ms: r.get::<i64, _>("start_ms") as u64,
             end_ms: r.get::<i64, _>("end_ms") as u64,
             output_path: r.get::<Option<String>, _>("output_path").map(PathBuf::from),
+            output_available: false,
         })
-        .collect();
+        .collect::<Vec<_>>();
+    let (videos, clips) = with_file_availability(videos, clips);
     Ok(EngineSnapshot {
         sources,
         videos,

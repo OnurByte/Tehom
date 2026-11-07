@@ -1179,3 +1179,40 @@ async fn turkish_platform_captions_are_preferred_and_recorded() {
     assert!(text.contains("Türkçe"));
     assert_eq!(caption_language(&path).as_deref(), Some("tr"));
 }
+#[tokio::test]
+async fn deleted_original_and_moved_export_are_reported_not_hidden() {
+    // Spec §14: "Orijinal video silindiğinde taslakların durumunu doğru gösterme."
+    let (dir, engine, output) = saved_draft_fixture().await;
+    let input = dir.path().join("videos/1/source.mp4");
+    sqlx::query("UPDATE videos SET local_path=? WHERE id=1")
+        .bind(input.to_str().unwrap())
+        .execute(&engine.pool)
+        .await
+        .unwrap();
+    std::fs::write(&output, b"published clip").unwrap();
+    sqlx::query("UPDATE clips SET output_path=? WHERE id=1")
+        .bind(output.to_str().unwrap())
+        .execute(&engine.pool)
+        .await
+        .unwrap();
+    let snapshot = engine.snapshot().await.unwrap();
+    assert!(snapshot.videos[0].local_available);
+    assert!(snapshot.clips[0].output_available);
+
+    std::fs::remove_file(&input).unwrap();
+    std::fs::rename(&output, dir.path().join("moved.mp4")).unwrap();
+    let snapshot = engine.snapshot().await.unwrap();
+    assert!(!snapshot.videos[0].local_available);
+    assert!(!snapshot.clips[0].output_available);
+    // Records are kept so the user can restore the file; editing is refused clearly.
+    assert_eq!(snapshot.clips.len(), 1);
+    assert_eq!(
+        snapshot.clips[0].output_path.as_deref(),
+        Some(output.as_path())
+    );
+    assert!(engine.save_clip_revision(1, 0, 21000).await.is_err());
+
+    // A directory at the old path is not a usable file either.
+    std::fs::create_dir(&input).unwrap();
+    assert!(!engine.snapshot().await.unwrap().videos[0].local_available);
+}

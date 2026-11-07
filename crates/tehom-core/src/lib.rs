@@ -34,6 +34,9 @@ pub struct Video {
     /// Language of the transcript in use: the latest upload, else platform captions.
     #[serde(default)]
     pub transcript_language: Option<String>,
+    /// Whether `local_path` currently names a regular file.
+    #[serde(default)]
+    pub local_available: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,6 +47,10 @@ pub struct Clip {
     pub start_ms: u64,
     pub end_ms: u64,
     pub output_path: Option<PathBuf>,
+    /// Whether `output_path` currently names a regular file; a moved or
+    /// deleted export is reported instead of shown as available.
+    #[serde(default)]
+    pub output_available: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

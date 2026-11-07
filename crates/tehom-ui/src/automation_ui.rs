@@ -822,16 +822,18 @@ impl Render for Tehom {
                         v.child("Hazırlanan klipler burada görünecek.")
                     })
                     .children(clips.into_iter().map(|clip| {
-                        let path = clip.output_path.clone();
-                        let original = self
-                            .engine_snapshot
-                            .as_ref()
-                            .and_then(|snapshot| {
-                                snapshot
-                                    .videos
-                                    .iter()
-                                    .find(|video| video.id == clip.video_id)
-                            })
+                        let path = clip.output_path.clone().filter(|_| clip.output_available);
+                        let export_missing = clip.output_path.is_some() && !clip.output_available;
+                        let video = self.engine_snapshot.as_ref().and_then(|snapshot| {
+                            snapshot
+                                .videos
+                                .iter()
+                                .find(|video| video.id == clip.video_id)
+                        });
+                        let original_missing = video
+                            .is_some_and(|video| video.local_path.is_some() && !video.local_available);
+                        let original = video
+                            .filter(|video| video.local_available)
                             .and_then(|video| video.local_path.clone());
                         let range = (clip.start_ms, clip.end_ms);
                         div()
@@ -848,6 +850,16 @@ impl Render for Tehom {
                                 clip.end_ms as f64 / 1000.,
                                 (clip.end_ms - clip.start_ms) as f64 / 1000.
                             ))
+                            .when(original_missing, |v| {
+                                v.child(div().text_sm().text_color(rgb(0xee5396)).child(
+                                    "Özgün video bulunamadı; taslak düzenlenemez. Dosyayı geri koyup yeniden dene.",
+                                ))
+                            })
+                            .when(export_missing, |v| {
+                                v.child(div().text_sm().text_color(rgb(0xee5396)).child(
+                                    "Dışa aktarılan dosya taşınmış veya silinmiş.",
+                                ))
+                            })
                             .when_some(original, |v, original| {
                                 v.child(
                                     Button::new(("draft-edit", clip.id as usize))
