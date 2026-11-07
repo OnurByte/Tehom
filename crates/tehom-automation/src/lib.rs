@@ -127,6 +127,74 @@ fn video_input(input: &str) -> Result<String> {
     ensure!(video_id(&id), "Invalid YouTube video ID");
     Ok(id)
 }
+fn kick_uuid(value: &str) -> bool {
+    let groups: Vec<&str> = value.split('-').collect();
+    groups.len() == 5
+        && groups.iter().zip([8, 4, 4, 4, 12]).all(|(group, length)| {
+            group.len() == length
+                && group
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        })
+}
+/// Experimental Kick VOD input: `https://kick.com/video/<uuid>` or
+/// `https://kick.com/<channel>/videos/<uuid>`. Returns the VOD UUID.
+fn kick_vod_input(input: &str) -> Result<String> {
+    let input = input.trim();
+    ensure!(
+        !input.contains('%') && !input.contains("/../") && !input.contains("/./"),
+        "Use a direct Kick VOD URL"
+    );
+    let authority = input
+        .split("//")
+        .nth(1)
+        .and_then(|v| v.split('/').next())
+        .unwrap_or("");
+    ensure!(
+        !authority.contains(':') && !authority.contains('@'),
+        "Credentials and ports are not allowed"
+    );
+    let url = reqwest::Url::parse(input).context("Invalid Kick URL")?;
+    ensure!(
+        url.scheme() == "https"
+            && matches!(url.host_str(), Some("kick.com" | "www.kick.com"))
+            && url.query().is_none()
+            && url.fragment().is_none(),
+        "Only HTTPS Kick VOD URLs are supported"
+    );
+    let segments: Vec<&str> = url
+        .path_segments()
+        .map(|segments| segments.filter(|s| !s.is_empty()).collect())
+        .unwrap_or_default();
+    let uuid = match segments.as_slice() {
+        ["video", uuid] => *uuid,
+        [channel, "videos", uuid]
+            if !channel.is_empty()
+                && channel.len() <= 64
+                && channel
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') =>
+        {
+            *uuid
+        }
+        _ => anyhow::bail!("Use a Kick VOD URL such as https://kick.com/video/<id>"),
+    };
+    ensure!(kick_uuid(uuid), "Invalid Kick VOD ID");
+    Ok(uuid.to_owned())
+}
+/// A single-video input: (external id, canonical URL, display title).
+fn single_video(input: &str) -> Option<(String, String, String)> {
+    if let Ok(id) = video_input(input) {
+        let canonical = format!("https://www.youtube.com/watch?v={id}");
+        return Some((id.clone(), canonical, format!("Video {id}")));
+    }
+    let uuid = kick_vod_input(input).ok()?;
+    Some((
+        format!("kick:{uuid}"),
+        format!("https://kick.com/video/{uuid}"),
+        format!("Kick VOD {} (deneysel)", &uuid[..8]),
+    ))
+}
 fn channel_input(input: &str) -> Result<String> {
     let input = input.trim();
     if channel_id(input) {
@@ -411,7 +479,7 @@ impl Automation {
     }
     pub async fn add_source(&self, url: &str, mode: AutomationMode) -> Result<Source> {
         let _guard = self.checks.lock().await;
-        if let Ok(id) = video_input(url) {
+        if let Some((id, canonical, title)) = single_video(url) {
             let existing: Option<i64> =
                 sqlx::query_scalar("SELECT source_id FROM videos WHERE external_id=?")
                     .bind(&id)
@@ -420,19 +488,18 @@ impl Automation {
             let source_id = if let Some(source_id) = existing {
                 source_id
             } else {
-                let canonical = format!("https://www.youtube.com/watch?v={id}");
                 let mut tx = self.pool.begin().await?;
                 let source_id =
                     sqlx::query("INSERT INTO sources(url,channel_id,title,mode) VALUES(?,?,?,?)")
                         .bind(&canonical)
                         .bind(format!("video:{id}"))
-                        .bind(format!("Video {id}"))
+                        .bind(&title)
                         .bind(mode_string(mode))
                         .execute(&mut *tx)
                         .await?
                         .last_insert_rowid();
                 sqlx::query("INSERT INTO videos(source_id,external_id,title,url,state) VALUES(?,?,?,?,'queued')")
-                    .bind(source_id).bind(&id).bind(format!("Video {id}")).bind(&canonical).execute(&mut *tx).await?;
+                    .bind(source_id).bind(&id).bind(&title).bind(&canonical).execute(&mut *tx).await?;
                 tx.commit().await?;
                 source_id
             };

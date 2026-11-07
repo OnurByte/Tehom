@@ -1598,3 +1598,64 @@ async fn downloads_are_removed_only_by_user_preference_and_never_local_files() {
     assert!(user_file.exists());
     assert!(engine.cleanup_downloads(false).await.unwrap().is_empty());
 }
+
+#[test]
+fn kick_vod_urls_are_strict_and_canonical() {
+    let uuid = "0123abcd-4567-89ef-0123-456789abcdef";
+    for valid in [
+        format!("https://kick.com/video/{uuid}"),
+        format!("https://www.kick.com/video/{uuid}"),
+        format!("https://kick.com/some_streamer/videos/{uuid}"),
+        format!(" https://kick.com/video/{uuid}/ "),
+    ] {
+        assert_eq!(kick_vod_input(&valid).unwrap(), uuid, "{valid}");
+    }
+    for invalid in [
+        format!("http://kick.com/video/{uuid}"),
+        format!("https://kick.com:443/video/{uuid}"),
+        format!("https://user@kick.com/video/{uuid}"),
+        format!("https://kick.com.evil.example/video/{uuid}"),
+        format!("https://kick.com/video/{uuid}?t=10"),
+        format!("https://kick.com/video/../video/{uuid}"),
+        "https://kick.com/video/not-a-uuid".to_owned(),
+        format!("https://kick.com/video/{}", uuid.to_uppercase()),
+        "https://kick.com/some_streamer".to_owned(),
+        format!("https://kick.com/a/b/videos/{uuid}"),
+    ] {
+        assert!(kick_vod_input(&invalid).is_err(), "{invalid}");
+    }
+}
+#[tokio::test]
+async fn kick_vod_is_queued_once_as_experimental_and_never_polled() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Automation::open(dir.path().into()).await.unwrap();
+    let url = "https://kick.com/streamer/videos/0123abcd-4567-89ef-0123-456789abcdef";
+    let first = engine
+        .add_source(url, AutomationMode::AutoDraft)
+        .await
+        .unwrap();
+    let again = engine
+        .add_source(
+            "https://kick.com/video/0123abcd-4567-89ef-0123-456789abcdef",
+            AutomationMode::AutoDraft,
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.id, again.id);
+    let snapshot = engine.snapshot().await.unwrap();
+    assert_eq!(snapshot.videos.len(), 1);
+    let video = &snapshot.videos[0];
+    assert_eq!(
+        video.external_id,
+        "kick:0123abcd-4567-89ef-0123-456789abcdef"
+    );
+    assert_eq!(
+        video.url,
+        "https://kick.com/video/0123abcd-4567-89ef-0123-456789abcdef"
+    );
+    assert_eq!(video.state, "queued");
+    assert!(video.title.contains("deneysel"));
+    // Single videos are never polled as channels, so no request is made.
+    assert_eq!(engine.check_now().await.unwrap(), 0);
+    assert!(engine.requests.lock().unwrap().is_empty());
+}
