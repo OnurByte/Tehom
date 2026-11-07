@@ -7520,6 +7520,7 @@ dependencies = [
  "anyhow",
  "clap",
  "directories",
+ "libc",
  "rpassword",
  "serde",
  "serde_json",

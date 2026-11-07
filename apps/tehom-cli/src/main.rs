@@ -218,6 +218,13 @@ enum ServiceCommand {
 }
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Like other command-line tools, stop quietly when the reader of our
+    // output goes away (`tehom info | head`) instead of panicking.
+    #[cfg(unix)]
+    // SAFETY: restores the default SIGPIPE action before any thread writes.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     let args = Args::parse();
     if let Command::Service(command) = &args.command {
         return manage_service(command, args.config.as_deref());
