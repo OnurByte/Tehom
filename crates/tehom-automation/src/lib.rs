@@ -288,6 +288,17 @@ impl Automation {
                 .await?;
             migration.commit().await?;
         }
+        let video_columns = sqlx::query("PRAGMA table_info(videos)")
+            .fetch_all(&pool)
+            .await?;
+        if !video_columns
+            .iter()
+            .any(|row| row.get::<String, _>("name") == "progress")
+        {
+            sqlx::query("ALTER TABLE videos ADD COLUMN progress REAL")
+                .execute(&pool)
+                .await?;
+        }
         let clip_columns = sqlx::query("PRAGMA table_info(clips)")
             .fetch_all(&pool)
             .await?;
@@ -1087,7 +1098,8 @@ impl Automation {
             sqlx::query("INSERT INTO clips(video_id,title,start_ms,end_ms,reason) VALUES (?,?,?,?,?) ON CONFLICT(video_id,start_ms,end_ms) DO NOTHING").bind(id).bind(&candidate.title).bind(candidate.start_ms as i64).bind(candidate.end_ms as i64).bind(&candidate.reason).execute(&mut *drafts).await?;
         }
         drafts.commit().await?;
-        for candidate in candidates {
+        let exports = candidates.len();
+        for (index, candidate) in candidates.into_iter().enumerate() {
             ensure!(!cancel.load(Ordering::Acquire), "Cancelled");
             if mode == AutomationMode::AutoExport {
                 tokio::fs::create_dir_all(&snapshot.export_directory).await?;
@@ -1143,12 +1155,46 @@ impl Automation {
                         height: expected.1,
                     },
                 };
-                tokio::task::spawn_blocking(move || -> Result<()> {
+                // Overall export progress, persisted so other processes (CLI status) see it.
+                let fraction = Arc::new(std::sync::atomic::AtomicU32::new(0));
+                let reporter = fraction.clone();
+                let base = index as f64;
+                let persist = {
+                    let pool = self.pool.clone();
+                    let fraction = fraction.clone();
+                    tokio::spawn(async move {
+                        let mut written = u32::MAX;
+                        loop {
+                            let value = fraction.load(Ordering::Acquire);
+                            if value != written {
+                                written = value;
+                                let overall = (base + f64::from(value) / 1000.0) / exports as f64;
+                                let _ = sqlx::query("UPDATE videos SET progress=? WHERE id=?")
+                                    .bind(overall)
+                                    .bind(id)
+                                    .execute(&pool)
+                                    .await;
+                            }
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                        }
+                    })
+                };
+                let rendered = tokio::task::spawn_blocking(move || -> Result<()> {
                     let start = candidate.start_ms as f64 / 1000.0;
                     let end = candidate.end_ms as f64 / 1000.0;
+                    let report = |value: f64| {
+                        reporter.store((value * 1000.0).round() as u32, Ordering::Release)
+                    };
                     if !export.exists() {
-                        tehom_media::export_framed(
-                            &input, &export, start, end, &flag, &identity, framing,
+                        tehom_media::export_framed_observed(
+                            &input,
+                            &export,
+                            start,
+                            end,
+                            &flag,
+                            &identity,
+                            framing,
+                            Some(&report),
                         )?;
                     }
                     ensure!(
@@ -1164,7 +1210,16 @@ impl Automation {
                     );
                     Ok(())
                 })
-                .await??;
+                .await;
+                persist.abort();
+                // Wait for the writer to stop so it cannot overwrite the final value.
+                let _ = persist.await;
+                rendered??;
+                sqlx::query("UPDATE videos SET progress=? WHERE id=?")
+                    .bind((index + 1) as f64 / exports as f64)
+                    .bind(id)
+                    .execute(&self.pool)
+                    .await?;
                 sqlx::query("UPDATE clips SET output_path=? WHERE id=?")
                     .bind(output.to_str().context("Invalid export path")?)
                     .bind(clip_id)
@@ -1530,6 +1585,10 @@ async fn snapshot_from_pool(
             local_path: r.get::<Option<String>, _>("local_path").map(PathBuf::from),
             transcript_language: r.get("transcript_language"),
             local_available: false,
+            // Only a running job has meaningful progress; older rows may lack the column.
+            progress: (r.get::<String, _>("state") == "running")
+                .then(|| r.try_get::<Option<f64>, _>("progress").ok().flatten())
+                .flatten(),
         })
         .collect();
     let clips = sqlx::query("SELECT * FROM clips ORDER BY id DESC")

@@ -135,3 +135,66 @@ fn profiles_render_expected_geometry_and_rotation_is_reported() {
     let info = tehom_media::inspect(&upright).unwrap();
     assert_eq!((info.width, info.height), (180, 320));
 }
+
+#[test]
+fn render_progress_rises_monotonically_to_completion() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("long.mp4");
+    assert!(
+        Command::new("ffmpeg")
+            .args([
+                "-nostdin",
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=640x360:rate=30",
+                "-t",
+                "12",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast"
+            ])
+            .arg(&input)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let reports = std::sync::Mutex::new(Vec::new());
+    let record = |fraction: f64| reports.lock().unwrap().push(fraction);
+    tehom_media::export_framed_observed(
+        &input,
+        &dir.path().join("clip.mp4"),
+        0.0,
+        12.0,
+        &AtomicBool::new(false),
+        "progress-1",
+        Framing::Fill {
+            width: 1080,
+            height: 1920,
+        },
+        Some(&record),
+    )
+    .unwrap();
+    let reports = reports.into_inner().unwrap();
+    assert!(reports.len() >= 2, "{reports:?}");
+    assert!(
+        reports.windows(2).all(|pair| pair[0] <= pair[1]),
+        "{reports:?}"
+    );
+    assert!(
+        reports.iter().any(|f| *f > 0.0 && *f < 1.0),
+        "no intermediate progress: {reports:?}"
+    );
+    assert_eq!(reports.last(), Some(&1.0));
+    // No progress log is left in the system temporary folder for this render.
+    assert!(!dir.path().read_dir().unwrap().any(|e| {
+        e.unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".tehom-")
+    }));
+}

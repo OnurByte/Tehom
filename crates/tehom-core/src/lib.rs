@@ -48,6 +48,9 @@ pub struct Video {
     /// Whether `local_path` currently names a regular file.
     #[serde(default)]
     pub local_available: bool,
+    /// Export progress of a running job, 0.0–1.0 across all of its clips.
+    #[serde(default)]
+    pub progress: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

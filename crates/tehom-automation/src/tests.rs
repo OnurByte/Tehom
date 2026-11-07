@@ -1403,3 +1403,82 @@ async fn state_changes_are_recorded_as_events_and_survive_restart() {
     assert!(count <= 10_000, "{count}");
     assert_eq!(engine.snapshot().await.unwrap().events.len(), 100);
 }
+#[tokio::test]
+async fn export_progress_is_visible_while_running_and_cleared_after() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Automation::open(dir.path().into()).await.unwrap();
+    engine
+        .set_ai(AiConfig {
+            endpoint: "http://127.0.0.1:1".into(),
+            model: "fixture".into(),
+        })
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO sources(url,channel_id,title,mode) VALUES ('u','UC1234567890123456789012','Fixture','auto_export')").execute(&engine.pool).await.unwrap();
+    engine
+        .save_entries(
+            1,
+            &[Entry {
+                id: "abcdefghijk".into(),
+                title: "Fixture".into(),
+            }],
+            false,
+        )
+        .await
+        .unwrap();
+    let folder = dir.path().join("videos/1");
+    std::fs::create_dir_all(&folder).unwrap();
+    assert!(
+        std::process::Command::new("ffmpeg")
+            .args([
+                "-nostdin",
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=640x360:rate=30",
+                "-t",
+                "30",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+            ])
+            .arg(folder.join("source.mp4"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    // Saved drafts skip the model; the long export exercises progress.
+    sqlx::query("INSERT INTO clips(video_id,title,start_ms,end_ms,reason) VALUES(1,'Long',0,30000,'Fixture')")
+        .execute(&engine.pool)
+        .await
+        .unwrap();
+    let worker = {
+        let engine = engine.clone();
+        tokio::spawn(async move { engine.process_next().await })
+    };
+    let mut seen = Vec::new();
+    while !worker.is_finished() {
+        if let Some(progress) = engine.snapshot().await.unwrap().videos[0].progress {
+            seen.push(progress);
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(worker.await.unwrap().unwrap());
+    let snapshot = engine.snapshot().await.unwrap();
+    assert_eq!(
+        snapshot.videos[0].state, "complete",
+        "{:?}",
+        snapshot.videos[0].error
+    );
+    assert_eq!(snapshot.videos[0].progress, None);
+    assert!(
+        seen.iter().any(|p| *p > 0.0 && *p < 1.0),
+        "no intermediate progress observed: {seen:?}"
+    );
+    assert!(seen.windows(2).all(|w| w[0] <= w[1]), "{seen:?}");
+    // Progress updates do not flood the event history.
+    assert!(snapshot.events.len() <= 4, "{:?}", snapshot.events);
+}

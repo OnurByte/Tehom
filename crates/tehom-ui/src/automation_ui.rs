@@ -531,6 +531,13 @@ impl Tehom {
                             _ => "İşlem durdu",
                         },
                     ))
+                    .when_some(video.progress, |v, progress| {
+                        v.child(
+                            div()
+                                .text_sm()
+                                .child(format!("Dışa aktarılıyor: %{:.0}", progress * 100.0)),
+                        )
+                    })
                     .when_some(video.error, |v, error| {
                         v.child(div().text_sm().child(error))
                     })

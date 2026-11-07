@@ -148,7 +148,7 @@ pub fn export_cancellable(
     end: f64,
     cancelled: &AtomicBool,
 ) -> io::Result<()> {
-    render(input, output, start, end, cancelled, None)
+    render(input, output, start, end, cancelled, None, None)
 }
 
 /// Frame geometry for an automatic export.
@@ -203,6 +203,23 @@ pub fn export_framed(
     identity: &str,
     framing: Framing,
 ) -> io::Result<()> {
+    export_framed_observed(
+        input, output, start, end, cancelled, identity, framing, None,
+    )
+}
+
+/// `export_framed` reporting render progress (0.0–1.0) to `progress`.
+#[allow(clippy::too_many_arguments)]
+pub fn export_framed_observed(
+    input: &Path,
+    output: &Path,
+    start: f64,
+    end: f64,
+    cancelled: &AtomicBool,
+    identity: &str,
+    framing: Framing,
+    progress: Option<&dyn Fn(f64)>,
+) -> io::Result<()> {
     if identity.is_empty()
         || identity.len() > 128
         || !identity
@@ -221,6 +238,7 @@ pub fn export_framed(
         end,
         cancelled,
         Some((identity, framing)),
+        progress,
     )
 }
 
@@ -262,6 +280,7 @@ fn render(
     end: f64,
     cancelled: &AtomicBool,
     identity: Option<(&str, Framing)>,
+    progress: Option<&dyn Fn(f64)>,
 ) -> io::Result<()> {
     let total = inspect_cancellable(input, cancelled)?.duration;
     if !start.is_finite() || !end.is_finite() || start < 0.0 || end <= start || end > total {
@@ -331,7 +350,34 @@ fn render(
             &format!("comment=tehom:{identity}"),
         ]);
     }
-    run(command.arg(temporary.path()), cancelled, None)?;
+    match progress {
+        None => {
+            run(command.arg(temporary.path()), cancelled, None)?;
+        }
+        Some(report) => {
+            // A private file keeps progress out of the bounded stdout capture.
+            let mut log = tempfile::Builder::new()
+                .prefix("tehom-progress-")
+                .tempfile()?;
+            command
+                .arg("-progress")
+                .arg(log.path())
+                .args(["-stats_period", "0.5"]);
+            let length = end - start;
+            let mut last = 0.0;
+            let mut tick = || {
+                if let Some(seconds) = latest_progress(log.as_file_mut()) {
+                    let fraction = (seconds / length).clamp(0.0, 1.0);
+                    if fraction > last {
+                        last = fraction;
+                        report(fraction);
+                    }
+                }
+            };
+            run_observed(command.arg(temporary.path()), cancelled, None, &mut tick)?;
+            report(1.0);
+        }
+    }
     inspect_cancellable(temporary.path(), cancelled)?;
     temporary.as_file().sync_all()?;
     if cancelled.load(Ordering::Acquire) {
@@ -346,10 +392,36 @@ fn render(
     Ok(())
 }
 
+/// Seconds rendered so far, from the tail of an FFmpeg `-progress` log.
+fn latest_progress(log: &mut std::fs::File) -> Option<f64> {
+    use std::io::Seek;
+    let length = log.metadata().ok()?.len();
+    log.seek(io::SeekFrom::Start(length.saturating_sub(2048)))
+        .ok()?;
+    let mut tail = String::new();
+    log.take(2048).read_to_string(&mut tail).ok()?;
+    tail.lines()
+        .rev()
+        .find_map(|line| line.strip_prefix("out_time_us="))
+        .and_then(|value| value.trim().parse::<i64>().ok())
+        .filter(|micros| *micros >= 0)
+        .map(|micros| micros as f64 / 1_000_000.0)
+}
+
 fn run(
     command: &mut Command,
     cancelled: &AtomicBool,
     timeout: Option<Duration>,
+) -> io::Result<Vec<u8>> {
+    run_observed(command, cancelled, timeout, &mut || {})
+}
+
+/// Like `run`, calling `tick` on every poll while the process runs.
+fn run_observed(
+    command: &mut Command,
+    cancelled: &AtomicBool,
+    timeout: Option<Duration>,
+    tick: &mut dyn FnMut(),
 ) -> io::Result<Vec<u8>> {
     if cancelled.load(Ordering::Acquire) {
         return Err(io::Error::new(
@@ -388,6 +460,7 @@ fn run(
             if let Some(status) = child.try_wait()? {
                 return Ok(status);
             }
+            tick();
             std::thread::sleep(Duration::from_millis(20));
         }
     })();
