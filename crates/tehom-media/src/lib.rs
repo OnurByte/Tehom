@@ -31,6 +31,37 @@ pub fn require_space(path: &Path, required_bytes: u64) -> io::Result<()> {
     Ok(())
 }
 
+/// Copies `source` to `destination` through a temporary file in the
+/// destination folder, publishing only a complete copy and never replacing
+/// an existing file.
+pub fn copy_noclobber(source: &Path, destination: &Path) -> io::Result<()> {
+    if destination.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "Hedef dosya zaten var",
+        ));
+    }
+    let parent = destination
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let size = std::fs::metadata(source)?.len();
+    require_space(parent, size.saturating_add(64 * 1024 * 1024))?;
+    let mut temporary = tempfile::Builder::new()
+        .prefix(".tehom-")
+        .suffix(".part")
+        .tempfile_in(parent)?;
+    let copied = io::copy(&mut std::fs::File::open(source)?, temporary.as_file_mut())?;
+    if copied != size {
+        return Err(io::Error::other("Kopyalama eksik kaldı"));
+    }
+    temporary.as_file().sync_all()?;
+    temporary
+        .persist_noclobber(destination)
+        .map_err(|error| error.error)?;
+    Ok(())
+}
+
 pub fn duration(path: &Path) -> io::Result<f64> {
     Ok(inspect(path)?.duration)
 }
@@ -57,7 +88,7 @@ fn inspect_cancellable(path: &Path, cancelled: &AtomicBool) -> io::Result<VideoI
                 "-select_streams",
                 "v:0",
                 "-show_entries",
-                "format=duration:stream=width,height,codec_name",
+                "format=duration:stream=width,height,codec_name:stream_side_data=rotation:stream_tags=rotate",
                 "-of",
                 "json",
             ])
@@ -79,10 +110,26 @@ fn inspect_cancellable(path: &Path, cancelled: &AtomicBool) -> io::Result<VideoI
             .filter(|n| *n > 0)
             .ok_or_else(|| io::Error::other("Video görüntüsü bulunamadı"))
     };
+    // Report display geometry: FFmpeg auto-rotates on decode, so a
+    // quarter-turn rotation swaps the stored width and height.
+    let rotation = stream["side_data_list"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find_map(|data| data["rotation"].as_f64())
+        .or_else(|| stream["tags"]["rotate"].as_str()?.parse::<f64>().ok())
+        .unwrap_or(0.0);
+    let quarter_turn = (rotation.round() as i64).rem_euclid(180) == 90;
+    let (width, height) = (dimension("width")?, dimension("height")?);
+    let (width, height) = if quarter_turn {
+        (height, width)
+    } else {
+        (width, height)
+    };
     Ok(VideoInfo {
         duration: seconds,
-        width: dimension("width")?,
-        height: dimension("height")?,
+        width,
+        height,
         codec: stream["codec_name"]
             .as_str()
             .unwrap_or("unknown")
@@ -101,9 +148,29 @@ pub fn export_cancellable(
     end: f64,
     cancelled: &AtomicBool,
 ) -> io::Result<()> {
-    render(input, output, start, end, cancelled, None)
+    render(input, output, start, end, cancelled, None, None)
 }
 
+/// Frame geometry for an automatic export.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Framing {
+    /// Scale to cover `width`×`height`, then centre-crop.
+    Fill { width: u32, height: u32 },
+    /// Keep the source geometry, trimmed to even dimensions.
+    Source,
+}
+impl Framing {
+    fn filter(self) -> String {
+        match self {
+            Self::Fill { width, height } => format!(
+                "scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1"
+            ),
+            Self::Source => "scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1".into(),
+        }
+    }
+}
+
+/// Vertical 1080×1920 automatic export.
 pub fn export_automated(
     input: &Path,
     output: &Path,
@@ -111,6 +178,47 @@ pub fn export_automated(
     end: f64,
     cancelled: &AtomicBool,
     identity: &str,
+) -> io::Result<()> {
+    export_framed(
+        input,
+        output,
+        start,
+        end,
+        cancelled,
+        identity,
+        Framing::Fill {
+            width: 1080,
+            height: 1920,
+        },
+    )
+}
+
+/// Automatic export with an ownership identity and the given framing.
+pub fn export_framed(
+    input: &Path,
+    output: &Path,
+    start: f64,
+    end: f64,
+    cancelled: &AtomicBool,
+    identity: &str,
+    framing: Framing,
+) -> io::Result<()> {
+    export_framed_observed(
+        input, output, start, end, cancelled, identity, framing, None,
+    )
+}
+
+/// `export_framed` reporting render progress (0.0–1.0) to `progress`.
+#[allow(clippy::too_many_arguments)]
+pub fn export_framed_observed(
+    input: &Path,
+    output: &Path,
+    start: f64,
+    end: f64,
+    cancelled: &AtomicBool,
+    identity: &str,
+    framing: Framing,
+    progress: Option<&dyn Fn(f64)>,
 ) -> io::Result<()> {
     if identity.is_empty()
         || identity.len() > 128
@@ -123,7 +231,15 @@ pub fn export_automated(
             "Geçersiz dışa aktarma kimliği",
         ));
     }
-    render(input, output, start, end, cancelled, Some(identity))
+    render(
+        input,
+        output,
+        start,
+        end,
+        cancelled,
+        Some((identity, framing)),
+        progress,
+    )
 }
 
 pub fn export_identity(path: &Path) -> io::Result<Option<String>> {
@@ -163,7 +279,8 @@ fn render(
     start: f64,
     end: f64,
     cancelled: &AtomicBool,
-    identity: Option<&str>,
+    identity: Option<(&str, Framing)>,
+    progress: Option<&dyn Fn(f64)>,
 ) -> io::Result<()> {
     let total = inspect_cancellable(input, cancelled)?.duration;
     if !start.is_finite() || !end.is_finite() || start < 0.0 || end <= start || end > total {
@@ -225,15 +342,42 @@ fn render(
             "-movflags",
             "+faststart",
         ]);
-    if let Some(identity) = identity {
+    if let Some((identity, framing)) = identity {
         command.args([
             "-vf",
-            "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1",
+            &framing.filter(),
             "-metadata",
             &format!("comment=tehom:{identity}"),
         ]);
     }
-    run(command.arg(temporary.path()), cancelled, None)?;
+    match progress {
+        None => {
+            run(command.arg(temporary.path()), cancelled, None)?;
+        }
+        Some(report) => {
+            // A private file keeps progress out of the bounded stdout capture.
+            let mut log = tempfile::Builder::new()
+                .prefix("tehom-progress-")
+                .tempfile()?;
+            command
+                .arg("-progress")
+                .arg(log.path())
+                .args(["-stats_period", "0.5"]);
+            let length = end - start;
+            let mut last = 0.0;
+            let mut tick = || {
+                if let Some(seconds) = latest_progress(log.as_file_mut()) {
+                    let fraction = (seconds / length).clamp(0.0, 1.0);
+                    if fraction > last {
+                        last = fraction;
+                        report(fraction);
+                    }
+                }
+            };
+            run_observed(command.arg(temporary.path()), cancelled, None, &mut tick)?;
+            report(1.0);
+        }
+    }
     inspect_cancellable(temporary.path(), cancelled)?;
     temporary.as_file().sync_all()?;
     if cancelled.load(Ordering::Acquire) {
@@ -246,6 +390,22 @@ fn render(
         .persist_noclobber(output)
         .map_err(|error| error.error)?;
     Ok(())
+}
+
+/// Seconds rendered so far, from the tail of an FFmpeg `-progress` log.
+fn latest_progress(log: &mut std::fs::File) -> Option<f64> {
+    use std::io::Seek;
+    let length = log.metadata().ok()?.len();
+    log.seek(io::SeekFrom::Start(length.saturating_sub(2048)))
+        .ok()?;
+    let mut tail = String::new();
+    log.take(2048).read_to_string(&mut tail).ok()?;
+    tail.lines()
+        .rev()
+        .find_map(|line| line.strip_prefix("out_time_us="))
+        .and_then(|value| value.trim().parse::<i64>().ok())
+        .filter(|micros| *micros >= 0)
+        .map(|micros| micros as f64 / 1_000_000.0)
 }
 
 /// Explain a failed launch in the user's words: the platform text ("program not found") names
@@ -282,6 +442,16 @@ fn run(
     command: &mut Command,
     cancelled: &AtomicBool,
     timeout: Option<Duration>,
+) -> io::Result<Vec<u8>> {
+    run_observed(command, cancelled, timeout, &mut || {})
+}
+
+/// Like `run`, calling `tick` on every poll while the process runs.
+fn run_observed(
+    command: &mut Command,
+    cancelled: &AtomicBool,
+    timeout: Option<Duration>,
+    tick: &mut dyn FnMut(),
 ) -> io::Result<Vec<u8>> {
     if cancelled.load(Ordering::Acquire) {
         return Err(io::Error::new(
@@ -321,6 +491,7 @@ fn run(
             if let Some(status) = child.try_wait()? {
                 return Ok(status);
             }
+            tick();
             std::thread::sleep(Duration::from_millis(20));
         }
     })();

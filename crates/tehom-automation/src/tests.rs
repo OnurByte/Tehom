@@ -406,6 +406,10 @@ async fn synthetic_media_and_local_http_model_export_a_valid_mp4() {
     .unwrap();
     assert!(engine.process_next().await.unwrap());
     server.join().unwrap();
+    // Spec §21: Auto Export contacts only the local model, never a social service.
+    let requests = engine.requests.lock().unwrap().clone();
+    assert_eq!(requests.len(), 1, "{requests:?}");
+    assert!(requests[0].starts_with("http://127.0.0.1:"), "{requests:?}");
     let snapshot = engine.snapshot().await.unwrap();
     assert_eq!(
         snapshot.videos[0].state, "complete",
@@ -413,6 +417,10 @@ async fn synthetic_media_and_local_http_model_export_a_valid_mp4() {
         snapshot.videos[0].error
     );
     assert_eq!(snapshot.clips.len(), 1);
+    assert_eq!(
+        snapshot.videos[0].transcript_language.as_deref(),
+        Some("en")
+    );
     let output = snapshot.clips[0].output_path.as_ref().unwrap();
     assert!((tehom_media::duration(output).unwrap() - 20.0).abs() < 0.2);
     engine.retry_video(1).await.unwrap();
@@ -424,6 +432,36 @@ async fn synthetic_media_and_local_http_model_export_a_valid_mp4() {
         1,
         "retry must reuse drafts without contacting the stopped fixture model"
     );
+    assert_eq!(engine.requests.lock().unwrap().len(), 1);
+}
+#[test]
+fn outbound_requests_are_limited_to_youtube_and_loopback() {
+    for allowed in [
+        "https://www.youtube.com/feeds/videos.xml?channel_id=UC1234567890123456789012",
+        "https://www.youtube.com/@example",
+        "http://127.0.0.1:11434/api/chat",
+        "http://[::1]:8080/v1/chat/completions",
+        "http://localhost:11434/api/tags",
+    ] {
+        assert!(outbound(allowed).is_ok(), "{allowed}");
+    }
+    for refused in [
+        "https://www.tiktok.com/upload",
+        "https://open.tiktokapis.com/v2/post/publish/video/init/",
+        "https://graph.facebook.com/v19.0/me/videos",
+        "https://graph.instagram.com/me/media",
+        "https://www.googleapis.com/upload/youtube/v3/videos",
+        "https://upload.twitter.com/1.1/media/upload.json",
+        "https://api.x.com/2/tweets",
+        "https://kick.com/api/v2/channels",
+        "http://www.youtube.com/@plaintext",
+        "https://www.youtube.com:8443/@port",
+        "https://user:pass@www.youtube.com/@creds",
+        "https://www.youtube.com.evil.example/@lookalike",
+        "http://192.168.1.10:11434/api/chat",
+    ] {
+        assert!(outbound(refused).is_err(), "{refused}");
+    }
 }
 #[tokio::test]
 async fn legacy_source_migration_and_pause_resume_preserve_mode_and_cancelled_jobs() {
@@ -811,11 +849,36 @@ async fn uploaded_transcripts_are_versioned_and_invalid_uploads_preserve_previou
     tokio::fs::write(&input, "1\n00:00:00,000 --> 00:00:25,000\nFirst version\n")
         .await
         .unwrap();
-    engine.import_transcript(1, input.clone()).await.unwrap();
+    engine
+        .import_transcript(1, input.clone(), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.snapshot().await.unwrap().videos[0].transcript_language,
+        None
+    );
     tokio::fs::write(&input, "1\n00:00:00,000 --> 00:00:25,000\nSecond version\n")
         .await
         .unwrap();
-    engine.import_transcript(1, input.clone()).await.unwrap();
+    for invalid in ["", "turkish", "../tr", "tr_TR", "TR", "tr-"] {
+        assert!(
+            engine
+                .import_transcript(1, input.clone(), Some(invalid))
+                .await
+                .is_err(),
+            "{invalid}"
+        );
+    }
+    engine
+        .import_transcript(1, input.clone(), Some("tr"))
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.snapshot().await.unwrap().videos[0]
+            .transcript_language
+            .as_deref(),
+        Some("tr")
+    );
     assert!(
         engine
             .uploaded_transcript(1)
@@ -837,7 +900,12 @@ async fn uploaded_transcripts_are_versioned_and_invalid_uploads_preserve_previou
             .contains("First version")
     );
     tokio::fs::write(&input, "broken subtitle").await.unwrap();
-    assert!(engine.import_transcript(1, input).await.is_err());
+    assert!(
+        engine
+            .import_transcript(1, input, Some("en"))
+            .await
+            .is_err()
+    );
     assert!(
         engine
             .uploaded_transcript(1)
@@ -979,7 +1047,7 @@ async fn imports_local_video_without_copying_or_downloading() {
         )
         .unwrap();
         engine
-            .import_transcript(snapshot.videos[0].id, subtitles)
+            .import_transcript(snapshot.videos[0].id, subtitles, None)
             .await
             .unwrap();
         let (endpoint, server) =
@@ -1078,4 +1146,553 @@ async fn edited_ranges_persist_as_new_drafts_without_changing_exports() {
         Some(&output)
     );
     assert_eq!(std::fs::read(output).unwrap(), b"existing published file");
+}
+
+#[test]
+fn language_tags_and_caption_file_names() {
+    for valid in ["tr", "en", "en-US", "pt-BR", "zh-Hans", "en-orig", "fil"] {
+        assert!(language_tag(valid), "{valid}");
+    }
+    for invalid in [
+        "", "e", "english", "EN", "en_US", "en-", "-en", "en--US", "../tr", "tr.vtt",
+    ] {
+        assert!(!language_tag(invalid), "{invalid}");
+    }
+    let language = |name: &str| caption_language(std::path::Path::new(name));
+    assert_eq!(language("/v/source.tr.vtt").as_deref(), Some("tr"));
+    assert_eq!(language("/v/source.en-US.srt").as_deref(), Some("en-US"));
+    assert_eq!(language("/v/source.vtt"), None);
+    assert_eq!(language("/v/other.en.vtt"), None);
+}
+#[tokio::test]
+async fn turkish_platform_captions_are_preferred_and_recorded() {
+    let directory = tempfile::tempdir().unwrap();
+    let folder = tokio::fs::canonicalize(directory.path()).await.unwrap();
+    let caption = |text: &str| format!("WEBVTT\n\n00:00:00.000 --> 00:00:25.000\n{text}\n");
+    tokio::fs::write(folder.join("source.en.vtt"), caption("English"))
+        .await
+        .unwrap();
+    tokio::fs::write(folder.join("source.tr.vtt"), caption("Türkçe"))
+        .await
+        .unwrap();
+    let (text, path) = load_transcript(&folder).await.unwrap().unwrap();
+    assert!(text.contains("Türkçe"));
+    assert_eq!(caption_language(&path).as_deref(), Some("tr"));
+}
+#[tokio::test]
+async fn deleted_original_and_moved_export_are_reported_not_hidden() {
+    // Spec §14: "Orijinal video silindiğinde taslakların durumunu doğru gösterme."
+    let (dir, engine, output) = saved_draft_fixture().await;
+    let input = dir.path().join("videos/1/source.mp4");
+    sqlx::query("UPDATE videos SET local_path=? WHERE id=1")
+        .bind(input.to_str().unwrap())
+        .execute(&engine.pool)
+        .await
+        .unwrap();
+    std::fs::write(&output, b"published clip").unwrap();
+    sqlx::query("UPDATE clips SET output_path=? WHERE id=1")
+        .bind(output.to_str().unwrap())
+        .execute(&engine.pool)
+        .await
+        .unwrap();
+    let snapshot = engine.snapshot().await.unwrap();
+    assert!(snapshot.videos[0].local_available);
+    assert!(snapshot.clips[0].output_available);
+
+    std::fs::remove_file(&input).unwrap();
+    std::fs::rename(&output, dir.path().join("moved.mp4")).unwrap();
+    let snapshot = engine.snapshot().await.unwrap();
+    assert!(!snapshot.videos[0].local_available);
+    assert!(!snapshot.clips[0].output_available);
+    // Records are kept so the user can restore the file; editing is refused clearly.
+    assert_eq!(snapshot.clips.len(), 1);
+    assert_eq!(
+        snapshot.clips[0].output_path.as_deref(),
+        Some(output.as_path())
+    );
+    assert!(engine.save_clip_revision(1, 0, 21000).await.is_err());
+
+    // A directory at the old path is not a usable file either.
+    std::fs::create_dir(&input).unwrap();
+    assert!(!engine.snapshot().await.unwrap().videos[0].local_available);
+}
+#[cfg(unix)]
+#[tokio::test]
+async fn original_is_saved_separately_without_redownload_or_overwrite() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let mut engine = Automation::open(dir.path().join("data")).await.unwrap();
+    let calls = dir.path().join("calls");
+    let downloader = dir.path().join("downloader");
+    std::fs::write(
+        &downloader,
+        format!(
+            "#!/bin/sh\necho call >> '{}'\noutput=\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = '-o' ]; then shift; output=\"$1\"; fi\n  shift\ndone\nexec ffmpeg -nostdin -v error -f lavfi -i testsrc2=size=160x90:rate=10 -t 2 -c:v libx264 \"${{output%%\\%*}}mp4\"\n",
+            calls.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&downloader, std::fs::Permissions::from_mode(0o700)).unwrap();
+    engine.downloader = downloader;
+    sqlx::query("INSERT INTO sources(url,channel_id,title,mode) VALUES ('u','UC1234567890123456789012','Channel','manual')").execute(&engine.pool).await.unwrap();
+    engine
+        .save_entries(
+            1,
+            &[Entry {
+                id: "abcdefghijk".into(),
+                title: "Video".into(),
+            }],
+            false,
+        )
+        .await
+        .unwrap();
+
+    let target = dir.path().join("saved");
+    std::fs::create_dir(&target).unwrap();
+    let saved = engine.save_original(1, target.clone()).await.unwrap();
+    assert_eq!(saved, target.join("tehom-original-abcdefghijk.mp4"));
+    assert!((tehom_media::duration(&saved).unwrap() - 2.0).abs() < 0.2);
+    let snapshot = engine.snapshot().await.unwrap();
+    assert!(snapshot.videos[0].local_available);
+    assert!(
+        snapshot.clips.is_empty(),
+        "saving an original creates no clips"
+    );
+
+    // Saving again reuses the download and never replaces an existing file.
+    let bytes = std::fs::read(&saved).unwrap();
+    assert!(engine.save_original(1, target.clone()).await.is_err());
+    assert_eq!(std::fs::read(&saved).unwrap(), bytes);
+    let named = target.join("copy.mp4");
+    assert_eq!(engine.save_original(1, named.clone()).await.unwrap(), named);
+    assert_eq!(std::fs::read(&named).unwrap(), bytes);
+    assert_eq!(std::fs::read_to_string(&calls).unwrap().lines().count(), 1);
+    let leftovers = std::fs::read_dir(&target)
+        .unwrap()
+        .filter(|e| {
+            e.as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".tehom-")
+        })
+        .count();
+    assert_eq!(leftovers, 0);
+    assert!(engine.save_original(99, target).await.is_err());
+}
+#[tokio::test]
+async fn auto_export_uses_selected_profile_and_recovery_keeps_the_started_one() {
+    // Fresh export with the selected profile.
+    let (_dir, engine, output) = saved_draft_fixture().await;
+    engine
+        .set_export_profile(ExportProfile::Original)
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.snapshot().await.unwrap().export_profile,
+        ExportProfile::Original
+    );
+    assert!(engine.process_next().await.unwrap());
+    let snapshot = engine.snapshot().await.unwrap();
+    assert_eq!(
+        snapshot.videos[0].state, "complete",
+        "{:?}",
+        snapshot.videos[0].error
+    );
+    let info = tehom_media::inspect(&output).unwrap();
+    assert_eq!((info.width, info.height), (160, 90));
+    let stored: String = sqlx::query_scalar("SELECT export_profile FROM clips WHERE id=1")
+        .fetch_one(&engine.pool)
+        .await
+        .unwrap();
+    assert_eq!(stored, "original");
+
+    // A crash after publishing a horizontal export: the profile setting has
+    // since changed, but recovery verifies against the profile it started with.
+    let (dir, engine, output) = saved_draft_fixture().await;
+    tehom_media::export_framed(
+        &dir.path().join("videos/1/source.mp4"),
+        &output,
+        0.0,
+        20.0,
+        &AtomicBool::new(false),
+        "expected-identity",
+        tehom_media::Framing::Fill {
+            width: 1920,
+            height: 1080,
+        },
+    )
+    .unwrap();
+    sqlx::query("UPDATE clips SET export_profile='horizontal' WHERE id=1")
+        .execute(&engine.pool)
+        .await
+        .unwrap();
+    engine
+        .set_export_profile(ExportProfile::Vertical)
+        .await
+        .unwrap();
+    let published = std::fs::read(&output).unwrap();
+    assert!(engine.process_next().await.unwrap());
+    let snapshot = engine.snapshot().await.unwrap();
+    assert_eq!(
+        snapshot.videos[0].state, "complete",
+        "{:?}",
+        snapshot.videos[0].error
+    );
+    assert_eq!(std::fs::read(&output).unwrap(), published);
+}
+#[tokio::test]
+async fn state_changes_are_recorded_as_events_and_survive_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Automation::open(dir.path().into()).await.unwrap();
+    sqlx::query("INSERT INTO sources(url,channel_id,title,mode) VALUES ('u','UC1234567890123456789012','Channel','auto_draft')").execute(&engine.pool).await.unwrap();
+    engine
+        .save_entries(
+            1,
+            &[Entry {
+                id: "abcdefghijk".into(),
+                title: "Video".into(),
+            }],
+            false,
+        )
+        .await
+        .unwrap();
+    // No model configured: the job stops for input with an explanation.
+    assert!(engine.process_next().await.unwrap());
+    sqlx::query("UPDATE videos SET state='running'")
+        .execute(&engine.pool)
+        .await
+        .unwrap();
+    engine.pool.close().await;
+    drop(engine);
+    let engine = Automation::open(dir.path().into()).await.unwrap();
+    engine.cancel_video(1).await.unwrap();
+    engine.retry_video(1).await.unwrap();
+    let events = engine.snapshot().await.unwrap().events;
+    let states: Vec<&str> = events.iter().rev().map(|e| e.state.as_str()).collect();
+    assert_eq!(
+        states,
+        [
+            "queued",
+            "running",
+            "needs_input",
+            "running",
+            "retryable",
+            "cancelled",
+            "queued"
+        ]
+    );
+    let stopped = events.iter().find(|e| e.state == "needs_input").unwrap();
+    assert_eq!(stopped.level, "warning");
+    assert!(stopped.message.as_deref().unwrap().contains("AI model"));
+    assert!(
+        events
+            .iter()
+            .all(|e| e.video_id == 1 && e.created_at.ends_with('Z'))
+    );
+
+    // History is bounded.
+    sqlx::query("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<10050) INSERT INTO events(video_id,level,state) SELECT 1,'info','queued' FROM n")
+        .execute(&engine.pool)
+        .await
+        .unwrap();
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
+        .fetch_one(&engine.pool)
+        .await
+        .unwrap();
+    assert!(count <= 10_000, "{count}");
+    assert_eq!(engine.snapshot().await.unwrap().events.len(), 100);
+}
+#[tokio::test]
+async fn export_progress_is_visible_while_running_and_cleared_after() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Automation::open(dir.path().into()).await.unwrap();
+    engine
+        .set_ai(AiConfig {
+            endpoint: "http://127.0.0.1:1".into(),
+            model: "fixture".into(),
+        })
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO sources(url,channel_id,title,mode) VALUES ('u','UC1234567890123456789012','Fixture','auto_export')").execute(&engine.pool).await.unwrap();
+    engine
+        .save_entries(
+            1,
+            &[Entry {
+                id: "abcdefghijk".into(),
+                title: "Fixture".into(),
+            }],
+            false,
+        )
+        .await
+        .unwrap();
+    let folder = dir.path().join("videos/1");
+    std::fs::create_dir_all(&folder).unwrap();
+    assert!(
+        std::process::Command::new("ffmpeg")
+            .args([
+                "-nostdin",
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=640x360:rate=30",
+                "-t",
+                "30",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+            ])
+            .arg(folder.join("source.mp4"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    // Saved drafts skip the model; the long export exercises progress.
+    sqlx::query("INSERT INTO clips(video_id,title,start_ms,end_ms,reason) VALUES(1,'Long',0,30000,'Fixture')")
+        .execute(&engine.pool)
+        .await
+        .unwrap();
+    let worker = {
+        let engine = engine.clone();
+        tokio::spawn(async move { engine.process_next().await })
+    };
+    let mut seen = Vec::new();
+    while !worker.is_finished() {
+        if let Some(progress) = engine.snapshot().await.unwrap().videos[0].progress {
+            seen.push(progress);
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(worker.await.unwrap().unwrap());
+    let snapshot = engine.snapshot().await.unwrap();
+    assert_eq!(
+        snapshot.videos[0].state, "complete",
+        "{:?}",
+        snapshot.videos[0].error
+    );
+    assert_eq!(snapshot.videos[0].progress, None);
+    assert!(
+        seen.iter().any(|p| *p > 0.0 && *p < 1.0),
+        "no intermediate progress observed: {seen:?}"
+    );
+    assert!(seen.windows(2).all(|w| w[0] <= w[1]), "{seen:?}");
+    // Progress updates do not flood the event history.
+    assert!(snapshot.events.len() <= 4, "{:?}", snapshot.events);
+}
+#[tokio::test]
+async fn transcripts_round_trip_through_editable_srt_as_new_versions() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Automation::open(dir.path().join("data")).await.unwrap();
+    sqlx::query("INSERT INTO sources(url,channel_id,title,mode) VALUES ('u','UC1234567890123456789012','C','manual')").execute(&engine.pool).await.unwrap();
+    engine
+        .save_entries(
+            1,
+            &[Entry {
+                id: "abcdefghijk".into(),
+                title: "V".into(),
+            }],
+            false,
+        )
+        .await
+        .unwrap();
+    let edited = dir.path().join("edited.srt");
+    assert!(engine.export_transcript(1, edited.clone()).await.is_err());
+    let folder = dir.path().join("data/videos/1");
+    std::fs::create_dir_all(&folder).unwrap();
+    let platform = "WEBVTT\n\n00:00:01.500 --> 00:00:04.000\nİlk satır\n\n01:02:03.004 --> 01:02:05.000\nSon satır\n";
+    std::fs::write(folder.join("source.tr.vtt"), platform).unwrap();
+
+    engine.export_transcript(1, edited.clone()).await.unwrap();
+    let srt = std::fs::read_to_string(&edited).unwrap();
+    assert_eq!(
+        srt,
+        "1\n00:00:01,500 --> 00:00:04,000\nİlk satır\n\n2\n01:02:03,004 --> 01:02:05,000\nSon satır\n\n"
+    );
+    assert_eq!(
+        parse_transcript(&srt).unwrap(),
+        parse_transcript(platform).unwrap()
+    );
+    // Exporting again never overwrites the user's edit target.
+    std::fs::write(&edited, srt.replace("İlk satır", "Düzeltilmiş satır")).unwrap();
+    assert!(engine.export_transcript(1, edited.clone()).await.is_err());
+
+    engine
+        .import_transcript(1, edited.clone(), Some("tr"))
+        .await
+        .unwrap();
+    assert!(
+        engine
+            .uploaded_transcript(1)
+            .await
+            .unwrap()
+            .unwrap()
+            .contains("Düzeltilmiş satır")
+    );
+    // The platform original is untouched and still available.
+    assert_eq!(
+        std::fs::read_to_string(folder.join("source.tr.vtt")).unwrap(),
+        platform
+    );
+    let second = dir.path().join("second.srt");
+    engine.export_transcript(1, second.clone()).await.unwrap();
+    assert!(
+        std::fs::read_to_string(second)
+            .unwrap()
+            .contains("Düzeltilmiş satır")
+    );
+}
+#[tokio::test]
+async fn downloads_are_removed_only_by_user_preference_and_never_local_files() {
+    // Default: downloads are kept after Auto Export.
+    let (dir, engine, output) = saved_draft_fixture().await;
+    let source = dir.path().join("videos/1/source.mp4");
+    assert!(engine.process_next().await.unwrap());
+    assert!(source.exists() && output.exists());
+
+    // Explicit opt-out: the source goes, subtitles and the exported clip stay.
+    let (dir, engine, output) = saved_draft_fixture().await;
+    let source = dir.path().join("videos/1/source.mp4");
+    let captions = dir.path().join("videos/1/source.en.vtt");
+    std::fs::write(&captions, "WEBVTT\n\n00:00:00.000 --> 00:00:25.000\nKept\n").unwrap();
+    engine.set_keep_downloads(false).await.unwrap();
+    assert!(engine.process_next().await.unwrap());
+    let snapshot = engine.snapshot().await.unwrap();
+    assert_eq!(
+        snapshot.videos[0].state, "complete",
+        "{:?}",
+        snapshot.videos[0].error
+    );
+    assert!(!source.exists());
+    assert!(captions.exists() && output.exists());
+    assert!(!snapshot.videos[0].local_available);
+    assert!(snapshot.clips[0].output_available);
+
+    // Manual cleanup: dry run reports, real run deletes, local imports untouched.
+    let (dir, engine, _output) = saved_draft_fixture().await;
+    let source = dir.path().join("videos/1/source.mp4");
+    assert!(engine.process_next().await.unwrap());
+    let size = std::fs::metadata(&source).unwrap().len();
+    let user_file = dir.path().join("my-video.mp4");
+    std::fs::copy(&source, &user_file).unwrap();
+    engine
+        .import_video(user_file.clone(), AutomationMode::Manual)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE videos SET state='complete' WHERE url LIKE 'local:%'")
+        .execute(&engine.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.cleanup_downloads(true).await.unwrap(),
+        vec![(1, size)]
+    );
+    assert!(source.exists());
+    assert_eq!(
+        engine.cleanup_downloads(false).await.unwrap(),
+        vec![(1, size)]
+    );
+    assert!(!source.exists());
+    assert!(user_file.exists());
+    assert!(engine.cleanup_downloads(false).await.unwrap().is_empty());
+}
+
+#[test]
+fn kick_vod_urls_are_strict_and_canonical() {
+    let uuid = "0123abcd-4567-89ef-0123-456789abcdef";
+    for valid in [
+        format!("https://kick.com/video/{uuid}"),
+        format!("https://www.kick.com/video/{uuid}"),
+        format!("https://kick.com/some_streamer/videos/{uuid}"),
+        format!(" https://kick.com/video/{uuid}/ "),
+    ] {
+        assert_eq!(kick_vod_input(&valid).unwrap(), uuid, "{valid}");
+    }
+    for invalid in [
+        format!("http://kick.com/video/{uuid}"),
+        format!("https://kick.com:443/video/{uuid}"),
+        format!("https://user@kick.com/video/{uuid}"),
+        format!("https://kick.com.evil.example/video/{uuid}"),
+        format!("https://kick.com/video/{uuid}?t=10"),
+        format!("https://kick.com/video/../video/{uuid}"),
+        "https://kick.com/video/not-a-uuid".to_owned(),
+        format!("https://kick.com/video/{}", uuid.to_uppercase()),
+        "https://kick.com/some_streamer".to_owned(),
+        format!("https://kick.com/a/b/videos/{uuid}"),
+    ] {
+        assert!(kick_vod_input(&invalid).is_err(), "{invalid}");
+    }
+}
+#[tokio::test]
+async fn kick_vod_is_queued_once_as_experimental_and_never_polled() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Automation::open(dir.path().into()).await.unwrap();
+    let url = "https://kick.com/streamer/videos/0123abcd-4567-89ef-0123-456789abcdef";
+    let first = engine
+        .add_source(url, AutomationMode::AutoDraft)
+        .await
+        .unwrap();
+    let again = engine
+        .add_source(
+            "https://kick.com/video/0123abcd-4567-89ef-0123-456789abcdef",
+            AutomationMode::AutoDraft,
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.id, again.id);
+    let snapshot = engine.snapshot().await.unwrap();
+    assert_eq!(snapshot.videos.len(), 1);
+    let video = &snapshot.videos[0];
+    assert_eq!(
+        video.external_id,
+        "kick:0123abcd-4567-89ef-0123-456789abcdef"
+    );
+    assert_eq!(
+        video.url,
+        "https://kick.com/video/0123abcd-4567-89ef-0123-456789abcdef"
+    );
+    assert_eq!(video.state, "queued");
+    assert!(video.title.contains("deneysel"));
+    // Single videos are never polled as channels, so no request is made.
+    assert_eq!(engine.check_now().await.unwrap(), 0);
+    assert!(engine.requests.lock().unwrap().is_empty());
+}
+
+#[test]
+fn subtitle_language_is_read_from_conventional_file_names() {
+    let language = |name: &str| subtitle_name_language(std::path::Path::new(name));
+    assert_eq!(language("/d/talk.tr.srt").as_deref(), Some("tr"));
+    assert_eq!(language("/d/my.talk.en-US.vtt").as_deref(), Some("en-US"));
+    assert_eq!(language("/d/talk.srt"), None);
+    assert_eq!(language("/d/talk.final.srt"), None);
+    assert_eq!(language("/d/talk.TR.srt"), None);
+}
+#[tokio::test]
+async fn uploaded_subtitle_language_falls_back_to_the_file_name() {
+    let directory = tempfile::tempdir().unwrap();
+    let engine = Automation::open(directory.path().join("data"))
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO sources(id,url,channel_id,title,mode) VALUES(1,'u','UC1234567890123456789012','F','manual')").execute(&engine.pool).await.unwrap();
+    sqlx::query("INSERT INTO videos(id,source_id,external_id,title,url,state) VALUES(1,1,'abcdefghijk','F','u','needs_input')").execute(&engine.pool).await.unwrap();
+    let file = directory.path().join("talk.de.srt");
+    std::fs::write(&file, "1\n00:00:00,000 --> 00:00:25,000\nHallo\n").unwrap();
+    engine
+        .import_transcript(1, file.clone(), None)
+        .await
+        .unwrap();
+    let language = |engine: &Automation| {
+        let engine = engine.clone();
+        async move {
+            engine.snapshot().await.unwrap().videos[0]
+                .transcript_language
+                .clone()
+        }
+    };
+    assert_eq!(language(&engine).await.as_deref(), Some("de"));
+    // An explicit tag wins over the file name.
+    engine.import_transcript(1, file, Some("tr")).await.unwrap();
+    assert_eq!(language(&engine).await.as_deref(), Some("tr"));
 }

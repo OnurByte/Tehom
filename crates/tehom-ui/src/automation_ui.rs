@@ -29,7 +29,10 @@ enum Action {
     Retry(i64),
     Import(i64, PathBuf),
     Cancel(i64),
+    SaveOriginal(i64),
+    ExportTranscript(i64),
     ExportDirectory(PathBuf),
+    ExportProfile(tehom_core::ExportProfile),
 }
 
 impl Tehom {
@@ -227,7 +230,7 @@ impl Tehom {
                             models = Some(backend.engine.local_models().await?);
                             "Yerel modeller kontrol edildi.".into()
                         }
-                        Action::Import(id,path)=>{backend.engine.import_transcript(id,path).await?;"Altyazı kaydedildi. Yeniden dene ile klipleri oluşturabilirsin.".into()}
+                        Action::Import(id,path)=>{backend.engine.import_transcript(id,path,None).await?;"Altyazı kaydedildi. Yeniden dene ile klipleri oluşturabilirsin.".into()}
                         Action::Retry(id) => {
                             backend.engine.retry_video(id).await?;
                             "Video yeniden kuyruğa alındı.".into()
@@ -235,6 +238,25 @@ impl Tehom {
                         Action::Cancel(id) => {
                             backend.engine.cancel_video(id).await?;
                             "Video işi iptal edildi.".into()
+                        }
+                        Action::SaveOriginal(id) => {
+                            let folder = backend.engine.snapshot().await?.export_directory;
+                            let saved = backend.engine.save_original(id, folder).await?;
+                            format!("Orijinal video kaydedildi: {}", saved.display())
+                        }
+                        Action::ExportTranscript(id) => {
+                            let folder = backend.engine.snapshot().await?.export_directory;
+                            tokio::fs::create_dir_all(&folder).await?;
+                            let path = folder.join(format!("tehom-transcript-{id}.srt"));
+                            backend.engine.export_transcript(id, path.clone()).await?;
+                            format!(
+                                "Altyazı düzenlemek için kaydedildi: {}. Düzenleyip \"Altyazı yükle\" ile yeni sürüm olarak ekleyebilirsin.",
+                                path.display()
+                            )
+                        }
+                        Action::ExportProfile(profile) => {
+                            backend.engine.set_export_profile(profile).await?;
+                            "Çıktı biçimi kaydedildi; yeni otomatik klipler bu biçimde oluşturulur.".into()
                         }
                         Action::ExportDirectory(path) => {
                             backend.engine.set_export_directory(path).await?;
@@ -520,6 +542,13 @@ impl Tehom {
                             _ => "İşlem durdu",
                         },
                     ))
+                    .when_some(video.progress, |v, progress| {
+                        v.child(
+                            div()
+                                .text_sm()
+                                .child(format!("Dışa aktarılıyor: %{:.0}", progress * 100.0)),
+                        )
+                    })
                     .when_some(video.error, |v, error| {
                         v.child(div().text_sm().child(error))
                     })
@@ -558,6 +587,30 @@ impl Tehom {
                                     )
                                 },
                             )
+                            .when(
+                                video.state != "running" && video.transcript_language.is_some()
+                                    || matches!(video.state.as_str(), "complete" | "completed"),
+                                |v| {
+                                    v.child(
+                                        Button::new(("export-transcript", id as usize))
+                                            .label("Altyazıyı dışa aktar")
+                                            .disabled(self.source_busy)
+                                            .on_click(cx.listener(move |view, _, window, cx| {
+                                                view.act(Action::ExportTranscript(id), window, cx)
+                                            })),
+                                    )
+                                },
+                            )
+                            .when(video.state != "running", |v| {
+                                v.child(
+                                    Button::new(("save-original", id as usize))
+                                        .label("Orijinali kaydet")
+                                        .disabled(self.source_busy)
+                                        .on_click(cx.listener(move |view, _, window, cx| {
+                                            view.act(Action::SaveOriginal(id), window, cx)
+                                        })),
+                                )
+                            })
                             .when(video.state == "running" || video.state == "queued", |v| {
                                 v.child(
                                     Button::new(("cancel-job", id as usize))
@@ -675,7 +728,31 @@ impl Tehom {
                             .on_click(cx.listener(|view, _, window, cx| {
                                 view.choose_export_directory(window, cx)
                             })),
-                    ),
+                    )
+                    .child(div().text_lg().child("Otomatik klip biçimi"))
+                    .child(div().flex().gap_2().children(
+                        tehom_core::ExportProfile::ALL.into_iter().enumerate().map(
+                            |(index, profile)| {
+                                let selected = self
+                                    .engine_snapshot
+                                    .as_ref()
+                                    .is_some_and(|s| s.export_profile == profile);
+                                Button::new(("export-profile", index))
+                                    .label(match profile {
+                                        tehom_core::ExportProfile::Vertical => "Dikey 1080×1920",
+                                        tehom_core::ExportProfile::Horizontal => "Yatay 1920×1080",
+                                        tehom_core::ExportProfile::Original => "Özgün boyut",
+                                    })
+                                    .disabled(unavailable)
+                                    .when(selected, |button| {
+                                        button.bg(rgb(0x30283d)).text_color(rgb(0xbe95ff))
+                                    })
+                                    .on_click(cx.listener(move |view, _, window, cx| {
+                                        view.act(Action::ExportProfile(profile), window, cx)
+                                    }))
+                            },
+                        ),
+                    )),
             )
             .into_any_element()
     }
@@ -822,16 +899,18 @@ impl Render for Tehom {
                         v.child("Hazırlanan klipler burada görünecek.")
                     })
                     .children(clips.into_iter().map(|clip| {
-                        let path = clip.output_path.clone();
-                        let original = self
-                            .engine_snapshot
-                            .as_ref()
-                            .and_then(|snapshot| {
-                                snapshot
-                                    .videos
-                                    .iter()
-                                    .find(|video| video.id == clip.video_id)
-                            })
+                        let path = clip.output_path.clone().filter(|_| clip.output_available);
+                        let export_missing = clip.output_path.is_some() && !clip.output_available;
+                        let video = self.engine_snapshot.as_ref().and_then(|snapshot| {
+                            snapshot
+                                .videos
+                                .iter()
+                                .find(|video| video.id == clip.video_id)
+                        });
+                        let original_missing = video
+                            .is_some_and(|video| video.local_path.is_some() && !video.local_available);
+                        let original = video
+                            .filter(|video| video.local_available)
                             .and_then(|video| video.local_path.clone());
                         let range = (clip.start_ms, clip.end_ms);
                         div()
@@ -848,6 +927,16 @@ impl Render for Tehom {
                                 clip.end_ms as f64 / 1000.,
                                 (clip.end_ms - clip.start_ms) as f64 / 1000.
                             ))
+                            .when(original_missing, |v| {
+                                v.child(div().text_sm().text_color(rgb(0xee5396)).child(
+                                    "Özgün video bulunamadı; taslak düzenlenemez. Dosyayı geri koyup yeniden dene.",
+                                ))
+                            })
+                            .when(export_missing, |v| {
+                                v.child(div().text_sm().text_color(rgb(0xee5396)).child(
+                                    "Dışa aktarılan dosya taşınmış veya silinmiş.",
+                                ))
+                            })
                             .when_some(original, |v, original| {
                                 v.child(
                                     Button::new(("draft-edit", clip.id as usize))

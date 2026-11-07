@@ -131,7 +131,21 @@ impl Preview {
             }
             Ok(())
         })();
-        if let Err(error) = initialization {
+        if let Err(mut error) = initialization {
+            // Surface GStreamer's own diagnosis (for example a missing decoder
+            // plug-in) instead of a bare state-change failure.
+            if let Some(bus) = pipeline.bus() {
+                let details: Vec<String> =
+                    std::iter::from_fn(|| bus.pop_filtered(&[gst::MessageType::Error]))
+                        .filter_map(|message| match message.view() {
+                            gst::MessageView::Error(failure) => Some(failure.error().to_string()),
+                            _ => None,
+                        })
+                        .collect();
+                if !details.is_empty() {
+                    error = io::Error::other(format!("{error}: {}", details.join("; ")));
+                }
+            }
             if let Err(shutdown_error) = pipeline.set_state(gst::State::Null) {
                 eprintln!("Preview shutdown: {shutdown_error}");
             }

@@ -14,7 +14,9 @@ use std::{
     },
     time::Duration,
 };
-use tehom_core::{AiConfig, AutomationMode, Clip, EngineSnapshot, Source, Video};
+use tehom_core::{
+    AiConfig, AutomationMode, Clip, EngineSnapshot, Event, ExportProfile, Source, Video,
+};
 use tokio::sync::Mutex;
 
 #[derive(Clone)]
@@ -25,6 +27,9 @@ pub struct Automation {
     _lock: Arc<EngineLock>,
     directory: PathBuf,
     client: reqwest::Client,
+    /// Every URL the engine sent a request to, for outbound-policy tests.
+    #[cfg(test)]
+    requests: Arc<std::sync::Mutex<Vec<String>>>,
     checks: Arc<Mutex<()>>,
     worker: Arc<Mutex<()>>,
     cancellations: Arc<Mutex<HashMap<i64, Arc<AtomicBool>>>>,
@@ -122,6 +127,74 @@ fn video_input(input: &str) -> Result<String> {
     ensure!(video_id(&id), "Invalid YouTube video ID");
     Ok(id)
 }
+fn kick_uuid(value: &str) -> bool {
+    let groups: Vec<&str> = value.split('-').collect();
+    groups.len() == 5
+        && groups.iter().zip([8, 4, 4, 4, 12]).all(|(group, length)| {
+            group.len() == length
+                && group
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        })
+}
+/// Experimental Kick VOD input: `https://kick.com/video/<uuid>` or
+/// `https://kick.com/<channel>/videos/<uuid>`. Returns the VOD UUID.
+fn kick_vod_input(input: &str) -> Result<String> {
+    let input = input.trim();
+    ensure!(
+        !input.contains('%') && !input.contains("/../") && !input.contains("/./"),
+        "Use a direct Kick VOD URL"
+    );
+    let authority = input
+        .split("//")
+        .nth(1)
+        .and_then(|v| v.split('/').next())
+        .unwrap_or("");
+    ensure!(
+        !authority.contains(':') && !authority.contains('@'),
+        "Credentials and ports are not allowed"
+    );
+    let url = reqwest::Url::parse(input).context("Invalid Kick URL")?;
+    ensure!(
+        url.scheme() == "https"
+            && matches!(url.host_str(), Some("kick.com" | "www.kick.com"))
+            && url.query().is_none()
+            && url.fragment().is_none(),
+        "Only HTTPS Kick VOD URLs are supported"
+    );
+    let segments: Vec<&str> = url
+        .path_segments()
+        .map(|segments| segments.filter(|s| !s.is_empty()).collect())
+        .unwrap_or_default();
+    let uuid = match segments.as_slice() {
+        ["video", uuid] => *uuid,
+        [channel, "videos", uuid]
+            if !channel.is_empty()
+                && channel.len() <= 64
+                && channel
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') =>
+        {
+            *uuid
+        }
+        _ => anyhow::bail!("Use a Kick VOD URL such as https://kick.com/video/<id>"),
+    };
+    ensure!(kick_uuid(uuid), "Invalid Kick VOD ID");
+    Ok(uuid.to_owned())
+}
+/// A single-video input: (external id, canonical URL, display title).
+fn single_video(input: &str) -> Option<(String, String, String)> {
+    if let Ok(id) = video_input(input) {
+        let canonical = format!("https://www.youtube.com/watch?v={id}");
+        return Some((id.clone(), canonical, format!("Video {id}")));
+    }
+    let uuid = kick_vod_input(input).ok()?;
+    Some((
+        format!("kick:{uuid}"),
+        format!("https://kick.com/video/{uuid}"),
+        format!("Kick VOD {} (deneysel)", &uuid[..8]),
+    ))
+}
 fn channel_input(input: &str) -> Result<String> {
     let input = input.trim();
     if channel_id(input) {
@@ -168,6 +241,30 @@ fn channel_input(input: &str) -> Result<String> {
         .context("Use /channel/UC… or /@handle")?;
     Ok(format!("https://www.youtube.com/@{handle}"))
 }
+fn is_loopback_host(url: &reqwest::Url) -> bool {
+    url.host_str().is_some_and(|s| {
+        s == "localhost"
+            || s.trim_matches(['[', ']'])
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback())
+    })
+}
+/// The only network destinations the engine may contact: the public YouTube
+/// site for discovery and the user's loopback AI server. Exports are files;
+/// nothing is ever sent to a publishing or social service.
+fn outbound(url: &str) -> Result<reqwest::Url> {
+    let url = reqwest::Url::parse(url).context("Invalid request URL")?;
+    let youtube = url.scheme() == "https"
+        && url.host_str() == Some("www.youtube.com")
+        && url.port().is_none();
+    let local = matches!(url.scheme(), "http" | "https") && is_loopback_host(&url);
+    ensure!(
+        url.username().is_empty() && url.password().is_none() && (youtube || local),
+        "Outbound request refused: {}",
+        url.host_str().unwrap_or("unknown host")
+    );
+    Ok(url)
+}
 fn ai_endpoint(config: &AiConfig) -> Result<reqwest::Url> {
     let url = reqwest::Url::parse(&config.endpoint).context("Invalid local AI endpoint")?;
     ensure!(
@@ -179,10 +276,7 @@ fn ai_endpoint(config: &AiConfig) -> Result<reqwest::Url> {
         "Invalid local AI endpoint"
     );
     ensure!(
-        url.host_str().is_some_and(|s| s == "localhost"
-            || s.trim_matches(['[', ']'])
-                .parse::<std::net::IpAddr>()
-                .is_ok_and(|ip| ip.is_loopback())),
+        is_loopback_host(&url),
         "AI endpoint must use a loopback address"
     );
     Ok(url)
@@ -237,7 +331,13 @@ impl Automation {
             .max_connections(4)
             .connect_with(options)
             .await?;
-        sqlx::raw_sql("CREATE TABLE IF NOT EXISTS sources(id INTEGER PRIMARY KEY,url TEXT NOT NULL,channel_id TEXT NOT NULL UNIQUE,title TEXT NOT NULL,mode TEXT NOT NULL,last_checked TEXT,error TEXT); CREATE TABLE IF NOT EXISTS videos(id INTEGER PRIMARY KEY,source_id INTEGER NOT NULL REFERENCES sources(id),external_id TEXT NOT NULL UNIQUE,title TEXT NOT NULL,url TEXT NOT NULL,state TEXT NOT NULL,error TEXT,local_path TEXT); CREATE TABLE IF NOT EXISTS clips(id INTEGER PRIMARY KEY,video_id INTEGER NOT NULL REFERENCES videos(id),title TEXT NOT NULL,start_ms INTEGER NOT NULL,end_ms INTEGER NOT NULL,reason TEXT NOT NULL DEFAULT '',output_path TEXT,UNIQUE(video_id,start_ms,end_ms)); CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL); UPDATE videos SET state='retryable',error='Interrupted; ready to retry' WHERE state='running';").execute(&pool).await?;
+        sqlx::raw_sql("CREATE TABLE IF NOT EXISTS sources(id INTEGER PRIMARY KEY,url TEXT NOT NULL,channel_id TEXT NOT NULL UNIQUE,title TEXT NOT NULL,mode TEXT NOT NULL,last_checked TEXT,error TEXT); CREATE TABLE IF NOT EXISTS videos(id INTEGER PRIMARY KEY,source_id INTEGER NOT NULL REFERENCES sources(id),external_id TEXT NOT NULL UNIQUE,title TEXT NOT NULL,url TEXT NOT NULL,state TEXT NOT NULL,error TEXT,local_path TEXT); CREATE TABLE IF NOT EXISTS clips(id INTEGER PRIMARY KEY,video_id INTEGER NOT NULL REFERENCES videos(id),title TEXT NOT NULL,start_ms INTEGER NOT NULL,end_ms INTEGER NOT NULL,reason TEXT NOT NULL DEFAULT '',output_path TEXT,UNIQUE(video_id,start_ms,end_ms)); CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL); \
+            CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY,video_id INTEGER NOT NULL,level TEXT NOT NULL,state TEXT NOT NULL,message TEXT,created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))); \
+            CREATE INDEX IF NOT EXISTS events_video ON events(video_id,id); \
+            CREATE TRIGGER IF NOT EXISTS video_created AFTER INSERT ON videos BEGIN INSERT INTO events(video_id,level,state,message) VALUES(NEW.id,'info',NEW.state,NEW.error); END; \
+            CREATE TRIGGER IF NOT EXISTS video_changed AFTER UPDATE OF state,error ON videos WHEN OLD.state IS NOT NEW.state OR OLD.error IS NOT NEW.error BEGIN INSERT INTO events(video_id,level,state,message) VALUES(NEW.id,CASE WHEN NEW.state IN ('failed','needs_input','retryable') THEN 'warning' ELSE 'info' END,NEW.state,NEW.error); END; \
+            CREATE TRIGGER IF NOT EXISTS events_bounded AFTER INSERT ON events BEGIN DELETE FROM events WHERE id <= NEW.id - 10000; END; \
+            UPDATE videos SET state='retryable',error='Interrupted; ready to retry' WHERE state='running';").execute(&pool).await?;
         let source_columns = sqlx::query("PRAGMA table_info(sources)")
             .fetch_all(&pool)
             .await?;
@@ -256,11 +356,22 @@ impl Automation {
                 .await?;
             migration.commit().await?;
         }
+        let video_columns = sqlx::query("PRAGMA table_info(videos)")
+            .fetch_all(&pool)
+            .await?;
+        if !video_columns
+            .iter()
+            .any(|row| row.get::<String, _>("name") == "progress")
+        {
+            sqlx::query("ALTER TABLE videos ADD COLUMN progress REAL")
+                .execute(&pool)
+                .await?;
+        }
         let clip_columns = sqlx::query("PRAGMA table_info(clips)")
             .fetch_all(&pool)
             .await?;
         let mut migration = pool.begin().await?;
-        for column in ["export_identity", "export_intent_path"] {
+        for column in ["export_identity", "export_intent_path", "export_profile"] {
             if !clip_columns
                 .iter()
                 .any(|row| row.get::<String, _>("name") == column)
@@ -285,12 +396,24 @@ impl Automation {
             _lock: Arc::new(EngineLock { file: lock }),
             directory,
             client,
+            #[cfg(test)]
+            requests: Arc::default(),
             checks: Arc::new(Mutex::new(())),
             worker: Arc::new(Mutex::new(())),
             cancellations: Arc::new(Mutex::new(HashMap::new())),
         })
     }
+    fn checked(&self, url: &str) -> Result<reqwest::Url> {
+        let url = outbound(url)?;
+        #[cfg(test)]
+        self.requests
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(url.to_string());
+        Ok(url)
+    }
     async fn fetch(&self, url: &str, limit: usize) -> Result<Vec<u8>> {
+        let url = self.checked(url)?;
         let mut response = self
             .client
             .get(url)
@@ -356,7 +479,7 @@ impl Automation {
     }
     pub async fn add_source(&self, url: &str, mode: AutomationMode) -> Result<Source> {
         let _guard = self.checks.lock().await;
-        if let Ok(id) = video_input(url) {
+        if let Some((id, canonical, title)) = single_video(url) {
             let existing: Option<i64> =
                 sqlx::query_scalar("SELECT source_id FROM videos WHERE external_id=?")
                     .bind(&id)
@@ -365,19 +488,18 @@ impl Automation {
             let source_id = if let Some(source_id) = existing {
                 source_id
             } else {
-                let canonical = format!("https://www.youtube.com/watch?v={id}");
                 let mut tx = self.pool.begin().await?;
                 let source_id =
                     sqlx::query("INSERT INTO sources(url,channel_id,title,mode) VALUES(?,?,?,?)")
                         .bind(&canonical)
                         .bind(format!("video:{id}"))
-                        .bind(format!("Video {id}"))
+                        .bind(&title)
                         .bind(mode_string(mode))
                         .execute(&mut *tx)
                         .await?
                         .last_insert_rowid();
                 sqlx::query("INSERT INTO videos(source_id,external_id,title,url,state) VALUES(?,?,?,?,'queued')")
-                    .bind(source_id).bind(&id).bind(format!("Video {id}")).bind(&canonical).execute(&mut *tx).await?;
+                    .bind(source_id).bind(&id).bind(&title).bind(&canonical).execute(&mut *tx).await?;
                 tx.commit().await?;
                 source_id
             };
@@ -551,6 +673,9 @@ impl Automation {
         ensure!(ai.model.len() <= 256, "Model name is too long");
         self.put_setting("ai", &serde_json::to_string(&ai)?).await
     }
+    pub async fn set_export_profile(&self, profile: ExportProfile) -> Result<()> {
+        self.put_setting("export_profile", profile.name()).await
+    }
     pub async fn set_export_directory(&self, directory: PathBuf) -> Result<()> {
         tokio::fs::create_dir_all(&directory).await?;
         let directory = tokio::fs::canonicalize(directory).await?;
@@ -618,8 +743,126 @@ impl Automation {
                 .await?,
         )
     }
-    pub async fn import_transcript(&self, id: i64, path: PathBuf) -> Result<()> {
+    /// Writes the transcript in effect (latest upload, else platform
+    /// captions) as an editable SRT. Never overwrites `destination`; the
+    /// edited file is imported back as a new version, keeping the original.
+    pub async fn export_transcript(&self, id: i64, destination: PathBuf) -> Result<()> {
+        use tokio::io::AsyncWriteExt;
+        let mut transcript = self.uploaded_transcript(id).await?;
+        if transcript.is_none() {
+            let folder = self.directory.join("videos").join(id.to_string());
+            if tokio::fs::metadata(&folder).await.is_ok_and(|m| m.is_dir()) {
+                let folder = tokio::fs::canonicalize(folder).await?;
+                transcript = load_transcript(&folder).await?.map(|(text, _)| text);
+            }
+        }
+        let transcript = transcript.context("This video has no transcript to export")?;
+        let srt = transcript_srt(&transcript)?;
+        let mut file = tokio::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&destination)
+            .await
+            .with_context(|| format!("Could not create {}", destination.display()))?;
+        file.write_all(srt.as_bytes()).await?;
+        file.sync_all().await?;
+        Ok(())
+    }
+    /// Saves the original video, independent of clips (spec §8 "Orijinali
+    /// indir"). Downloads it first when needed; never overwrites `destination`.
+    /// A directory destination receives `tehom-original-<video>.<ext>`.
+    pub async fn save_original(&self, id: i64, destination: PathBuf) -> Result<PathBuf> {
+        let _guard = self
+            .worker
+            .try_lock()
+            .context("Wait for the current video job before saving the original")?;
+        let row = sqlx::query("SELECT url,state,external_id,local_path FROM videos WHERE id=?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .context("Video not found")?;
+        let url: String = row.get("url");
+        ensure!(
+            row.get::<String, _>("state") != "running",
+            "Video is being processed"
+        );
+        let source = if url.starts_with("local:") {
+            PathBuf::from(
+                row.get::<Option<String>, _>("local_path")
+                    .context("Local video path is missing")?,
+            )
+        } else {
+            let folder = self.directory.join("videos").join(id.to_string());
+            tokio::fs::create_dir_all(&folder).await?;
+            let folder = tokio::fs::canonicalize(folder).await?;
+            ensure!(
+                folder.starts_with(&self.directory),
+                "Media directory escaped application data"
+            );
+            let source = folder.join("source.mp4");
+            if !source.exists() {
+                self.download(&folder, &url, false, Arc::new(AtomicBool::new(false)))
+                    .await?;
+            }
+            let source = tokio::fs::canonicalize(&source)
+                .await
+                .context("Original video could not be downloaded")?;
+            ensure!(
+                source.starts_with(&folder),
+                "Downloaded media escaped its directory"
+            );
+            sqlx::query("UPDATE videos SET local_path=? WHERE id=?")
+                .bind(source.to_str().context("Invalid media path")?)
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
+            source
+        };
+        let source = tokio::fs::canonicalize(&source)
+            .await
+            .context("Original video file was not found; restore it and try again")?;
+        let probe = source.clone();
+        tokio::task::spawn_blocking(move || tehom_media::inspect(&probe))
+            .await?
+            .context("Original video is not a valid media file")?;
+        let destination = if tokio::fs::metadata(&destination)
+            .await
+            .is_ok_and(|m| m.is_dir())
+        {
+            let name: String = row
+                .get::<String, _>("external_id")
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+                .take(64)
+                .collect();
+            let extension = source.extension().and_then(|e| e.to_str()).unwrap_or("mp4");
+            destination.join(format!("tehom-original-{name}.{extension}"))
+        } else {
+            destination
+        };
+        let (from, to) = (source, destination.clone());
+        tokio::task::spawn_blocking(move || tehom_media::copy_noclobber(&from, &to)).await??;
+        Ok(destination)
+    }
+    pub async fn import_transcript(
+        &self,
+        id: i64,
+        path: PathBuf,
+        language: Option<&str>,
+    ) -> Result<()> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        if let Some(language) = language {
+            ensure!(
+                language_tag(language),
+                "Language must be a tag such as tr or en-US"
+            );
+        }
+        // Without an explicit tag, use the common `name.<lang>.srt` convention.
+        let inferred = language
+            .is_none()
+            .then(|| subtitle_name_language(&path))
+            .flatten();
+        let language = language.or(inferred.as_deref());
         let _guard = self
             .worker
             .try_lock()
@@ -670,17 +913,36 @@ impl Automation {
         file.write_all(&bytes).await?;
         file.sync_all().await?;
         drop(file);
-        let result =
-            sqlx::query("INSERT INTO transcripts(video_id,origin,path) VALUES(?,'uploaded',?)")
-                .bind(id)
-                .bind(destination.to_str().context("Invalid subtitle path")?)
-                .execute(&self.pool)
-                .await;
+        let result = sqlx::query(
+            "INSERT INTO transcripts(video_id,origin,language,path) VALUES(?,'uploaded',?,?)",
+        )
+        .bind(id)
+        .bind(language)
+        .bind(destination.to_str().context("Invalid subtitle path")?)
+        .execute(&self.pool)
+        .await;
         if let Err(error) = result {
             tokio::fs::remove_file(&destination).await?;
             return Err(error.into());
         }
         Ok(())
+    }
+    /// Loads platform captions and records which file and language were used.
+    async fn platform_transcript(
+        &self,
+        id: i64,
+        folder: &std::path::Path,
+    ) -> Result<Option<String>> {
+        let Some((text, path)) = load_transcript(folder).await? else {
+            return Ok(None);
+        };
+        sqlx::query("INSERT INTO transcripts(video_id,origin,language,path) VALUES(?,'platform',?,?) ON CONFLICT(path) DO UPDATE SET language=excluded.language")
+            .bind(id)
+            .bind(caption_language(&path))
+            .bind(path.to_str().context("Invalid subtitle path")?)
+            .execute(&self.pool)
+            .await?;
+        Ok(Some(text))
     }
     async fn uploaded_transcript(&self, id: i64) -> Result<Option<String>> {
         use tokio::io::AsyncReadExt;
@@ -818,7 +1080,79 @@ impl Automation {
             .bind(id)
             .execute(&self.pool)
             .await?;
+        // Automatic cleanup only with the user's explicit opt-out of keeping
+        // downloads, and only once every clip already exists as a file.
+        if state == "complete"
+            && mode == AutomationMode::AutoExport
+            && !self.keep_downloads().await?
+            && let Err(error) = self.remove_downloads(&[id], false).await
+        {
+            eprintln!("Download cleanup: {error}");
+        }
         Ok(true)
+    }
+    pub async fn set_keep_downloads(&self, keep: bool) -> Result<()> {
+        self.put_setting("keep_downloads", if keep { "true" } else { "false" })
+            .await
+    }
+    async fn keep_downloads(&self) -> Result<bool> {
+        Ok(
+            sqlx::query_scalar::<_, String>(
+                "SELECT value FROM settings WHERE key='keep_downloads'",
+            )
+            .fetch_optional(&self.pool)
+            .await?
+            .is_none_or(|value| value != "false"),
+        )
+    }
+    /// Deletes downloaded source media of completed videos from application
+    /// data. Local imports, subtitles and exports are never touched; a later
+    /// retry or "save original" downloads the source again. Returns the
+    /// (video id, bytes) that were, or with `dry_run` would be, freed.
+    pub async fn cleanup_downloads(&self, dry_run: bool) -> Result<Vec<(i64, u64)>> {
+        let _guard = self
+            .worker
+            .try_lock()
+            .context("Wait for the current video job before cleaning up")?;
+        let ids: Vec<i64> = sqlx::query_scalar(
+            "SELECT id FROM videos WHERE state IN ('complete','completed') AND url NOT LIKE 'local:%' ORDER BY id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        self.remove_downloads(&ids, dry_run).await
+    }
+    async fn remove_downloads(&self, ids: &[i64], dry_run: bool) -> Result<Vec<(i64, u64)>> {
+        let mut freed = Vec::new();
+        for &id in ids {
+            let url: Option<String> = sqlx::query_scalar("SELECT url FROM videos WHERE id=?")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?;
+            if url.is_none_or(|url| url.starts_with("local:")) {
+                continue;
+            }
+            let folder = self.directory.join("videos").join(id.to_string());
+            let Ok(mut entries) = tokio::fs::read_dir(&folder).await else {
+                continue;
+            };
+            let mut bytes = 0;
+            while let Some(entry) = entries.next_entry().await? {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let subtitle = name.ends_with(".vtt") || name.ends_with(".srt");
+                // symlink_metadata: never follow a link out of application data.
+                let metadata = tokio::fs::symlink_metadata(entry.path()).await?;
+                if name.starts_with("source.") && !subtitle && metadata.is_file() {
+                    bytes += metadata.len();
+                    if !dry_run {
+                        tokio::fs::remove_file(entry.path()).await?;
+                    }
+                }
+            }
+            if bytes > 0 {
+                freed.push((id, bytes));
+            }
+        }
+        Ok(freed)
     }
     async fn run_video(
         &self,
@@ -880,11 +1214,11 @@ impl Automation {
         let candidates = if existing.is_empty() {
             let mut transcript = self.uploaded_transcript(id).await?;
             if transcript.is_none() {
-                transcript = load_transcript(&folder).await?;
+                transcript = self.platform_transcript(id, &folder).await?;
             }
             if transcript.is_none() && had_media && !local {
                 self.download(&folder, url, true, cancel.clone()).await?;
-                transcript = load_transcript(&folder).await?;
+                transcript = self.platform_transcript(id, &folder).await?;
             }
             let transcript = transcript.context("Needs input: this video has no usable platform subtitles; provide a transcript (ASR is never started automatically)")?;
             let mut candidates = Vec::new();
@@ -934,7 +1268,8 @@ impl Automation {
             sqlx::query("INSERT INTO clips(video_id,title,start_ms,end_ms,reason) VALUES (?,?,?,?,?) ON CONFLICT(video_id,start_ms,end_ms) DO NOTHING").bind(id).bind(&candidate.title).bind(candidate.start_ms as i64).bind(candidate.end_ms as i64).bind(&candidate.reason).execute(&mut *drafts).await?;
         }
         drafts.commit().await?;
-        for candidate in candidates {
+        let exports = candidates.len();
+        for (index, candidate) in candidates.into_iter().enumerate() {
             ensure!(!cancel.load(Ordering::Acquire), "Cancelled");
             if mode == AutomationMode::AutoExport {
                 tokio::fs::create_dir_all(&snapshot.export_directory).await?;
@@ -947,7 +1282,7 @@ impl Automation {
                 .fetch_one(&self.pool)
                 .await?;
                 let saved = sqlx::query(
-                    "SELECT output_path,export_identity,export_intent_path FROM clips WHERE id=?",
+                    "SELECT output_path,export_identity,export_intent_path,export_profile FROM clips WHERE id=?",
                 )
                 .bind(clip_id)
                 .fetch_one(&self.pool)
@@ -966,22 +1301,70 @@ impl Automation {
                             .export_directory
                             .join(format!("tehom-{id}-{clip_id}.mp4"))
                     });
+                // A resumed export keeps the profile it was started with.
+                let profile = saved
+                    .get::<Option<String>, _>("export_profile")
+                    .and_then(|name| ExportProfile::parse(&name))
+                    .unwrap_or(snapshot.export_profile);
                 // Persist ownership before publication, so restart can distinguish our MP4 from a collision.
-                sqlx::query("UPDATE clips SET export_identity=?,export_intent_path=? WHERE id=?")
+                sqlx::query("UPDATE clips SET export_identity=?,export_intent_path=?,export_profile=? WHERE id=?")
                     .bind(&identity)
                     .bind(output.to_str().context("Invalid export path")?)
+                    .bind(profile.name())
                     .bind(clip_id)
                     .execute(&self.pool)
                     .await?;
                 let input = input.clone();
                 let export = output.clone();
                 let flag = cancel.clone();
-                tokio::task::spawn_blocking(move || -> Result<()> {
+                let expected = profile.dimensions(info.width, info.height);
+                let framing = match profile {
+                    ExportProfile::Original => tehom_media::Framing::Source,
+                    _ => tehom_media::Framing::Fill {
+                        width: expected.0,
+                        height: expected.1,
+                    },
+                };
+                // Overall export progress, persisted so other processes (CLI status) see it.
+                let fraction = Arc::new(std::sync::atomic::AtomicU32::new(0));
+                let reporter = fraction.clone();
+                let base = index as f64;
+                let persist = {
+                    let pool = self.pool.clone();
+                    let fraction = fraction.clone();
+                    tokio::spawn(async move {
+                        let mut written = u32::MAX;
+                        loop {
+                            let value = fraction.load(Ordering::Acquire);
+                            if value != written {
+                                written = value;
+                                let overall = (base + f64::from(value) / 1000.0) / exports as f64;
+                                let _ = sqlx::query("UPDATE videos SET progress=? WHERE id=?")
+                                    .bind(overall)
+                                    .bind(id)
+                                    .execute(&pool)
+                                    .await;
+                            }
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                        }
+                    })
+                };
+                let rendered = tokio::task::spawn_blocking(move || -> Result<()> {
                     let start = candidate.start_ms as f64 / 1000.0;
                     let end = candidate.end_ms as f64 / 1000.0;
+                    let report = |value: f64| {
+                        reporter.store((value * 1000.0).round() as u32, Ordering::Release)
+                    };
                     if !export.exists() {
-                        tehom_media::export_automated(
-                            &input, &export, start, end, &flag, &identity,
+                        tehom_media::export_framed_observed(
+                            &input,
+                            &export,
+                            start,
+                            end,
+                            &flag,
+                            &identity,
+                            framing,
+                            Some(&report),
                         )?;
                     }
                     ensure!(
@@ -991,14 +1374,22 @@ impl Automation {
                     );
                     let info = tehom_media::inspect(&export)?;
                     ensure!(
-                        info.width == 1080
-                            && info.height == 1920
+                        (info.width, info.height) == expected
                             && (info.duration - (end - start)).abs() <= 0.25,
                         "Existing export does not match the intended clip duration or dimensions"
                     );
                     Ok(())
                 })
-                .await??;
+                .await;
+                persist.abort();
+                // Wait for the writer to stop so it cannot overwrite the final value.
+                let _ = persist.await;
+                rendered??;
+                sqlx::query("UPDATE videos SET progress=? WHERE id=?")
+                    .bind((index + 1) as f64 / exports as f64)
+                    .bind(id)
+                    .execute(&self.pool)
+                    .await?;
                 sqlx::query("UPDATE clips SET output_path=? WHERE id=?")
                     .bind(output.to_str().context("Invalid export path")?)
                     .bind(clip_id)
@@ -1147,6 +1538,7 @@ impl Automation {
             body["options"] = serde_json::json!({"temperature":0});
             body["format"] = schema;
         }
+        let url = self.checked(&url)?;
         let mut response = self
             .client
             .post(url)
@@ -1176,7 +1568,41 @@ impl Automation {
             .context("Local AI must return a JSON array of clip candidates")
     }
 }
-async fn load_transcript(folder: &std::path::Path) -> Result<Option<String>> {
+/// A conservative BCP 47 shape: primary language plus optional subtags.
+fn language_tag(tag: &str) -> bool {
+    let mut parts = tag.split('-');
+    let primary = parts.next().unwrap_or("");
+    tag.len() <= 35
+        && (2..=3).contains(&primary.len())
+        && primary.bytes().all(|b| b.is_ascii_lowercase())
+        && parts.all(|p| (1..=8).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_alphanumeric()))
+}
+/// The language tag in a subtitle file name such as `talk.tr.srt` or
+/// `talk.en-US.vtt`; `None` when the second-to-last part is not a tag.
+fn subtitle_name_language(path: &std::path::Path) -> Option<String> {
+    let stem = path.file_stem()?.to_str()?;
+    let (_, language) = stem.rsplit_once('.')?;
+    language_tag(language).then(|| language.to_owned())
+}
+/// yt-dlp names captions `source.<lang>.<ext>`.
+fn caption_language(path: &std::path::Path) -> Option<String> {
+    let stem = path.file_stem()?.to_str()?;
+    let language = stem.strip_prefix("source.")?;
+    language_tag(language).then(|| language.to_owned())
+}
+/// Records which referenced files still exist, so a deleted original or a
+/// moved export is shown as missing rather than as a usable draft.
+fn with_file_availability(mut videos: Vec<Video>, mut clips: Vec<Clip>) -> (Vec<Video>, Vec<Clip>) {
+    let regular = |path: &Option<PathBuf>| path.as_deref().is_some_and(std::path::Path::is_file);
+    for video in &mut videos {
+        video.local_available = regular(&video.local_path);
+    }
+    for clip in &mut clips {
+        clip.output_available = regular(&clip.output_path);
+    }
+    (videos, clips)
+}
+async fn load_transcript(folder: &std::path::Path) -> Result<Option<(String, PathBuf)>> {
     let mut subtitles = Vec::new();
     let mut directory = tokio::fs::read_dir(folder).await?;
     while let Some(entry) = directory.next_entry().await? {
@@ -1204,8 +1630,8 @@ async fn load_transcript(folder: &std::path::Path) -> Result<Option<String>> {
         if tokio::fs::metadata(&canonical).await?.len() > 8 * 1024 * 1024 {
             continue;
         }
-        if let Ok(parsed) = parse_transcript(&tokio::fs::read_to_string(canonical).await?) {
-            return Ok(Some(parsed));
+        if let Ok(parsed) = parse_transcript(&tokio::fs::read_to_string(&canonical).await?) {
+            return Ok(Some((parsed, canonical)));
         }
     }
     Ok(None)
@@ -1236,6 +1662,34 @@ fn timestamp(input: &str) -> Result<u64> {
         "Invalid subtitle timestamp"
     );
     Ok((hours * 3600 + min * 60 + sec) * 1000 + millis.parse::<u64>()?)
+}
+/// Renders a normalized transcript (`[start-end] text` lines) as SRT.
+fn transcript_srt(normalized: &str) -> Result<String> {
+    let clock = |ms: u64| {
+        format!(
+            "{:02}:{:02}:{:02},{:03}",
+            ms / 3_600_000,
+            ms / 60_000 % 60,
+            ms / 1000 % 60,
+            ms % 1000
+        )
+    };
+    let mut srt = String::new();
+    for (index, line) in normalized.lines().enumerate() {
+        let (range, text) = line
+            .strip_prefix('[')
+            .and_then(|rest| rest.split_once("] "))
+            .context("Invalid stored transcript line")?;
+        let (start, end) = range.split_once('-').context("Invalid stored range")?;
+        srt.push_str(&format!(
+            "{}\n{} --> {}\n{}\n\n",
+            index + 1,
+            clock(start.parse()?),
+            clock(end.parse()?),
+            text
+        ));
+    }
+    Ok(srt)
 }
 fn parse_transcript(input: &str) -> Result<String> {
     let normalized = input.replace("\r\n", "\n");
@@ -1320,7 +1774,8 @@ async fn snapshot_from_pool(
             error: r.get("error"),
         })
         .collect();
-    let videos = sqlx::query("SELECT * FROM videos ORDER BY id DESC")
+    // Uploaded subtitles take priority over platform captions, as in processing.
+    let videos = sqlx::query("SELECT v.*,(SELECT language FROM transcripts t WHERE t.video_id=v.id ORDER BY t.origin='uploaded' DESC,t.id DESC LIMIT 1) AS transcript_language FROM videos v ORDER BY v.id DESC")
         .fetch_all(&mut *tx)
         .await?
         .into_iter()
@@ -1333,6 +1788,12 @@ async fn snapshot_from_pool(
             state: r.get("state"),
             error: r.get("error"),
             local_path: r.get::<Option<String>, _>("local_path").map(PathBuf::from),
+            transcript_language: r.get("transcript_language"),
+            local_available: false,
+            // Only a running job has meaningful progress; older rows may lack the column.
+            progress: (r.get::<String, _>("state") == "running")
+                .then(|| r.try_get::<Option<f64>, _>("progress").ok().flatten())
+                .flatten(),
         })
         .collect();
     let clips = sqlx::query("SELECT * FROM clips ORDER BY id DESC")
@@ -1346,8 +1807,33 @@ async fn snapshot_from_pool(
             start_ms: r.get::<i64, _>("start_ms") as u64,
             end_ms: r.get::<i64, _>("end_ms") as u64,
             output_path: r.get::<Option<String>, _>("output_path").map(PathBuf::from),
+            output_available: false,
         })
-        .collect();
+        .collect::<Vec<_>>();
+    let (videos, clips) = with_file_availability(videos, clips);
+    // Older databases opened read-only may predate the events table.
+    let has_events: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='events')",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    let events = if has_events {
+        sqlx::query("SELECT * FROM events ORDER BY id DESC LIMIT 100")
+            .fetch_all(&mut *tx)
+            .await?
+            .into_iter()
+            .map(|r| Event {
+                id: r.get("id"),
+                video_id: r.get("video_id"),
+                level: r.get("level"),
+                state: r.get("state"),
+                message: r.get("message"),
+                created_at: r.get("created_at"),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     Ok(EngineSnapshot {
         sources,
         videos,
@@ -1365,5 +1851,13 @@ async fn snapshot_from_pool(
         .await?
         .map(PathBuf::from)
         .unwrap_or_else(|| directory.join("exports")),
+        export_profile: sqlx::query_scalar::<_, String>(
+            "SELECT value FROM settings WHERE key='export_profile'",
+        )
+        .fetch_optional(&mut *tx)
+        .await?
+        .and_then(|name| ExportProfile::parse(&name))
+        .unwrap_or_default(),
+        events,
     })
 }

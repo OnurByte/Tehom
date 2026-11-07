@@ -816,4 +816,106 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
+
+    fn snapshot(directory: &std::path::Path, files_present: bool) -> EngineSnapshot {
+        let original = directory.join("source.mp4");
+        let export = directory.join("clip.mp4");
+        if files_present {
+            std::fs::write(&original, b"video").unwrap();
+            std::fs::write(&export, b"clip").unwrap();
+        }
+        EngineSnapshot {
+            sources: Vec::new(),
+            videos: vec![tehom_core::Video {
+                id: 1,
+                source_id: 1,
+                external_id: "abcdefghijk".into(),
+                title: "Fixture".into(),
+                url: "https://www.youtube.com/watch?v=abcdefghijk".into(),
+                state: "complete".into(),
+                error: None,
+                local_path: Some(original),
+                transcript_language: Some("tr".into()),
+                local_available: files_present,
+                progress: None,
+            }],
+            clips: vec![tehom_core::Clip {
+                id: 1,
+                video_id: 1,
+                title: "Clip".into(),
+                start_ms: 0,
+                end_ms: 20_000,
+                output_path: Some(export),
+                output_available: files_present,
+            }],
+            ai: Default::default(),
+            export_directory: directory.to_path_buf(),
+            export_profile: tehom_core::ExportProfile::Horizontal,
+            events: Vec::new(),
+        }
+    }
+
+    fn render_page(
+        cx: &mut TestAppContext,
+        page: Page,
+        snapshot: EngineSnapshot,
+        check: impl FnOnce(&mut gpui_kit::Window),
+    ) {
+        let (handle, _) = cx.update(|cx| {
+            open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds {
+                        origin: point(px(0.), px(0.)),
+                        size: size(px(1100.), px(2400.)),
+                    })),
+                    ..Default::default()
+                },
+                cx,
+                |window, cx| {
+                    cx.new(|cx| {
+                        let mut view = Tehom::new(window, cx);
+                        view.page = page;
+                        view.engine_snapshot = Some(snapshot);
+                        view
+                    })
+                },
+            )
+            .unwrap()
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            check(window);
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn clip_library_hides_actions_for_missing_files_and_offers_new_ones(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let present = tempfile::tempdir().unwrap();
+        render_page(cx, Page::Clips, snapshot(present.path(), true), |window| {
+            assert_eq!(window.find_all_by_label("Taslağı düzenle").len(), 1);
+            assert_eq!(window.find_all_by_label("Klibi aç").len(), 1);
+            assert_eq!(window.find_all_by_label("Orijinali kaydet").len(), 1);
+            assert_eq!(window.find_all_by_label("Altyazıyı dışa aktar").len(), 1);
+        });
+        let missing = tempfile::tempdir().unwrap();
+        render_page(cx, Page::Clips, snapshot(missing.path(), false), |window| {
+            assert!(window.find_all_by_label("Taslağı düzenle").is_empty());
+            assert!(window.find_all_by_label("Klibi aç").is_empty());
+            // The original can be downloaded again, so saving it stays available.
+            assert_eq!(window.find_all_by_label("Orijinali kaydet").len(), 1);
+        });
+        let settings = tempfile::tempdir().unwrap();
+        render_page(
+            cx,
+            Page::Settings,
+            snapshot(settings.path(), true),
+            |window| {
+                for label in ["Dikey 1080×1920", "Yatay 1920×1080", "Özgün boyut"] {
+                    assert_eq!(window.find_all_by_label(label).len(), 1, "{label}");
+                }
+            },
+        );
+    }
 }
