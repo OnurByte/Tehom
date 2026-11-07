@@ -1464,7 +1464,7 @@ impl Automation {
         let mut child = self
             .download_command(folder, url, subtitles_only)
             .spawn()
-            .context("yt-dlp is not installed or could not start")?;
+            .context("yt-dlp was not found or could not start; install yt-dlp, make sure it is on PATH, and retry")?;
         let result = tokio::time::timeout(
             Duration::from_secs(if subtitles_only { 300 } else { 7200 }),
             async {
