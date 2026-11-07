@@ -96,6 +96,7 @@ async fn stop_cancels_active_download_without_restart() {
         .set_ai(tehom_core::AiConfig {
             endpoint: "http://127.0.0.1:11434".into(),
             model: "fixture".into(),
+            ..Default::default()
         })
         .await
         .unwrap();

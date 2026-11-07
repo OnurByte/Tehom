@@ -69,14 +69,101 @@ pub struct Clip {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiConfig {
+    /// Loopback server for `Local`; ignored for remote providers, whose
+    /// endpoints are fixed so no other host can receive transcripts.
     pub endpoint: String,
     pub model: String,
+    #[serde(default)]
+    pub provider: AiProvider,
+    /// Explicit permission to send transcripts to a remote provider (BYOK).
+    #[serde(default)]
+    pub remote_consent: bool,
+}
+
+/// Where clip analysis runs. Remote providers use the user's own API key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AiProvider {
+    /// Ollama, llama.cpp, LM Studio or vLLM on this computer.
+    #[default]
+    Local,
+    Openai,
+    Anthropic,
+    Gemini,
+    Openrouter,
+}
+impl AiProvider {
+    pub const ALL: [Self; 5] = [
+        Self::Local,
+        Self::Openai,
+        Self::Anthropic,
+        Self::Gemini,
+        Self::Openrouter,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Openai => "openai",
+            Self::Anthropic => "anthropic",
+            Self::Gemini => "gemini",
+            Self::Openrouter => "openrouter",
+        }
+    }
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|provider| provider.name() == name)
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Local => "Local model",
+            Self::Openai => "OpenAI",
+            Self::Anthropic => "Anthropic",
+            Self::Gemini => "Google Gemini",
+            Self::Openrouter => "OpenRouter",
+        }
+    }
+    pub fn is_remote(self) -> bool {
+        self != Self::Local
+    }
+    /// The only host a remote provider's requests may go to.
+    pub fn host(self) -> Option<&'static str> {
+        match self {
+            Self::Local => None,
+            Self::Openai => Some("api.openai.com"),
+            Self::Anthropic => Some("api.anthropic.com"),
+            Self::Gemini => Some("generativelanguage.googleapis.com"),
+            Self::Openrouter => Some("openrouter.ai"),
+        }
+    }
+    /// Environment variable checked before the OS keyring (useful for the daemon).
+    pub fn key_variable(self) -> Option<&'static str> {
+        match self {
+            Self::Local => None,
+            Self::Openai => Some("OPENAI_API_KEY"),
+            Self::Anthropic => Some("ANTHROPIC_API_KEY"),
+            Self::Gemini => Some("GEMINI_API_KEY"),
+            Self::Openrouter => Some("OPENROUTER_API_KEY"),
+        }
+    }
+    /// A sensible default model, shown as a suggestion.
+    pub fn default_model(self) -> &'static str {
+        match self {
+            Self::Local => "",
+            Self::Openai => "gpt-4o-mini",
+            Self::Anthropic => "claude-haiku-5-5",
+            Self::Gemini => "gemini-2.5-flash",
+            Self::Openrouter => "openai/gpt-4o-mini",
+        }
+    }
 }
 impl Default for AiConfig {
     fn default() -> Self {
         Self {
             endpoint: "http://127.0.0.1:11434".into(),
             model: String::new(),
+            provider: AiProvider::Local,
+            remote_consent: false,
         }
     }
 }
@@ -127,4 +214,7 @@ pub struct EngineSnapshot {
     /// Most recent state changes, newest first (at most 100).
     #[serde(default)]
     pub events: Vec<Event>,
+    /// The first-run guide was completed or skipped.
+    #[serde(default)]
+    pub onboarded: bool,
 }

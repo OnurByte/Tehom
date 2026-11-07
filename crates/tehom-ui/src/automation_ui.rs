@@ -1,11 +1,11 @@
 use super::*;
 use gpui_kit::assets::IconName;
-use gpui_kit::component::sidebar::{Sidebar, SidebarMenu};
+use gpui_kit::component::sidebar::{Sidebar, SidebarMenu, SidebarMenuItem};
 use tehom_automation::Automation;
-use tehom_core::AiConfig;
+use tehom_core::{AiConfig, AiProvider};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Page {
+pub(crate) enum Page {
     Home,
     Sources,
     Clips,
@@ -17,13 +17,15 @@ pub(super) struct Backend {
     engine: Automation,
 }
 
-enum Action {
+pub(crate) enum Action {
     Add(String, AutomationMode),
     File(PathBuf, AutomationMode),
     Check,
     Mode(i64, AutomationMode),
     Resume(i64),
     Ai(AiConfig),
+    /// Remote provider with explicit consent, plus a key to store if given.
+    Byok(AiConfig, String),
     Models,
     SaveRevision(i64, u64, u64),
     Retry(i64),
@@ -33,6 +35,7 @@ enum Action {
     ExportTranscript(i64),
     ExportDirectory(PathBuf),
     ExportProfile(tehom_core::ExportProfile),
+    Onboarded,
 }
 
 impl Tehom {
@@ -56,7 +59,7 @@ impl Tehom {
                 .build()
                 .map_err(|e| e.to_string())?;
             let directories = directories::ProjectDirs::from("org", "Tehom", "Tehom")
-                .ok_or("Veri klasörü belirlenemedi")?;
+                .ok_or("Could not find a data folder")?;
             let data = directories.data_local_dir().to_path_buf();
             let engine = runtime
                 .block_on(Automation::open(data.clone()))
@@ -79,7 +82,7 @@ impl Tehom {
                 Ok(backend) => backend,
                 Err(error) => {
                     let _ = view.update(cx, |view, cx| {
-                        view.status = "Kaynaklar açılamadı. Ayrıntıları kontrol et.".into();
+                        view.status = "Sources could not be loaded. See the details.".into();
                         view.details = Some(error);
                         cx.notify();
                     });
@@ -106,7 +109,7 @@ impl Tehom {
                         });
                         view.engine_snapshot = Some(snapshot);
                     }
-                    view.status = "Bir kanal ekleyerek otomasyonu başlatabilirsin.".into();
+                    view.status = "Add a channel to start.".into();
                     cx.notify();
                 })
                 .is_err()
@@ -177,7 +180,7 @@ impl Tehom {
         })
     }
 
-    fn act(&mut self, action: Action, window: &Window, cx: &mut Context<Self>) {
+    pub(crate) fn act(&mut self, action: Action, window: &Window, cx: &mut Context<Self>) {
         let Some(backend) = self.backend.clone() else {
             return;
         };
@@ -186,7 +189,7 @@ impl Tehom {
         }
         self.source_busy = true;
         self.details = None;
-        self.status = "İşleniyor…".into();
+        self.status = "Working…".into();
         cx.notify();
         let task = cx.background_spawn(async move {
             backend
@@ -197,52 +200,68 @@ impl Tehom {
                         Action::Add(url, mode) => {
                             let source=backend.engine.add_source(&url,mode).await?;
                             if source.channel_id.starts_with("video:") {
-                                "Video kaydedildi. İş durumunu aşağıdan takip edebilirsin.".into()
+                                "Video added. Follow its progress below.".into()
                             } else if source.error.is_some() {
-                                "Kanal kaydedildi. Akışa erişim bekleniyor; otomatik yeniden denenecek.".into()
-                            } else {"Kanal eklendi. Son video ve bundan sonraki yeni videolar izleniyor.".into()}
+                                "Channel saved. Its feed is not reachable yet; Tehom will retry.".into()
+                            } else {"Channel added. The latest video and every new one will be processed.".into()}
                         }
                         Action::File(path, mode) => {
                             backend.engine.import_video(path, mode).await?;
-                            "Video kaydedildi. Altyazı gerekiyorsa iş listesinden yükleyebilirsin.".into()
+                            "Video added. If it needs captions, add them from the job list.".into()
                         }
                         Action::Check => format!(
-                            "Kaynaklar kontrol edildi. {} yeni video bulundu.",
+                            "Sources checked. {} new videos found.",
                             backend.engine.check_now().await?
                         ),
                         Action::Mode(id, mode) => {
                             backend.engine.set_mode(id, mode).await?;
-                            "Otomasyon modu güncellendi.".into()
+                            "Mode updated.".into()
                         }
                         Action::Resume(id) => {
                             backend.engine.resume_source(id).await?;
-                            "Otomasyon devam ediyor.".into()
+                            "Automation resumed.".into()
                         }
                         Action::Ai(ai) => {
                             backend.engine.set_ai(ai).await?;
-                            "Model ayarları kaydedildi.".into()
+                            "Model settings saved.".into()
+                        }
+                        Action::Byok(ai, key) => {
+                            let provider = ai.provider;
+                            if !key.trim().is_empty() {
+                                tokio::task::spawn_blocking(move || {
+                                    tehom_automation::store_api_key(provider, &key)
+                                })
+                                .await??;
+                            }
+                            anyhow::ensure!(
+                                tehom_automation::api_key(provider)?.is_some(),
+                                "Paste your {} API key first",
+                                provider.label()
+                            );
+                            backend.engine.set_ai(ai).await?;
+                            format!("{} is ready. Captions will be sent there for analysis.", provider.label())
                         }
                         Action::SaveRevision(id, start, end) => {
                             backend.engine.save_clip_revision(id, start, end).await?;
-                            "Yeni taslak kaydedildi. Önceki taslak ve dosyalar korundu.".into()
+                            "New draft saved. Earlier drafts and files are kept.".into()
                         }
                         Action::Models => {
                             models = Some(backend.engine.local_models().await?);
-                            "Yerel modeller kontrol edildi.".into()
+                            "Local models checked.".into()
                         }
-                        Action::Import(id,path)=>{backend.engine.import_transcript(id,path,None).await?;"Altyazı kaydedildi. Yeniden dene ile klipleri oluşturabilirsin.".into()}
+                        Action::Import(id,path)=>{backend.engine.import_transcript(id,path,None).await?;"Captions saved. Choose Retry to make the clips.".into()}
                         Action::Retry(id) => {
                             backend.engine.retry_video(id).await?;
-                            "Video yeniden kuyruğa alındı.".into()
+                            "Queued again.".into()
                         }
                         Action::Cancel(id) => {
                             backend.engine.cancel_video(id).await?;
-                            "Video işi iptal edildi.".into()
+                            "Job cancelled.".into()
                         }
                         Action::SaveOriginal(id) => {
                             let folder = backend.engine.snapshot().await?.export_directory;
                             let saved = backend.engine.save_original(id, folder).await?;
-                            format!("Orijinal video kaydedildi: {}", saved.display())
+                            format!("Original saved: {}", saved.display())
                         }
                         Action::ExportTranscript(id) => {
                             let folder = backend.engine.snapshot().await?.export_directory;
@@ -250,17 +269,21 @@ impl Tehom {
                             let path = folder.join(format!("tehom-transcript-{id}.srt"));
                             backend.engine.export_transcript(id, path.clone()).await?;
                             format!(
-                                "Altyazı düzenlemek için kaydedildi: {}. Düzenleyip \"Altyazı yükle\" ile yeni sürüm olarak ekleyebilirsin.",
+                                "Captions saved for editing: {}. Edit them, then add them back with \"Add captions\".",
                                 path.display()
                             )
                         }
+                        Action::Onboarded => {
+                            backend.engine.mark_onboarded().await?;
+                            "You are all set. Paste a link to make your first clips.".into()
+                        }
                         Action::ExportProfile(profile) => {
                             backend.engine.set_export_profile(profile).await?;
-                            "Çıktı biçimi kaydedildi; yeni otomatik klipler bu biçimde oluşturulur.".into()
+                            "Clip shape saved for new clips.".into()
                         }
                         Action::ExportDirectory(path) => {
                             backend.engine.set_export_directory(path).await?;
-                            "Kayıt klasörü değiştirildi.".into()
+                            "Clip folder changed.".into()
                         }
                     };
                     Ok::<_, anyhow::Error>((backend.engine.snapshot().await?, message, models))
@@ -281,7 +304,7 @@ impl Tehom {
                     }
                     Err(error) => {
                         view.status =
-                            "İşlem tamamlanamadı. Bağlantıyı ve ayarları kontrol et.".into();
+                            "That did not finish. Check the link and your settings.".into();
                         view.details = Some(error);
                     }
                 }
@@ -318,12 +341,12 @@ impl Tehom {
                 cx,
             );
         } else {
-            self.status = "Videonun içinde geçerli başlangıç ve bitiş saniyeleri yaz.".into();
+            self.status = "Enter a start and end inside the video.".into();
             cx.notify();
         }
     }
 
-    fn choose_input_file(
+    pub(crate) fn choose_input_file(
         &mut self,
         subtitle_for: Option<i64>,
         window: &Window,
@@ -335,9 +358,9 @@ impl Tehom {
             multiple: false,
             prompt: Some(
                 if subtitle_for.is_some() {
-                    "SRT veya VTT altyazı dosyası seç"
+                    "Choose an SRT or VTT caption file"
                 } else {
-                    "Klip oluşturmak için video seç"
+                    "Choose a video to make clips from"
                 }
                 .into(),
             ),
@@ -357,7 +380,7 @@ impl Tehom {
             Ok(Ok(None)) => {}
             error => {
                 let _ = view.update(cx, |view, cx| {
-                    view.status = "Dosya seçilemedi.".into();
+                    view.status = "The file could not be chosen.".into();
                     view.details = Some(format!("{error:?}"));
                     cx.notify();
                 });
@@ -366,12 +389,12 @@ impl Tehom {
         .detach();
     }
 
-    fn choose_export_directory(&mut self, window: &Window, cx: &mut Context<Self>) {
+    pub(crate) fn choose_export_directory(&mut self, window: &Window, cx: &mut Context<Self>) {
         let picker = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
             multiple: false,
-            prompt: Some("Kliplerin kaydedileceği klasör".into()),
+            prompt: Some("Folder where clips are saved".into()),
         });
         cx.spawn_in(window, async move |view, cx| {
             if let Ok(Ok(Some(paths))) = picker.await
@@ -385,7 +408,7 @@ impl Tehom {
         .detach();
     }
 
-    fn navigate(&mut self, page: Page, cx: &mut Context<Self>) {
+    pub(crate) fn navigate(&mut self, page: Page, cx: &mut Context<Self>) {
         self.page = page;
         if page != Page::Clips
             && let Some(preview) = &self.preview
@@ -397,25 +420,27 @@ impl Tehom {
     }
 
     fn source_form(&self, cx: &mut Context<Self>) -> AnyElement {
+        let p = crate::theme::palette(cx);
         let unavailable = self.backend.is_none() || self.source_busy;
-        div().flex().flex_col().gap_4().p_5().bg(rgb(0x262626)).rounded_lg()
-            .child(div().text_lg().child("YouTube kanalını veya videonu ekle"))
-            .child(Input::new(&self.source_url).id("channel-url").aria_label("YouTube kanal veya video adresi").disabled(unavailable))
+        div().flex().flex_col().gap_4().p(px(24.)).bg(p.background).border_1().border_color(p.border).rounded(px(12.))
+            .child(div().text_lg().child("Add a YouTube channel or video"))
+            .child(Input::new(&self.source_url).h(px(44.)).id("channel-url").aria_label("YouTube channel or video address").disabled(unavailable))
             .child(div().flex().gap_2()
-                .child(Button::new("mode-draft").label("Otomatik taslak").when(self.source_mode==AutomationMode::AutoDraft,|b|b.primary())
+                .child(Button::new("mode-draft").h(px(44.)).label("Drafts").when(self.source_mode==AutomationMode::AutoDraft,|b|b.primary())
                     .on_click(cx.listener(|view,_,_,cx|{view.source_mode=AutomationMode::AutoDraft;cx.notify();})))
-                .child(Button::new("mode-export").label("Otomatik MP4").when(self.source_mode==AutomationMode::AutoExport,|b|b.primary())
+                .child(Button::new("mode-export").h(px(44.)).label("MP4 files").when(self.source_mode==AutomationMode::AutoExport,|b|b.primary())
                     .on_click(cx.listener(|view,_,_,cx|{view.source_mode=AutomationMode::AutoExport;cx.notify();}))))
-            .child(div().text_sm().text_color(rgb(0xdde1e6)).child(match self.source_mode {AutomationMode::AutoExport=>"Klipler seçtiğin klasöre kaydedilir. Kanal eklersen yeni videolar da otomatik işlenir.",_=>"Klip taslakları hazırlanır. Kanal eklersen yeni videolar da izlenir."}))
-            .child(Button::new("add-channel").primary().label(if self.source_busy {"Ekleniyor…"} else {"Bağlantıyı ekle"}).disabled(unavailable)
+            .child(div().text_sm().text_color(p.muted).child(match self.source_mode {AutomationMode::AutoExport=>"Clips are saved to your folder automatically. Channels are watched for new videos.",_=>"Tehom prepares drafts for you to review. Channels are watched for new videos."}))
+            .child(Button::new("add-channel").h(px(44.)).primary().label(if self.source_busy {"Adding…"} else {"Add link"}).disabled(unavailable)
                 .on_click(cx.listener(|view,_,window,cx|view.act(Action::Add(view.source_url.read(cx).value().to_string(),view.source_mode),window,cx))))
-            .child(Button::new("import-local-video").label("Dosyadan klip oluştur").disabled(unavailable)
+            .child(Button::new("import-local-video").h(px(44.)).label("Make clips from a file").disabled(unavailable)
                 .on_click(cx.listener(|view,_,window,cx| view.choose_input_file(None, window, cx))))
-            .child(div().text_sm().text_color(rgb(0xdde1e6)).child("Özgün dosya yerinde kullanılır. İş bitene kadar taşımayın veya silmeyin."))
+            .child(div().text_sm().text_color(p.muted).child("The file is read where it is. Keep it in place until the clips are ready."))
             .into_any_element()
     }
 
     fn source_list(&self, cx: &mut Context<Self>) -> AnyElement {
+        let p = crate::theme::palette(cx);
         let sources = self
             .engine_snapshot
             .as_ref()
@@ -426,38 +451,35 @@ impl Tehom {
             .flex_col()
             .gap_3()
             .when(sources.is_empty(), |v| {
-                v.child(
-                    div()
-                        .p_5()
-                        .text_color(rgb(0xdde1e6))
-                        .child("Henüz bir kaynak eklenmedi."),
-                )
+                v.child(div().p_5().text_color(p.muted).child("No sources yet."))
             })
             .children(sources.into_iter().map(|source| {
                 let id = source.id;
                 div()
                     .p_4()
-                    .bg(rgb(0x262626))
-                    .rounded_lg()
+                    .bg(p.background)
+                    .border_1()
+                    .border_color(p.border)
+                    .rounded(px(12.))
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .child(div().text_sm().text_color(rgb(0xdde1e6)).child(
+                    .child(div().text_sm().text_color(p.muted).child(
                         if source.channel_id.starts_with("local:") {
-                            "Yerel video"
+                            "Local file"
                         } else if source.channel_id.starts_with("video:") {
-                            "Tek video"
+                            "Single video"
                         } else {
-                            "Kanal · yeni videolar izleniyor"
+                            "Channel, watching for new videos"
                         },
                     ))
                     .child(div().text_lg().child(source.title))
-                    .child(div().text_sm().text_color(rgb(0xdde1e6)).child(source.url))
+                    .child(div().text_sm().text_color(p.muted).child(source.url))
                     .child(div().text_sm().child(match source.mode {
-                        AutomationMode::Paused => "Duraklatıldı",
-                        AutomationMode::AutoExport => "Otomatik MP4",
-                        AutomationMode::AutoDraft => "Otomatik taslak",
-                        AutomationMode::Manual => "Manuel",
+                        AutomationMode::Paused => "Paused",
+                        AutomationMode::AutoExport => "MP4 files",
+                        AutomationMode::AutoDraft => "Drafts",
+                        AutomationMode::Manual => "Manual",
                     }))
                     .child(
                         div()
@@ -465,10 +487,11 @@ impl Tehom {
                             .gap_2()
                             .child(
                                 Button::new(("source-pause", id as usize))
+                                    .h(px(44.))
                                     .label(if source.mode == AutomationMode::Paused {
-                                        "Devam et"
+                                        "Resume"
                                     } else {
-                                        "Duraklat"
+                                        "Pause"
                                     })
                                     .disabled(self.source_busy)
                                     .on_click(cx.listener(move |view, _, window, cx| {
@@ -485,7 +508,8 @@ impl Tehom {
                             )
                             .child(
                                 Button::new(("source-export", id as usize))
-                                    .label("Otomatik MP4")
+                                    .h(px(44.))
+                                    .label("MP4 files")
                                     .disabled(self.source_busy)
                                     .on_click(cx.listener(move |view, _, window, cx| {
                                         view.act(
@@ -497,13 +521,14 @@ impl Tehom {
                             ),
                     )
                     .when_some(source.error, |v, error| {
-                        v.child(div().text_sm().text_color(rgb(0xee5396)).child(error))
+                        v.child(div().text_sm().text_color(p.text).child(error))
                     })
             }))
             .into_any_element()
     }
 
     fn job_list(&self, cx: &mut Context<Self>) -> AnyElement {
+        let p = crate::theme::palette(cx);
         let videos = self
             .engine_snapshot
             .as_ref()
@@ -516,37 +541,42 @@ impl Tehom {
             .when(videos.is_empty(), |v| {
                 v.child(
                     div()
-                        .text_color(rgb(0xdde1e6))
-                        .child("Yeni videolar burada görünecek."),
+                        .text_color(p.muted)
+                        .child("New videos will appear here."),
                 )
             })
             .children(videos.into_iter().take(20).map(|video| {
                 let id = video.id;
                 div()
                     .p_4()
-                    .bg(rgb(0x262626))
-                    .rounded_lg()
+                    .bg(p.background)
+                    .border_1()
+                    .border_color(p.border)
+                    .rounded(px(12.))
                     .flex()
                     .flex_col()
                     .gap_2()
                     .child(video.title)
-                    .child(div().text_sm().text_color(rgb(0x78a9ff)).child(
-                        match video.state.as_str() {
-                            "discovered" => "İşlenmedi",
-                            "queued" => "Sırada",
-                            "running" => "Klipler hazırlanıyor",
-                            "complete" | "completed" => "Tamamlandı",
-                            "needs_input" => "İnceleme gerekiyor",
-                            "cancelled" => "İptal edildi",
-                            "retryable" => "Yeniden denenebilir",
-                            _ => "İşlem durdu",
-                        },
-                    ))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(p.muted)
+                            .child(match video.state.as_str() {
+                                "discovered" => "Not started",
+                                "queued" => "Queued",
+                                "running" => "Making clips",
+                                "complete" | "completed" => "Done",
+                                "needs_input" => "Needs your input",
+                                "cancelled" => "Cancelled",
+                                "retryable" => "Can be retried",
+                                _ => "Stopped",
+                            }),
+                    )
                     .when_some(video.progress, |v, progress| {
                         v.child(
                             div()
                                 .text_sm()
-                                .child(format!("Dışa aktarılıyor: %{:.0}", progress * 100.0)),
+                                .child(format!("Exporting {:.0}%", progress * 100.0)),
                         )
                     })
                     .when_some(video.error, |v, error| {
@@ -557,7 +587,8 @@ impl Tehom {
                         |v| {
                             v.child(
                                 Button::new(("upload-caption", id as usize))
-                                    .label("Altyazı yükle")
+                                    .h(px(44.))
+                                    .label("Add captions")
                                     .disabled(self.source_busy)
                                     .on_click(cx.listener(move |view, _, window, cx| {
                                         view.choose_input_file(Some(id), window, cx)
@@ -575,10 +606,11 @@ impl Tehom {
                                 |v| {
                                     v.child(
                                         Button::new(("retry", id as usize))
+                                            .h(px(44.))
                                             .label(if video.state == "discovered" {
-                                                "Klip oluştur"
+                                                "Make clips"
                                             } else {
-                                                "Yeniden dene"
+                                                "Retry"
                                             })
                                             .disabled(self.source_busy)
                                             .on_click(cx.listener(move |view, _, window, cx| {
@@ -593,7 +625,8 @@ impl Tehom {
                                 |v| {
                                     v.child(
                                         Button::new(("export-transcript", id as usize))
-                                            .label("Altyazıyı dışa aktar")
+                                            .h(px(44.))
+                                            .label("Export captions")
                                             .disabled(self.source_busy)
                                             .on_click(cx.listener(move |view, _, window, cx| {
                                                 view.act(Action::ExportTranscript(id), window, cx)
@@ -604,7 +637,8 @@ impl Tehom {
                             .when(video.state != "running", |v| {
                                 v.child(
                                     Button::new(("save-original", id as usize))
-                                        .label("Orijinali kaydet")
+                                        .h(px(44.))
+                                        .label("Save original")
                                         .disabled(self.source_busy)
                                         .on_click(cx.listener(move |view, _, window, cx| {
                                             view.act(Action::SaveOriginal(id), window, cx)
@@ -614,7 +648,8 @@ impl Tehom {
                             .when(video.state == "running" || video.state == "queued", |v| {
                                 v.child(
                                     Button::new(("cancel-job", id as usize))
-                                        .label("İptal et")
+                                        .h(px(44.))
+                                        .label("Cancel")
                                         .disabled(self.source_busy)
                                         .on_click(cx.listener(move |view, _, window, cx| {
                                             view.act(Action::Cancel(id), window, cx)
@@ -626,95 +661,196 @@ impl Tehom {
             .into_any_element()
     }
 
-    fn settings(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn ai_card(&self, cx: &mut Context<Self>) -> AnyElement {
+        let p = crate::theme::palette(cx);
         let unavailable = self.backend.is_none() || self.source_busy;
+        let saved = self
+            .engine_snapshot
+            .as_ref()
+            .map(|s| s.ai.provider)
+            .unwrap_or_default();
+        let provider = self.ai_provider.unwrap_or(saved);
+        // Only the presence of a key is checked; the key itself never reaches the view.
+        let key_saved = provider.is_remote()
+            && match self.ai_key_saved.get() {
+                Some((cached, saved)) if cached == provider => saved,
+                _ => {
+                    let saved = tehom_automation::api_key(provider).ok().flatten().is_some();
+                    self.ai_key_saved.set(Some((provider, saved)));
+                    saved
+                }
+            };
+
         div()
-            .flex()
-            .flex_col()
-            .gap_4()
-            .child(div().text_2xl().child("Ayarlar"))
-            .child(
-                div()
                     .p_5()
-                    .bg(rgb(0x262626))
-                    .rounded_lg()
+                    .bg(p.background)
+                    .border_1()
+                    .border_color(p.border)
+                    .rounded(px(12.))
                     .flex()
                     .flex_col()
                     .gap_3()
-                    .child(div().text_lg().child("Yerel AI modeli"))
-                    .child(
-                        div()
-                            .text_sm()
-                            .child("Analiz içeriği seçtiğin yerel model sunucusuna gönderilir."),
-                    )
-                    .child(
-                        Input::new(&self.ai_endpoint)
-                            .aria_label("Yerel model sunucusu")
-                            .disabled(unavailable),
-                    )
-                    .child(
-                        Input::new(&self.ai_model)
-                            .aria_label("AI modeli")
-                            .disabled(unavailable),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .gap_2()
-                            .child(
-                                Button::new("save-ai")
-                                    .primary()
-                                    .label("Modeli kaydet")
-                                    .disabled(unavailable)
-                                    .on_click(cx.listener(|view, _, window, cx| {
-                                        view.act(
-                                            Action::Ai(AiConfig {
-                                                endpoint: view
-                                                    .ai_endpoint
-                                                    .read(cx)
-                                                    .value()
-                                                    .to_string(),
+                    .child(div().text_lg().child("AI"))
+                    .child(div().text_sm().text_color(p.muted).child(
+                        "Choose where clip selection runs: a model on this computer, or your own API key.",
+                    ))
+                    .child(div().flex().flex_wrap().gap_2().children(
+                        AiProvider::ALL.into_iter().enumerate().map(|(index, option)| {
+                            Button::new(("ai-provider", index))
+                                .h(px(44.))
+                                .label(option.label())
+                                .when(provider == option, |button| button.primary())
+                                .disabled(unavailable)
+                                .on_click(cx.listener(move |view, _, window, cx| {
+                                    view.ai_provider = Some(option);
+                                    view.ai_key_saved.set(None);
+                                    view.ai_model.update(cx, |state, cx| {
+                                        state.set_value(option.default_model(), window, cx)
+                                    });
+                                    cx.notify();
+                                }))
+                        }),
+                    ))
+                    .when(!provider.is_remote(), |card| {
+                        card.child(div().text_sm().text_color(p.muted).child(
+                            "Captions are sent only to the local model server you choose.",
+                        ))
+                        .child(
+                            Input::new(&self.ai_endpoint)
+                                .h(px(44.))
+                                .aria_label("Local model server")
+                                .disabled(unavailable),
+                        )
+                        .child(
+                            Input::new(&self.ai_model)
+                                .h(px(44.))
+                                .aria_label("AI model")
+                                .disabled(unavailable),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .gap_2()
+                                .child(
+                                    Button::new("save-ai")
+                                        .h(px(44.))
+                                        .primary()
+                                        .label("Save model")
+                                        .disabled(unavailable)
+                                        .on_click(cx.listener(|view, _, window, cx| {
+                                            view.act(
+                                                Action::Ai(AiConfig {
+                                                    endpoint: view
+                                                        .ai_endpoint
+                                                        .read(cx)
+                                                        .value()
+                                                        .to_string(),
+                                                    model: view.ai_model.read(cx).value().to_string(),
+                                                    ..Default::default()
+                                                }),
+                                                window,
+                                                cx,
+                                            )
+                                        })),
+                                )
+                                .child(
+                                    Button::new("find-models")
+                                        .h(px(44.))
+                                        .label("Find local models")
+                                        .disabled(unavailable)
+                                        .on_click(cx.listener(|view, _, window, cx| {
+                                            view.act(Action::Models, window, cx)
+                                        })),
+                                ),
+                        )
+                    })
+                    .when(provider.is_remote(), |card| {
+                        card.child(
+                            Input::new(&self.ai_model)
+                                .h(px(44.))
+                                .aria_label("AI model")
+                                .disabled(unavailable),
+                        )
+                        .child(
+                            Input::new(&self.ai_key)
+                                .h(px(44.))
+                                .aria_label("API key")
+                                .disabled(unavailable),
+                        )
+                        .child(div().text_sm().text_color(p.muted).child(if key_saved {
+                            format!("A {} key is saved. Paste a new one to replace it.", provider.label())
+                        } else {
+                            "Your key is stored in the system keyring, never in Tehom's files.".to_string()
+                        }))
+                        .child(div().text_sm().child(format!(
+                            "Captions of each video are sent to {} to choose clips. Videos stay on this computer.",
+                            provider.label()
+                        )))
+                        .child(
+                            Button::new("save-byok")
+                                .h(px(44.))
+                                .primary()
+                                .label(format!("Allow and use {}", provider.label()))
+                                .disabled(unavailable)
+                                .on_click(cx.listener(move |view, _, window, cx| {
+                                    let key = view.ai_key.read(cx).value().to_string();
+                                    view.ai_key.update(cx, |state, cx| state.set_value("", window, cx));
+                                    view.ai_key_saved.set(None);
+                                    view.act(
+                                        Action::Byok(
+                                            AiConfig {
                                                 model: view.ai_model.read(cx).value().to_string(),
-                                            }),
-                                            window,
-                                            cx,
-                                        )
-                                    })),
-                            )
-                            .child(
-                                Button::new("find-models")
-                                    .label("Yerel modelleri bul")
-                                    .disabled(unavailable)
-                                    .on_click(cx.listener(|view, _, window, cx| {
-                                        view.act(Action::Models, window, cx)
-                                    })),
-                            ),
-                    )
+                                                provider,
+                                                remote_consent: true,
+                                                ..Default::default()
+                                            },
+                                            key,
+                                        ),
+                                        window,
+                                        cx,
+                                    )
+                                })),
+                        )
+                    })
                     .children(
                         self.available_models
                             .iter()
                             .enumerate()
                             .map(|(index, model)| {
                                 let value = model.clone();
-                                Button::new(("model", index)).label(model.clone()).on_click(
-                                    cx.listener(move |view, _, window, cx| {
+                                Button::new(("model", index))
+                                    .h(px(44.))
+                                    .label(model.clone())
+                                    .on_click(cx.listener(move |view, _, window, cx| {
                                         view.ai_model.update(cx, |state, cx| {
                                             state.set_value(value.clone(), window, cx)
                                         });
-                                    }),
-                                )
+                                    }))
                             }),
-                    ),
-            )
+                    )
+            .into_any_element()
+    }
+
+    fn settings(&self, cx: &mut Context<Self>) -> AnyElement {
+        let p = crate::theme::palette(cx);
+        let unavailable = self.backend.is_none() || self.source_busy;
+        div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(div().text_3xl().child("Settings"))
+            .child(self.ai_card(cx))
             .child(
                 div()
                     .p_5()
-                    .bg(rgb(0x262626))
-                    .rounded_lg()
+                    .bg(p.background)
+                    .border_1()
+                    .border_color(p.border)
+                    .rounded(px(12.))
                     .flex()
                     .flex_col()
                     .gap_3()
-                    .child(div().text_lg().child("Klip kayıt klasörü"))
+                    .child(div().text_lg().child("Clip folder"))
                     .when_some(
                         self.engine_snapshot
                             .as_ref()
@@ -723,13 +859,14 @@ impl Tehom {
                     )
                     .child(
                         Button::new("choose-export")
-                            .label("Klasör seç")
+                            .h(px(44.))
+                            .label("Choose folder")
                             .disabled(unavailable)
                             .on_click(cx.listener(|view, _, window, cx| {
                                 view.choose_export_directory(window, cx)
                             })),
                     )
-                    .child(div().text_lg().child("Otomatik klip biçimi"))
+                    .child(div().text_lg().child("Clip shape"))
                     .child(div().flex().gap_2().children(
                         tehom_core::ExportProfile::ALL.into_iter().enumerate().map(
                             |(index, profile)| {
@@ -738,14 +875,19 @@ impl Tehom {
                                     .as_ref()
                                     .is_some_and(|s| s.export_profile == profile);
                                 Button::new(("export-profile", index))
+                                    .h(px(44.))
                                     .label(match profile {
-                                        tehom_core::ExportProfile::Vertical => "Dikey 1080×1920",
-                                        tehom_core::ExportProfile::Horizontal => "Yatay 1920×1080",
-                                        tehom_core::ExportProfile::Original => "Özgün boyut",
+                                        tehom_core::ExportProfile::Vertical => {
+                                            "Vertical 1080 × 1920"
+                                        }
+                                        tehom_core::ExportProfile::Horizontal => {
+                                            "Horizontal 1920 × 1080"
+                                        }
+                                        tehom_core::ExportProfile::Original => "Original size",
                                     })
                                     .disabled(unavailable)
                                     .when(selected, |button| {
-                                        button.bg(rgb(0x30283d)).text_color(rgb(0xbe95ff))
+                                        button.bg(p.surface).text_color(p.text)
                                     })
                                     .on_click(cx.listener(move |view, _, window, cx| {
                                         view.act(Action::ExportProfile(profile), window, cx)
@@ -760,53 +902,44 @@ impl Tehom {
 
 impl Render for Tehom {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let menu = div().flex().flex_col().gap_1().children(
+        self.check_onboarding();
+        let p = crate::theme::palette(cx);
+        let menu = SidebarMenu::new().children(
             [
-                (Page::Home, "Başlangıç", IconName::House),
-                (Page::Sources, "Kaynaklar", IconName::Rss),
-                (Page::Clips, "Klipler", IconName::Scissors),
-                (Page::Settings, "Ayarlar", IconName::Settings),
+                (Page::Home, "Home", IconName::House),
+                (Page::Sources, "Sources", IconName::Rss),
+                (Page::Clips, "Clips", IconName::Scissors),
+                (Page::Settings, "Settings", IconName::Settings),
             ]
             .into_iter()
-            .enumerate()
-            .map(|(index, (page, label, icon))| {
-                Button::new(("nav", index))
-                    .ghost()
-                    .label(label)
+            .map(|(page, label, icon)| {
+                SidebarMenuItem::new(label)
+                    .accessibility_label(label)
                     .icon(icon)
-                    .w_full()
-                    .justify_start()
-                    .when(self.page == page, |button| {
-                        button.bg(rgb(0x30283d)).text_color(rgb(0xbe95ff))
-                    })
+                    .active(self.page == page)
                     .on_click(cx.listener(move |view, _, _, cx| view.navigate(page, cx)))
             }),
         );
         let sidebar = Sidebar::<SidebarMenu>::new("sidebar")
             .collapsible(false)
             .w(px(220.))
-            .bg(rgb(0x1c1c1c))
+            .bg(p.background)
             .header(
-                div()
-                    .p_4()
-                    .flex()
-                    .flex_col()
-                    .gap_6()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .child(
-                                svg()
-                                    .path("brand/icon.svg")
-                                    .size(px(30.))
-                                    .text_color(rgb(0xf2f4f8)),
-                            )
-                            .child(div().text_xl().child("Tehom")),
-                    )
-                    .child(menu),
+                div().p_4().flex().flex_col().gap_6().child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .child(
+                            svg()
+                                .path("brand/icon.svg")
+                                .size(px(30.))
+                                .text_color(p.text),
+                        )
+                        .child(div().text_xl().child("Tehom")),
+                ),
             )
+            .child(menu)
             .footer(
                 div()
                     .p_4()
@@ -816,13 +949,14 @@ impl Render for Tehom {
                     .child(
                         div()
                             .text_xs()
-                            .text_color(rgb(0x42be65))
-                            .child("●  Yerel çalışma"),
+                            .text_color(p.muted)
+                            .child("Runs on this computer"),
                     )
                     .child(
                         Button::new("local-video")
+                            .h(px(44.))
                             .ghost()
-                            .label("Video dosyası aç")
+                            .label("Open a video")
                             .icon(IconName::FolderOpen)
                             .disabled(self.busy)
                             .on_click(cx.listener(|view, _, window, cx| view.pick(window, cx))),
@@ -836,7 +970,8 @@ impl Render for Tehom {
                 .min_w_0()
                 .h_full()
                 .overflow_y_scroll()
-                .p_6()
+                .px(px(40.))
+                .py(px(32.))
                 .child(self.settings(cx))
                 .into_any_element(),
             Page::Home | Page::Sources => div()
@@ -845,36 +980,40 @@ impl Render for Tehom {
                 .min_w_0()
                 .h_full()
                 .overflow_y_scroll()
-                .p_6()
+                .px(px(40.))
+                .py(px(32.))
                 .flex()
                 .flex_col()
-                .gap_6()
+                .gap(px(32.))
                 .child(
                     div()
                         .flex()
                         .items_center()
                         .justify_between()
-                        .child(div().text_2xl().child(if self.page == Page::Home {
-                            "Kanalından klipler oluştur"
+                        .child(div().text_3xl().child(if self.page == Page::Home {
+                            "Make clips from a channel"
                         } else {
-                            "Kaynaklar"
+                            "Sources"
                         }))
                         .child(
                             Button::new("check-sources")
-                                .label("Şimdi kontrol et")
+                                .h(px(44.))
+                                .label("Check now")
                                 .disabled(self.backend.is_none() || self.source_busy)
                                 .on_click(cx.listener(|view, _, window, cx| {
                                     view.act(Action::Check, window, cx)
                                 })),
                         ),
                 )
-                .child(div().text_color(rgb(0xdde1e6)).child(
-                    "Kanalını bir kez ekle. Tehom yeni videoları RSS üzerinden takip etsin.",
-                ))
+                .child(
+                    div()
+                        .text_color(p.muted)
+                        .child("Add a channel once and Tehom follows its new videos."),
+                )
                 .child(self.source_form(cx))
                 .child(self.source_list(cx))
                 .when(self.page == Page::Home, |v| {
-                    v.child(div().text_lg().child("Son işler"))
+                    v.child(div().text_lg().child("Recent jobs"))
                         .child(self.job_list(cx))
                 })
                 .into_any_element(),
@@ -894,9 +1033,9 @@ impl Render for Tehom {
                     .flex()
                     .flex_col()
                     .gap_4()
-                    .child(div().text_2xl().child("Klipler"))
+                    .child(div().text_3xl().child("Clips"))
                     .when(clips.is_empty(), |v| {
-                        v.child("Hazırlanan klipler burada görünecek.")
+                        v.child("Your clips will appear here.")
                     })
                     .children(clips.into_iter().map(|clip| {
                         let path = clip.output_path.clone().filter(|_| clip.output_available);
@@ -915,8 +1054,8 @@ impl Render for Tehom {
                         let range = (clip.start_ms, clip.end_ms);
                         div()
                             .p_4()
-                            .rounded_lg()
-                            .bg(rgb(0x262626))
+                            .rounded(px(12.))
+                            .bg(p.background).border_1().border_color(p.border)
                             .flex()
                             .flex_col()
                             .gap_2()
@@ -928,19 +1067,19 @@ impl Render for Tehom {
                                 (clip.end_ms - clip.start_ms) as f64 / 1000.
                             ))
                             .when(original_missing, |v| {
-                                v.child(div().text_sm().text_color(rgb(0xee5396)).child(
-                                    "Özgün video bulunamadı; taslak düzenlenemez. Dosyayı geri koyup yeniden dene.",
+                                v.child(div().text_sm().text_color(p.text).child(
+                                    "The original video is missing, so this draft cannot be edited. Put the file back and try again.",
                                 ))
                             })
                             .when(export_missing, |v| {
-                                v.child(div().text_sm().text_color(rgb(0xee5396)).child(
-                                    "Dışa aktarılan dosya taşınmış veya silinmiş.",
+                                v.child(div().text_sm().text_color(p.text).child(
+                                    "The exported file was moved or deleted.",
                                 ))
                             })
                             .when_some(original, |v, original| {
                                 v.child(
-                                    Button::new(("draft-edit", clip.id as usize))
-                                        .label("Taslağı düzenle")
+                                    Button::new(("draft-edit", clip.id as usize)).h(px(44.))
+                                        .label("Edit draft")
                                         .disabled(self.busy || self.source_busy)
                                         .on_click(cx.listener(move |view, _, window, cx| {
                                             view.load(original.clone(), window, cx);
@@ -951,8 +1090,8 @@ impl Render for Tehom {
                             })
                             .when_some(path, |v, path| {
                                 v.child(
-                                    Button::new(("clip-open", clip.id as usize))
-                                        .label("Klibi aç")
+                                    Button::new(("clip-open", clip.id as usize)).h(px(44.))
+                                        .label("Open clip")
                                         .on_click(cx.listener(move |view, _, window, cx| {
                                             view.load(path.clone(), window, cx)
                                         })),
@@ -963,11 +1102,17 @@ impl Render for Tehom {
                     .into_any_element()
             }
         };
+        let overlay = self.overlay(cx);
         div()
             .size_full()
+            .relative()
+            .track_focus(&self.focus)
+            .key_context("Tehom")
+            .on_action(cx.listener(Self::toggle_palette))
+            .on_action(cx.listener(Self::close_palette))
             .flex()
-            .bg(rgb(0x161616))
-            .text_color(rgb(0xf2f4f8))
+            .bg(p.background)
+            .text_color(p.text)
             .child(sidebar)
             .child(
                 div()
@@ -982,7 +1127,7 @@ impl Render for Tehom {
                             div()
                                 .p_4()
                                 .border_t_1()
-                                .border_color(rgb(0x393939))
+                                .border_color(p.border)
                                 .text_sm()
                                 .child(self.status.clone()),
                         )
@@ -993,10 +1138,11 @@ impl Render for Tehom {
                                 .px_4()
                                 .pb_4()
                                 .text_sm()
-                                .text_color(rgb(0xee5396))
+                                .text_color(p.text)
                                 .child(self.details.clone().unwrap_or_default()),
                         )
                     }),
             )
+            .children(overlay)
     }
 }

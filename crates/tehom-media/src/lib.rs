@@ -22,7 +22,7 @@ pub fn require_space(path: &Path, required_bytes: u64) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::StorageFull,
             format!(
-                "Yeterli disk alanı yok: {} MiB gerekli, {} MiB kullanılabilir. Alan açıp yeniden dene.",
+                "Not enough disk space: {} MiB needed, {} MiB available. Free some space and retry.",
                 required_bytes.div_ceil(1024 * 1024),
                 available / (1024 * 1024)
             ),
@@ -38,7 +38,7 @@ pub fn copy_noclobber(source: &Path, destination: &Path) -> io::Result<()> {
     if destination.exists() {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
-            "Hedef dosya zaten var",
+            "The destination file already exists",
         ));
     }
     let parent = destination
@@ -53,7 +53,7 @@ pub fn copy_noclobber(source: &Path, destination: &Path) -> io::Result<()> {
         .tempfile_in(parent)?;
     let copied = io::copy(&mut std::fs::File::open(source)?, temporary.as_file_mut())?;
     if copied != size {
-        return Err(io::Error::other("Kopyalama eksik kaldı"));
+        return Err(io::Error::other("The copy is incomplete"));
     }
     temporary.as_file().sync_all()?;
     temporary
@@ -75,7 +75,7 @@ fn inspect_cancellable(path: &Path, cancelled: &AtomicBool) -> io::Result<VideoI
     if !path.metadata()?.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "Yalnızca normal video dosyaları açılabilir",
+            "Only regular video files can be opened",
         ));
     }
     let output = run(
@@ -101,14 +101,14 @@ fn inspect_cancellable(path: &Path, cancelled: &AtomicBool) -> io::Result<VideoI
         .as_str()
         .and_then(|v| v.parse::<f64>().ok())
         .filter(|v| v.is_finite() && *v > 0.0)
-        .ok_or_else(|| io::Error::other("Video süresi okunamadı"))?;
+        .ok_or_else(|| io::Error::other("The video length could not be read"))?;
     let stream = &json["streams"][0];
     let dimension = |name: &str| {
         stream[name]
             .as_u64()
             .and_then(|n| u32::try_from(n).ok())
             .filter(|n| *n > 0)
-            .ok_or_else(|| io::Error::other("Video görüntüsü bulunamadı"))
+            .ok_or_else(|| io::Error::other("The file has no video picture"))
     };
     // Report display geometry: FFmpeg auto-rotates on decode, so a
     // quarter-turn rotation swaps the stored width and height.
@@ -228,7 +228,7 @@ pub fn export_framed_observed(
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "Geçersiz dışa aktarma kimliği",
+            "Invalid export identity",
         ));
     }
     render(
@@ -247,7 +247,7 @@ pub fn export_identity(path: &Path) -> io::Result<Option<String>> {
     if !path.metadata()?.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "Normal bir video dosyası seç",
+            "Choose a regular video file",
         ));
     }
     let bytes = run(
@@ -286,13 +286,13 @@ fn render(
     if !start.is_finite() || !end.is_finite() || start < 0.0 || end <= start || end > total {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "Geçersiz klip aralığı",
+            "Invalid clip range",
         ));
     }
     if output.exists() {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
-            "Hedef dosya zaten var",
+            "The destination file already exists",
         ));
     }
     let parent = output
@@ -307,10 +307,7 @@ fn render(
         .suffix(".mp4")
         .tempfile_in(parent)?;
     if cancelled.load(Ordering::Acquire) {
-        return Err(io::Error::new(
-            io::ErrorKind::Interrupted,
-            "Klip iptal edildi",
-        ));
+        return Err(io::Error::new(io::ErrorKind::Interrupted, "Clip cancelled"));
     }
     let mut command = Command::new("ffmpeg");
     command
@@ -381,10 +378,7 @@ fn render(
     inspect_cancellable(temporary.path(), cancelled)?;
     temporary.as_file().sync_all()?;
     if cancelled.load(Ordering::Acquire) {
-        return Err(io::Error::new(
-            io::ErrorKind::Interrupted,
-            "Klip iptal edildi",
-        ));
+        return Err(io::Error::new(io::ErrorKind::Interrupted, "Clip cancelled"));
     }
     temporary
         .persist_noclobber(output)
@@ -419,22 +413,22 @@ fn spawn_error(program: &std::ffi::OsStr, error: io::Error) -> io::Error {
     match error.kind() {
         io::ErrorKind::NotFound => {
             let what = if matches!(name.as_str(), "ffmpeg" | "ffprobe") {
-                "FFmpeg (ffmpeg ve ffprobe)"
+                "FFmpeg (ffmpeg and ffprobe)"
             } else {
                 name.as_str()
             };
             io::Error::new(
                 io::ErrorKind::NotFound,
                 format!(
-                    "{name} bulunamadı. {what} kurulu ve PATH içinde olmalı; kurup Tehom'u yeniden aç."
+                    "{name} was not found. Install {what} and make sure it is on PATH, then reopen Tehom."
                 ),
             )
         }
         io::ErrorKind::PermissionDenied => io::Error::new(
             io::ErrorKind::PermissionDenied,
-            format!("{name} çalıştırılamadı: izin verilmedi. Dosya izinlerini kontrol et."),
+            format!("{name} could not run: permission denied. Check the file permissions."),
         ),
-        _ => io::Error::new(error.kind(), format!("{name} başlatılamadı: {error}")),
+        _ => io::Error::new(error.kind(), format!("{name} could not start: {error}")),
     }
 }
 
@@ -454,10 +448,7 @@ fn run_observed(
     tick: &mut dyn FnMut(),
 ) -> io::Result<Vec<u8>> {
     if cancelled.load(Ordering::Acquire) {
-        return Err(io::Error::new(
-            io::ErrorKind::Interrupted,
-            "İşlem iptal edildi",
-        ));
+        return Err(io::Error::new(io::ErrorKind::Interrupted, "Cancelled"));
     }
     let mut stdout = tempfile::tempfile()?;
     let mut stderr = tempfile::tempfile()?;
@@ -471,21 +462,18 @@ fn run_observed(
     let status = (|| {
         loop {
             if cancelled.load(Ordering::Acquire) {
-                return Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "İşlem iptal edildi",
-                ));
+                return Err(io::Error::new(io::ErrorKind::Interrupted, "Cancelled"));
             }
             if timeout.is_some_and(|limit| started.elapsed() >= limit) {
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
-                    "Video aracı zamanında yanıt vermedi",
+                    "The video tool did not respond in time",
                 ));
             }
             if stdout.metadata()?.len() > 65536 || stderr.metadata()?.len() > 65536 {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    "Video aracı çok fazla hata verisi üretti",
+                    "The video tool produced too much error output",
                 ));
             }
             if let Some(status) = child.try_wait()? {
@@ -627,7 +615,7 @@ mod missing_program_tests {
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
         let message = error.to_string();
         assert!(
-            message.contains("tehom-no-such-program bulunamadı"),
+            message.contains("tehom-no-such-program was not found"),
             "{message}"
         );
         assert!(message.contains("PATH"), "{message}");

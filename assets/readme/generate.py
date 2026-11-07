@@ -26,6 +26,20 @@ SANS = 'font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif"'
 MONO = 'font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"'
 WIDTH = 960
 
+# Line pictograms in a 32 x 32 grid, drawn with the shared icon material.
+ICONS = {
+    "link": '<rect x="3" y="11" width="15" height="10" rx="5"/><rect x="14" y="11" width="15" height="10" rx="5"/>',
+    "spark": '<path d="M14 4 C15.5 11 18 13.5 25 15 C18 16.5 15.5 19 14 26 C12.5 19 10 16.5 3 15 C10 13.5 12.5 11 14 4 Z"/><path d="M25 3 V9 M22 6 H28"/>',
+    "review": '<rect x="3" y="5" width="26" height="18" rx="4"/><path d="M13 10 L19 14 L13 18 Z"/><path d="M3 28 H29"/><path d="M10 26 V30"/>',
+    "save": '<path d="M16 4 V20 M10 14 L16 20 L22 14"/><path d="M5 21 V27 H27 V21"/>',
+    "shape": '<rect x="4" y="3" width="11" height="20" rx="2.5"/><rect x="18" y="13" width="11" height="15" rx="2.5"/>',
+    "watch": '<circle cx="16" cy="16" r="12"/><path d="M16 9 V16 L21 19"/>',
+    "local": '<path d="M4 15 L16 5 L28 15"/><path d="M7 13 V27 H25 V13"/><path d="M13 27 V19 H19 V27"/>',
+    "captions": '<rect x="3" y="6" width="26" height="20" rx="4"/><path d="M8 15 H24 M8 20 H18"/>',
+    "files": '<path d="M4 9 V26 H28 V12 H15 L12 9 Z"/><path d="M11 19 L14.5 22.5 L21 16"/>',
+    "lab": '<path d="M12 4 H20 M13.5 4 V12 L6 25 C5 27 6 28 8 28 H24 C26 28 27 27 26 25 L18.5 12 V4"/><path d="M9 21 H23"/>',
+}
+
 
 def mix(a, b, weight):
     """color-mix(in srgb, a weight, b)."""
@@ -51,6 +65,11 @@ class Canvas:
             f'<stop offset="0" stop-color="{light}"/><stop offset="1" stop-color="{light}" stop-opacity="0"/></radialGradient>',
             f'<linearGradient id="face" x1="0" y1="0" x2="1" y2="1">'
             f'<stop offset="0" stop-color="{self.t["face"][0]}"/><stop offset="1" stop-color="{self.t["face"][1]}"/></linearGradient>',
+            f'<linearGradient id="iface" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">'
+            f'<stop offset="0" stop-color="{self.t["face"][0]}"/><stop offset="1" stop-color="{self.t["face"][1]}"/></linearGradient>',
+            f'<filter id="idepth" x="-20%" y="-20%" width="150%" height="150%">'
+            f'<feDropShadow dx="0.64" dy="1.28" stdDeviation="0.16" flood-color="{self.t["shadow"][0]}" '
+            f'flood-opacity="{self.t["shadow"][1]}"/></filter>',
         ]
 
     def card(self, x, y, w, h, fill=None):
@@ -75,6 +94,12 @@ class Canvas:
             f'<rect x="{x - width + 0.5}" y="{y + 0.5}" width="{width - 1}" height="23" rx="8" '
             f'fill="none" stroke="{self.t["border"]}"/>')
         self.text(x - width / 2, y + 16, label, size=13, muted=True, anchor="middle")
+
+    def icon(self, x, y, name, size=32):
+        self.parts.append(
+            f'<svg x="{x}" y="{y}" width="{size}" height="{size}" viewBox="0 0 32 32" aria-hidden="true">'
+            f'<g fill="none" stroke="url(#iface)" stroke-width="2.4" stroke-linecap="round" '
+            f'stroke-linejoin="round" filter="url(#idepth)">{ICONS[name]}</g></svg>')
 
     def mark(self, x, y, size):
         s = size
@@ -114,38 +139,40 @@ for theme in THEMES:
 
     # Steps: one section, four ordered columns.
     c = Canvas(theme)
-    c.card(0, 0, WIDTH, 216)
+    c.card(0, 0, WIDTH, 236)
     c.text(32, 52, "How it works", size=18)
     steps = [
-        ("Add a link", ["A YouTube channel, one", "video or a local file."]),
-        ("Let it choose", ["Your local model reads", "the captions and picks."]),
-        ("Review", ["Watch each draft and", "adjust start or end."]),
-        ("Save", ["MP4 files land in your", "folder, by hand or auto."]),
+        ("link", "Add a link", ["A YouTube channel, one", "video or a local file."]),
+        ("spark", "Let it choose", ["Your local model reads", "the captions and picks."]),
+        ("review", "Review", ["Watch each draft and", "adjust start or end."]),
+        ("save", "Save", ["MP4 files land in your", "folder, by hand or auto."]),
     ]
     column = (WIDTH - 64 - 3 * 32) / 4
-    for i, (title, lines) in enumerate(steps):
+    for i, (icon, title, lines) in enumerate(steps):
         x = 32 + i * (column + 32)
-        c.text(x, 104, f"0{i + 1}", size=14, muted=True, mono=True)
-        c.text(x, 132, title, size=16, weight=500)
-        wrap(c, x, 160, lines)
-    c.save("steps", theme, 216, "How it works: add a link, let it choose, review, save")
+        c.icon(x, 84, icon)
+        c.text(x + column - 8, 104, f"0{i + 1}", size=14, muted=True, mono=True, anchor="end")
+        c.text(x, 152, title, size=16, weight=500)
+        wrap(c, x, 180, lines)
+    c.save("steps", theme, 236, "How it works: add a link, let it choose, review, save")
 
     # Features: section heading, 2 × 3 grid of bordered items with plain status.
     c = Canvas(theme)
     features = [
-        ("Vertical, horizontal or original", ["1080 × 1920 for Shorts and Reels,", "1920 × 1080 or the source size."], "Works"),
-        ("Watches channels", ["New videos on a channel become", "drafts or MP4 files on their own."], "Works"),
-        ("Stays on your computer", ["Only the video site and your local", "model are contacted. No posting."], "Works"),
-        ("Uses captions", ["Platform captions, or SRT and VTT", "files you add or correct."], "Works"),
-        ("Keeps your files", ["Existing files are never replaced;", "unfinished clips never appear."], "Works"),
-        ("Kick videos", ["Paste a kick.com video link.", "Downloading is still being tested."], "Experimental"),
+        ("shape", "Vertical, horizontal or original", ["1080 × 1920 for Shorts and Reels,", "1920 × 1080 or the source size."], "Works"),
+        ("watch", "Watches channels", ["New videos on a channel become", "drafts or MP4 files on their own."], "Works"),
+        ("local", "Stays on your computer", ["Only the video site and your local", "model are contacted. No posting."], "Works"),
+        ("captions", "Uses captions", ["Platform captions, or SRT and VTT", "files you add or correct."], "Works"),
+        ("files", "Keeps your files", ["Existing files are never replaced;", "unfinished clips never appear."], "Works"),
+        ("lab", "Kick videos", ["Paste a kick.com video link.", "Downloading is still being tested."], "Experimental"),
     ]
     c.text(0, 26, "What it does", size=18)
     item_w, item_h, gap = (WIDTH - 2 * 24) / 3, 152, 24
-    for i, (title, lines, status) in enumerate(features):
+    for i, (icon, title, lines, status) in enumerate(features):
         x, y = (i % 3) * (item_w + gap), 48 + (i // 3) * (item_h + gap)
         c.card(x, y, item_w, item_h)
-        c.pill(x + item_w - 20, y + 20, status)
+        c.icon(x + 20, y + 20, icon)
+        c.pill(x + item_w - 20, y + 24, status)
         c.text(x + 20, y + 76, title, size=16, weight=500)
         wrap(c, x + 20, y + 104, lines)
     planned = "Planned ⁜ speech to text on request ⁜ your own AI key ⁜ captions on clips ⁜ reframing"

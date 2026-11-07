@@ -31,11 +31,11 @@ pub async fn run(engine: &Automation, interval_minutes: u64) -> Result<()> {
             tokio::select! {
                 _ = checks.tick() => {
                     if stopping.load(Ordering::Acquire) { return; }
-                    if let Err(error) = engine.check_now().await { eprintln!("Kaynak kontrolü: {error}"); }
+                    if let Err(error) = engine.check_now().await { eprintln!("Source check: {error}"); }
                 }
                 _ = tokio::time::sleep(Duration::from_secs(2)) => {
                     if stopping.load(Ordering::Acquire) { return; }
-                    if let Err(error) = engine.process_next().await { eprintln!("Klip işi: {error}"); }
+                    if let Err(error) = engine.process_next().await { eprintln!("Clip job: {error}"); }
                 }
             }
         };

@@ -18,22 +18,22 @@ const MARKER: &str =
 /// Directory that holds systemd user units (`$XDG_CONFIG_HOME/systemd/user`).
 pub fn unit_directory() -> Result<PathBuf> {
     let config = directories::BaseDirs::new()
-        .context("Kullanıcı yapılandırma klasörü belirlenemedi")?
+        .context("Could not find the user configuration folder")?
         .config_dir()
         .to_path_buf();
     Ok(config.join("systemd").join("user"))
 }
 
 fn quoted(path: &Path) -> Result<String> {
-    let text = path.to_str().context("Servis yolu geçerli UTF-8 olmalı")?;
-    ensure!(path.is_absolute(), "Servis yolu mutlak olmalı: {text}");
+    let text = path.to_str().context("Service path must be valid UTF-8")?;
+    ensure!(path.is_absolute(), "Service path must be absolute: {text}");
     // systemd expands `%` specifiers and `$` variables and treats quotes and
     // backslashes specially; refuse them instead of attempting to escape.
     ensure!(
         !text
             .chars()
             .any(|c| matches!(c, '"' | '\\' | '%' | '$' | '\'') || c.is_control()),
-        "Servis yolu desteklenmeyen karakter içeriyor: {text}"
+        "Service path contains an unsupported character: {text}"
     );
     Ok(format!("\"{text}\""))
 }
@@ -73,16 +73,16 @@ pub enum Installed {
 /// Writes the unit without replacing any existing file.
 pub fn install(directory: &Path, text: &str) -> Result<Installed> {
     std::fs::create_dir_all(directory)
-        .with_context(|| format!("{} oluşturulamadı", directory.display()))?;
+        .with_context(|| format!("{} could not be created", directory.display()))?;
     let target = directory.join(UNIT_NAME);
     match std::fs::read(&target) {
         Ok(existing) if existing == text.as_bytes() => return Ok(Installed::AlreadyPresent),
         Ok(_) => bail!(
-            "{} zaten var ve farklı; mevcut dosya değiştirilmedi. Önce `tehom service uninstall` çalıştırın veya dosyayı elle inceleyin.",
+            "{} already exists and differs; it was not changed. Run `tehom service uninstall` first or inspect the file.",
             target.display()
         ),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error).context("Mevcut servis dosyası okunamadı"),
+        Err(error) => return Err(error).context("Could not read the existing service file"),
     }
     let temporary = directory.join(format!(".{UNIT_NAME}.{}.tmp", std::process::id()));
     let result = (|| -> Result<()> {
@@ -94,7 +94,7 @@ pub fn install(directory: &Path, text: &str) -> Result<Installed> {
         file.sync_all()?;
         // A hard link fails if the target appeared meanwhile, so nothing is clobbered.
         std::fs::hard_link(&temporary, &target)
-            .with_context(|| format!("{} yazılamadı", target.display()))?;
+            .with_context(|| format!("{} could not be written", target.display()))?;
         Ok(())
     })();
     let _ = std::fs::remove_file(&temporary);
@@ -116,11 +116,11 @@ pub fn uninstall(directory: &Path) -> Result<Removed> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(Removed::NotInstalled);
         }
-        Err(error) => return Err(error).context("Servis dosyası okunamadı"),
+        Err(error) => return Err(error).context("Could not read the service file"),
     };
     ensure!(
         text.lines().next() == Some(MARKER),
-        "{} Tehom tarafından oluşturulmamış; dosya silinmedi.",
+        "{} was not created by Tehom; it was not removed.",
         target.display()
     );
     std::fs::remove_file(&target)?;
@@ -133,10 +133,10 @@ pub fn systemctl(args: &[&str]) -> Result<()> {
         .arg("--user")
         .args(args)
         .status()
-        .context("systemctl çalıştırılamadı")?;
+        .context("systemctl could not run")?;
     ensure!(
         status.success(),
-        "systemctl --user {} başarısız: {status}",
+        "systemctl --user {} failed: {status}",
         args.join(" ")
     );
     Ok(())

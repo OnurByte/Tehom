@@ -1,23 +1,27 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="960" height="216" viewBox="0 0 960 216" role="img" aria-label="How it works: add a link, let it choose, review, save">
-<defs><radialGradient id="tr" cx="1" cy="0" r="0.5" gradientUnits="objectBoundingBox"><stop offset="0" stop-color="#585858"/><stop offset="1" stop-color="#585858" stop-opacity="0"/></radialGradient><radialGradient id="bl" cx="0" cy="1" r="0.5" gradientUnits="objectBoundingBox"><stop offset="0" stop-color="#585858"/><stop offset="1" stop-color="#585858" stop-opacity="0"/></radialGradient><linearGradient id="face" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#606060"/><stop offset="1" stop-color="#0d0d0d"/></linearGradient></defs>
-<rect x="0.5" y="0.5" width="959" height="215" rx="12" fill="#ffffff" stroke="#b3b3b3"/>
-<rect x="0.5" y="0.5" width="959" height="215" rx="12" fill="none" stroke="url(#tr)"/>
-<rect x="0.5" y="0.5" width="959" height="215" rx="12" fill="none" stroke="url(#bl)"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="236" viewBox="0 0 960 236" role="img" aria-label="How it works: add a link, let it choose, review, save">
+<defs><radialGradient id="tr" cx="1" cy="0" r="0.5" gradientUnits="objectBoundingBox"><stop offset="0" stop-color="#585858"/><stop offset="1" stop-color="#585858" stop-opacity="0"/></radialGradient><radialGradient id="bl" cx="0" cy="1" r="0.5" gradientUnits="objectBoundingBox"><stop offset="0" stop-color="#585858"/><stop offset="1" stop-color="#585858" stop-opacity="0"/></radialGradient><linearGradient id="face" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#606060"/><stop offset="1" stop-color="#0d0d0d"/></linearGradient><linearGradient id="iface" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#606060"/><stop offset="1" stop-color="#0d0d0d"/></linearGradient><filter id="idepth" x="-20%" y="-20%" width="150%" height="150%"><feDropShadow dx="0.64" dy="1.28" stdDeviation="0.16" flood-color="#000000" flood-opacity="0.8"/></filter></defs>
+<rect x="0.5" y="0.5" width="959" height="235" rx="12" fill="#ffffff" stroke="#b3b3b3"/>
+<rect x="0.5" y="0.5" width="959" height="235" rx="12" fill="none" stroke="url(#tr)"/>
+<rect x="0.5" y="0.5" width="959" height="235" rx="12" fill="none" stroke="url(#bl)"/>
 <text x="32" y="52" font-size="18" font-weight="400" fill="#0d0d0d" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">How it works</text>
-<text x="32.0" y="104" font-size="14" font-weight="400" fill="#333333" text-anchor="start" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">01</text>
-<text x="32.0" y="132" font-size="16" font-weight="500" fill="#0d0d0d" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">Add a link</text>
-<text x="32.0" y="160" font-size="14" font-weight="400" fill="#333333" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">A YouTube channel, one</text>
-<text x="32.0" y="182" font-size="14" font-weight="400" fill="#333333" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">video or a local file.</text>
-<text x="264.0" y="104" font-size="14" font-weight="400" fill="#333333" text-anchor="start" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">02</text>
-<text x="264.0" y="132" font-size="16" font-weight="500" fill="#0d0d0d" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">Let it choose</text>
-<text x="264.0" y="160" font-size="14" font-weight="400" fill="#333333" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">Your local model reads</text>
-<text x="264.0" y="182" font-size="14" font-weight="400" fill="#333333" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">the captions and picks.</text>
-<text x="496.0" y="104" font-size="14" font-weight="400" fill="#333333" text-anchor="start" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">03</text>
-<text x="496.0" y="132" font-size="16" font-weight="500" fill="#0d0d0d" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">Review</text>
-<text x="496.0" y="160" font-size="14" font-weight="400" fill="#333333" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">Watch each draft and</text>
-<text x="496.0" y="182" font-size="14" font-weight="400" fill="#333333" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">adjust start or end.</text>
-<text x="728.0" y="104" font-size="14" font-weight="400" fill="#333333" text-anchor="start" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">04</text>
-<text x="728.0" y="132" font-size="16" font-weight="500" fill="#0d0d0d" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">Save</text>
-<text x="728.0" y="160" font-size="14" font-weight="400" fill="#333333" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">MP4 files land in your</text>
-<text x="728.0" y="182" font-size="14" font-weight="400" fill="#333333" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">folder, by hand or auto.</text>
+<svg x="32.0" y="84" width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><g fill="none" stroke="url(#iface)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" filter="url(#idepth)"><rect x="3" y="11" width="15" height="10" rx="5"/><rect x="14" y="11" width="15" height="10" rx="5"/></g></svg>
+<text x="224.0" y="104" font-size="14" font-weight="400" fill="#333333" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">01</text>
+<text x="32.0" y="152" font-size="16" font-weight="500" fill="#0d0d0d" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">Add a link</text>
+<text x="32.0" y="180" font-size="14" font-weight="400" fill="#333333" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">A YouTube channel, one</text>
+<text x="32.0" y="202" font-size="14" font-weight="400" fill="#333333" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">video or a local file.</text>
+<svg x="264.0" y="84" width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><g fill="none" stroke="url(#iface)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" filter="url(#idepth)"><path d="M14 4 C15.5 11 18 13.5 25 15 C18 16.5 15.5 19 14 26 C12.5 19 10 16.5 3 15 C10 13.5 12.5 11 14 4 Z"/><path d="M25 3 V9 M22 6 H28"/></g></svg>
+<text x="456.0" y="104" font-size="14" font-weight="400" fill="#333333" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">02</text>
+<text x="264.0" y="152" font-size="16" font-weight="500" fill="#0d0d0d" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">Let it choose</text>
+<text x="264.0" y="180" font-size="14" font-weight="400" fill="#333333" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">Your local model reads</text>
+<text x="264.0" y="202" font-size="14" font-weight="400" fill="#333333" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">the captions and picks.</text>
+<svg x="496.0" y="84" width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><g fill="none" stroke="url(#iface)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" filter="url(#idepth)"><rect x="3" y="5" width="26" height="18" rx="4"/><path d="M13 10 L19 14 L13 18 Z"/><path d="M3 28 H29"/><path d="M10 26 V30"/></g></svg>
+<text x="688.0" y="104" font-size="14" font-weight="400" fill="#333333" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">03</text>
+<text x="496.0" y="152" font-size="16" font-weight="500" fill="#0d0d0d" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">Review</text>
+<text x="496.0" y="180" font-size="14" font-weight="400" fill="#333333" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">Watch each draft and</text>
+<text x="496.0" y="202" font-size="14" font-weight="400" fill="#333333" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">adjust start or end.</text>
+<svg x="728.0" y="84" width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><g fill="none" stroke="url(#iface)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" filter="url(#idepth)"><path d="M16 4 V20 M10 14 L16 20 L22 14"/><path d="M5 21 V27 H27 V21"/></g></svg>
+<text x="920.0" y="104" font-size="14" font-weight="400" fill="#333333" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">04</text>
+<text x="728.0" y="152" font-size="16" font-weight="500" fill="#0d0d0d" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">Save</text>
+<text x="728.0" y="180" font-size="14" font-weight="400" fill="#333333" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">MP4 files land in your</text>
+<text x="728.0" y="202" font-size="14" font-weight="400" fill="#333333" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">folder, by hand or auto.</text>
 </svg>

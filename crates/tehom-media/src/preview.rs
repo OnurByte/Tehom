@@ -81,7 +81,7 @@ impl Preview {
     pub fn open(path: &Path) -> io::Result<Self> {
         gst::init().map_err(io::Error::other)?;
         let uri = url::Url::from_file_path(path.canonicalize()?)
-            .map_err(|_| io::Error::other("Geçersiz video yolu"))?;
+            .map_err(|_| io::Error::other("Invalid video path"))?;
         let shared = Arc::new(Shared::default());
         let sample_shared = shared.clone();
         let preroll_shared = shared.clone();
@@ -126,7 +126,7 @@ impl Preview {
                 .map_err(io::Error::other)?;
             if lock(&shared.frame).is_none() {
                 return Err(io::Error::other(
-                    "Video görüntüsü çözümlenemedi. Biçimi kontrol et.",
+                    "The video picture could not be decoded. Check the format.",
                 ));
             }
             Ok(())
@@ -186,7 +186,7 @@ impl Preview {
         if !volume.is_finite() || !(0.0..=1.0).contains(&volume) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "Ses düzeyi 0 ile 1 arasında olmalı",
+                "Volume must be between 0 and 1",
             ));
         }
         self.send(Control::Volume(volume))
@@ -195,7 +195,7 @@ impl Preview {
         if position > self.snapshot().duration {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "Video dışında zaman seçilemez",
+                "That time is outside the video",
             ));
         }
         self.send(Control::Seek(position))
@@ -213,7 +213,7 @@ impl Drop for Preview {
 
 fn run_worker(pipeline: &gst::Element, receiver: &mpsc::Receiver<Control>, shared: &Shared) {
     let Some(bus) = pipeline.bus() else {
-        lock(&shared.snapshot).error = Some("Video olayları okunamadı".into());
+        lock(&shared.snapshot).error = Some("Video events could not be read".into());
         return;
     };
     while !shared.stop.load(Ordering::Acquire) {
