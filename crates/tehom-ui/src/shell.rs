@@ -32,10 +32,11 @@ pub(crate) enum Command {
     ChooseFolder,
     Shape(ExportProfile),
     Guide,
+    CheckUpdates,
 }
 
 impl Command {
-    pub(crate) const ALL: [(Command, &'static str); 13] = [
+    pub(crate) const ALL: [(Command, &'static str); 15] = [
         (Command::AddLink, "Add a channel or video"),
         (Command::FromFile, "Make clips from a file"),
         (Command::OpenVideo, "Open a video to edit"),
@@ -58,6 +59,8 @@ impl Command {
             "Clip shape: original size",
         ),
         (Command::Guide, "Show the welcome guide"),
+        (Command::CheckUpdates, "Check for updates"),
+        (Command::Go(Page::Settings), "About Tehom and version"),
     ];
 
     /// Commands whose title contains every word of the query.
@@ -152,6 +155,10 @@ impl Tehom {
             Command::ChooseFolder => self.choose_export_directory(window, cx),
             Command::Shape(profile) => self.act(Action::ExportProfile(profile), window, cx),
             Command::Guide => self.onboarding = Some(0),
+            Command::CheckUpdates => {
+                self.navigate(Page::Settings, cx);
+                self.check_for_updates(window, cx);
+            }
         }
         cx.notify();
     }

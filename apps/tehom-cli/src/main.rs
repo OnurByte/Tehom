@@ -82,6 +82,23 @@ impl From<Profile> for tehom_core::ExportProfile {
 #[derive(Subcommand)]
 enum Command {
     Status,
+    /// Check for a new version and install it (keeps the previous one).
+    Update {
+        /// Only report whether an update is available.
+        #[arg(long)]
+        check: bool,
+        /// Install without asking.
+        #[arg(long)]
+        yes: bool,
+        /// Reinstall the latest release even if it is not newer.
+        #[arg(long)]
+        force: bool,
+        /// Restore the version that the last update replaced.
+        #[arg(long, conflicts_with_all = ["check", "force"])]
+        rollback: bool,
+    },
+    /// Version, folders, AI and links.
+    Info,
     /// Recent job state changes (read-only; works while the daemon runs).
     Events {
         #[arg(long)]
@@ -205,6 +222,15 @@ async fn main() -> Result<()> {
     if let Command::Service(command) = &args.command {
         return manage_service(command, args.config.as_deref());
     }
+    if let Command::Update {
+        check,
+        yes,
+        force,
+        rollback,
+    } = &args.command
+    {
+        return run_update(*check, *yes, *force, *rollback).await;
+    }
     if let Command::AiKey { provider, remove } = &args.command {
         let provider: tehom_core::AiProvider = (*provider).into();
         anyhow::ensure!(
@@ -267,6 +293,41 @@ async fn main() -> Result<()> {
         );
         return Ok(());
     }
+    if matches!(args.command, Command::Info) {
+        use tehom_automation::update;
+        let snapshot = Automation::read_snapshot(data.clone()).await.ok();
+        println!("Tehom {}", update::CURRENT_VERSION);
+        println!("Data folder    {}", data.display());
+        if let Some(snapshot) = &snapshot {
+            println!("Clip folder    {}", snapshot.export_directory.display());
+            let ai = &snapshot.ai;
+            let model = if ai.model.is_empty() {
+                "default model"
+            } else {
+                &ai.model
+            };
+            println!("AI             {} ({model})", ai.provider.label());
+            println!("Clip shape     {}", snapshot.export_profile.name());
+        } else {
+            println!("Clip folder    not set up yet");
+        }
+        if let Some(path) = &args.config {
+            println!("Configuration  {}", path.display());
+        }
+        println!(
+            "Programs       {}",
+            update::binary_dir()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default()
+        );
+        println!("Website        https://github.com/{}", update::REPOSITORY);
+        println!(
+            "Report a problem https://github.com/{}/issues",
+            update::REPOSITORY
+        );
+        println!("Licence        AGPL-3.0-or-later; built with GPUI Kit (https://gpui-kit.com/)");
+        return Ok(());
+    }
     if let Command::Events { video } = args.command {
         for event in Automation::read_snapshot(data)
             .await?
@@ -309,7 +370,12 @@ async fn main() -> Result<()> {
         }
     }
     match args.command {
-        Command::Status | Command::Events { .. } | Command::Service(_) | Command::AiKey { .. } => {
+        Command::Status
+        | Command::Events { .. }
+        | Command::Service(_)
+        | Command::AiKey { .. }
+        | Command::Update { .. }
+        | Command::Info => {
             unreachable!("handled before opening the writable engine")
         }
         Command::Add { url, mode } => println!(
@@ -390,6 +456,59 @@ async fn main() -> Result<()> {
         Command::Retry { id } => engine.retry_video(id).await?,
         Command::Cancel { id } => engine.cancel_video(id).await?,
     }
+    Ok(())
+}
+
+async fn run_update(check: bool, yes: bool, force: bool, rollback: bool) -> Result<()> {
+    use tehom_automation::update;
+    let bin_dir = update::binary_dir()?;
+    if rollback {
+        let restored = update::rollback(&bin_dir)?;
+        println!(
+            "Restored the previous {}. Restart Tehom to use it.",
+            restored.join(" and ")
+        );
+        return Ok(());
+    }
+    let status = update::check().await?;
+    if !status.available && !force {
+        println!("Tehom {} is up to date.", status.current);
+        return Ok(());
+    }
+    if status.available {
+        println!(
+            "Tehom {} is available (you have {}). {}",
+            status.latest.tag, status.current, status.latest.url
+        );
+    } else {
+        println!("Reinstalling Tehom {}.", status.latest.tag);
+    }
+    if check {
+        return Ok(());
+    }
+    if !yes {
+        anyhow::ensure!(
+            std::io::IsTerminal::is_terminal(&std::io::stdin()),
+            "Run `tehom update --yes` to install without a prompt"
+        );
+        print!(
+            "Install {} into {}? [Y/n] ",
+            status.latest.tag,
+            bin_dir.display()
+        );
+        std::io::Write::flush(&mut std::io::stdout())?;
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        if !matches!(answer.trim(), "" | "y" | "Y" | "yes") {
+            println!("Not installed.");
+            return Ok(());
+        }
+    }
+    update::install(&status.latest.tag, &bin_dir).await?;
+    println!(
+        "Updated to {}. Restart Tehom to use it. Undo with `tehom update --rollback`.",
+        status.latest.tag
+    );
     Ok(())
 }
 

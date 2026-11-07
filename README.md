@@ -27,6 +27,8 @@ irm https://raw.githubusercontent.com/OnurByte/Tehom/main/install.ps1 | iex
 
 Then open **Tehom** from your apps. A short guide helps you choose an AI the first time.
 
+**Updating:** Tehom tells you when a new version is out. Choose **Install update** in Settings, or run `tehom update`.
+
 ## How it works
 
 <picture>
@@ -63,6 +65,8 @@ tehom add https://www.youtube.com/@channel --mode auto-export
 tehom run-once                               # check and process now
 tehom status                                 # what is happening
 tehom export-profile vertical                # or horizontal, original
+tehom update                                 # install the latest version (--rollback undoes it)
+tehom info                                   # version, folders and AI in use
 tehom service install --config tehom.toml --enable   # keep running in the background (Linux)
 ```
 

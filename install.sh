@@ -85,6 +85,11 @@ done
 
 mkdir -p "$BIN_DIR"
 for binary in tehom tehom-desktop; do
+    # Keep the replaced version so `tehom update --rollback` can restore it.
+    if [ -f "$BIN_DIR/$binary" ]; then
+        mkdir -p "$BIN_DIR/.tehom-previous"
+        cp "$BIN_DIR/$binary" "$BIN_DIR/.tehom-previous/$binary"
+    fi
     # Copy beside the target, then rename: a running old copy keeps working.
     cp "$package/$binary" "$BIN_DIR/.$binary.new"
     chmod 755 "$BIN_DIR/.$binary.new"

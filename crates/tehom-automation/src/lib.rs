@@ -802,6 +802,11 @@ impl Automation {
         }
         self.put_setting("ai", &serde_json::to_string(&ai)?).await
     }
+    /// Whether the desktop app looks for new releases at start.
+    pub async fn set_check_updates(&self, enabled: bool) -> Result<()> {
+        self.put_setting("update_check", if enabled { "on" } else { "off" })
+            .await
+    }
     /// Records that the first-run guide was completed or skipped.
     pub async fn mark_onboarded(&self) -> Result<()> {
         self.put_setting("onboarded", "true").await
@@ -2243,6 +2248,7 @@ fn validate_candidates(candidates: Vec<Candidate>, duration: u64) -> Vec<Candida
 }
 #[cfg(test)]
 mod tests;
+pub mod update;
 
 async fn snapshot_from_pool(
     pool: &SqlitePool,
@@ -2354,5 +2360,11 @@ async fn snapshot_from_pool(
         .fetch_optional(&mut *tx)
         .await?
         .is_some(),
+        check_updates: sqlx::query_scalar::<_, String>(
+            "SELECT value FROM settings WHERE key='update_check'",
+        )
+        .fetch_optional(&mut *tx)
+        .await?
+        .is_none_or(|value| value != "off"),
     })
 }

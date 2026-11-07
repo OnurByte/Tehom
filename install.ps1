@@ -15,7 +15,7 @@ $ProgressPreference = 'SilentlyContinue'
 $Repo = if ($env:TEHOM_REPO) { $env:TEHOM_REPO } else { 'OnurByte/Tehom' }
 $Version = if ($env:TEHOM_VERSION) { $env:TEHOM_VERSION } else { 'latest' }
 $GstVersion = '1.28.8'
-$InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\Tehom'
+$InstallDir = if ($env:TEHOM_BIN_DIR) { $env:TEHOM_BIN_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\Tehom' }
 
 function Fail($Message) {
     Write-Host "Tehom install stopped: $Message" -ForegroundColor Red
@@ -61,8 +61,19 @@ try {
         if (-not (Test-Path (Join-Path $Package $Binary))) { Fail "$Binary is missing from the archive" }
     }
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+    $Previous = Join-Path $InstallDir '.tehom-previous'
     foreach ($Binary in 'tehom.exe', 'tehom-desktop.exe') {
-        Copy-Item (Join-Path $Package $Binary) (Join-Path $InstallDir $Binary) -Force
+        $Target = Join-Path $InstallDir $Binary
+        if (Test-Path $Target) {
+            # Keep the replaced version for `tehom update --rollback`; a running
+            # .exe cannot be overwritten but can be renamed aside.
+            New-Item -ItemType Directory -Force -Path $Previous | Out-Null
+            Copy-Item $Target (Join-Path $Previous $Binary) -Force
+            $Aside = Join-Path $InstallDir ".$Binary.old"
+            Remove-Item $Aside -Force -ErrorAction SilentlyContinue
+            Rename-Item $Target $Aside
+        }
+        Copy-Item (Join-Path $Package $Binary) $Target -Force
     }
 
     function Add-UserPath($Directory) {
