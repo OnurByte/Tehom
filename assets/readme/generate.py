@@ -128,14 +128,17 @@ def wrap(c, x, y, lines, size=14, gap=22, muted=True):
 
 for theme in THEMES:
     # Hero: signature, statement, short description.
+    # Centred: the signature (mark plus name) and both lines share one axis.
     c = Canvas(theme)
-    c.card(0, 0, WIDTH, 248)
-    c.mark(40, 40, 56)
-    c.text(112, 79, "Tehom", size=32)
-    c.text(40, 158, "Paste a link. Get clips as MP4 files.", size=36)
-    wrap(c, 40, 198, ["The AI you choose picks the moments worth keeping. Videos stay on",
-                      "your computer, and nothing is ever posted for you."], size=16, gap=26)
-    c.save("hero", theme, 248, "Tehom. Paste a link. Get clips as MP4 files.")
+    c.card(0, 0, WIDTH, 260)
+    mark, gap, name_width = 48, 14, 88  # "Tehom" at 32 px is about 88 px wide
+    left = (WIDTH - (mark + gap + name_width)) / 2
+    c.mark(left, 44, mark)
+    c.text(left + mark + gap, 80, "Tehom", size=32)
+    c.text(WIDTH / 2, 166, "Paste a link. Get clips as MP4 files.", size=36, anchor="middle")
+    c.text(WIDTH / 2, 210, "The AI you choose picks the best moments. Nothing is ever posted for you.",
+           size=16, muted=True, anchor="middle")
+    c.save("hero", theme, 260, "Tehom. Paste a link. Get clips as MP4 files.")
 
     # Steps: one section, four ordered columns.
     c = Canvas(theme)
@@ -179,19 +182,3 @@ for theme in THEMES:
     c.text(0, 48 + 2 * item_h + gap + 40, planned, size=14, muted=True)
     height = 48 + 2 * item_h + gap + 56
     c.save("features", theme, height, "What it does")
-
-    # Install: two machine-data blocks.
-    c = Canvas(theme)
-    c.text(0, 26, "Install with one command", size=18)
-    blocks = [
-        ("macOS ⁜ Linux", ["curl -fsSL https://raw.githubusercontent.com/", "OnurByte/Tehom/main/install.sh | sh"]),
-        ("Windows PowerShell", ["irm https://raw.githubusercontent.com/", "OnurByte/Tehom/main/install.ps1 | iex"]),
-    ]
-    block_w = (WIDTH - 24) / 2
-    for i, (label, lines) in enumerate(blocks):
-        x = i * (block_w + 24)
-        c.card(x, 48, block_w, 132, fill=THEMES[theme]["surface"])
-        c.text(x + 20, 80, label, size=14, muted=True)
-        for j, line in enumerate(lines):
-            c.text(x + 20, 120 + j * 26, line, size=15, mono=True)
-    c.save("install", theme, 180, "Install with one command on macOS, Linux and Windows")
