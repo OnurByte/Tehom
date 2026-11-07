@@ -654,6 +654,82 @@ impl Automation {
                 .await?,
         )
     }
+    /// Saves the original video, independent of clips (spec §8 "Orijinali
+    /// indir"). Downloads it first when needed; never overwrites `destination`.
+    /// A directory destination receives `tehom-original-<video>.<ext>`.
+    pub async fn save_original(&self, id: i64, destination: PathBuf) -> Result<PathBuf> {
+        let _guard = self
+            .worker
+            .try_lock()
+            .context("Wait for the current video job before saving the original")?;
+        let row = sqlx::query("SELECT url,state,external_id,local_path FROM videos WHERE id=?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .context("Video not found")?;
+        let url: String = row.get("url");
+        ensure!(
+            row.get::<String, _>("state") != "running",
+            "Video is being processed"
+        );
+        let source = if url.starts_with("local:") {
+            PathBuf::from(
+                row.get::<Option<String>, _>("local_path")
+                    .context("Local video path is missing")?,
+            )
+        } else {
+            let folder = self.directory.join("videos").join(id.to_string());
+            tokio::fs::create_dir_all(&folder).await?;
+            let folder = tokio::fs::canonicalize(folder).await?;
+            ensure!(
+                folder.starts_with(&self.directory),
+                "Media directory escaped application data"
+            );
+            let source = folder.join("source.mp4");
+            if !source.exists() {
+                self.download(&folder, &url, false, Arc::new(AtomicBool::new(false)))
+                    .await?;
+            }
+            let source = tokio::fs::canonicalize(&source)
+                .await
+                .context("Original video could not be downloaded")?;
+            ensure!(
+                source.starts_with(&folder),
+                "Downloaded media escaped its directory"
+            );
+            sqlx::query("UPDATE videos SET local_path=? WHERE id=?")
+                .bind(source.to_str().context("Invalid media path")?)
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
+            source
+        };
+        let source = tokio::fs::canonicalize(&source)
+            .await
+            .context("Original video file was not found; restore it and try again")?;
+        let probe = source.clone();
+        tokio::task::spawn_blocking(move || tehom_media::inspect(&probe))
+            .await?
+            .context("Original video is not a valid media file")?;
+        let destination = if tokio::fs::metadata(&destination)
+            .await
+            .is_ok_and(|m| m.is_dir())
+        {
+            let name: String = row
+                .get::<String, _>("external_id")
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+                .take(64)
+                .collect();
+            let extension = source.extension().and_then(|e| e.to_str()).unwrap_or("mp4");
+            destination.join(format!("tehom-original-{name}.{extension}"))
+        } else {
+            destination
+        };
+        let (from, to) = (source, destination.clone());
+        tokio::task::spawn_blocking(move || tehom_media::copy_noclobber(&from, &to)).await??;
+        Ok(destination)
+    }
     pub async fn import_transcript(
         &self,
         id: i64,

@@ -81,6 +81,11 @@ enum Command {
         #[arg(long)]
         end_ms: u64,
     },
+    /// Save the original video file to PATH (a file or a folder).
+    SaveOriginal {
+        id: i64,
+        path: PathBuf,
+    },
     ImportTranscript {
         id: i64,
         path: PathBuf,
@@ -212,6 +217,9 @@ async fn main() -> Result<()> {
             engine
                 .import_transcript(id, path, language.as_deref())
                 .await?
+        }
+        Command::SaveOriginal { id, path } => {
+            println!("{}", engine.save_original(id, path).await?.display())
         }
         Command::Retry { id } => engine.retry_video(id).await?,
         Command::Cancel { id } => engine.cancel_video(id).await?,

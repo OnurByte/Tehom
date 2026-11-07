@@ -29,6 +29,7 @@ enum Action {
     Retry(i64),
     Import(i64, PathBuf),
     Cancel(i64),
+    SaveOriginal(i64),
     ExportDirectory(PathBuf),
 }
 
@@ -235,6 +236,11 @@ impl Tehom {
                         Action::Cancel(id) => {
                             backend.engine.cancel_video(id).await?;
                             "Video işi iptal edildi.".into()
+                        }
+                        Action::SaveOriginal(id) => {
+                            let folder = backend.engine.snapshot().await?.export_directory;
+                            let saved = backend.engine.save_original(id, folder).await?;
+                            format!("Orijinal video kaydedildi: {}", saved.display())
                         }
                         Action::ExportDirectory(path) => {
                             backend.engine.set_export_directory(path).await?;
@@ -558,6 +564,16 @@ impl Tehom {
                                     )
                                 },
                             )
+                            .when(video.state != "running", |v| {
+                                v.child(
+                                    Button::new(("save-original", id as usize))
+                                        .label("Orijinali kaydet")
+                                        .disabled(self.source_busy)
+                                        .on_click(cx.listener(move |view, _, window, cx| {
+                                            view.act(Action::SaveOriginal(id), window, cx)
+                                        })),
+                                )
+                            })
                             .when(video.state == "running" || video.state == "queued", |v| {
                                 v.child(
                                     Button::new(("cancel-job", id as usize))

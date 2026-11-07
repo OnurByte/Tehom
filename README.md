@@ -57,6 +57,7 @@ tehom daemon --config /path/to/tehom.toml
 tehom status
 # If a video needs captions, upload them and explicitly retry:
 tehom import-transcript VIDEO_ID /path/to/subtitles.srt --language tr
+tehom save-original VIDEO_ID ~/Videos   # original file, separate from clips
 tehom retry VIDEO_ID
 ```
 

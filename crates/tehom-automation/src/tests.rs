@@ -1216,3 +1216,67 @@ async fn deleted_original_and_moved_export_are_reported_not_hidden() {
     std::fs::create_dir(&input).unwrap();
     assert!(!engine.snapshot().await.unwrap().videos[0].local_available);
 }
+#[cfg(unix)]
+#[tokio::test]
+async fn original_is_saved_separately_without_redownload_or_overwrite() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let mut engine = Automation::open(dir.path().join("data")).await.unwrap();
+    let calls = dir.path().join("calls");
+    let downloader = dir.path().join("downloader");
+    std::fs::write(
+        &downloader,
+        format!(
+            "#!/bin/sh\necho call >> '{}'\noutput=\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = '-o' ]; then shift; output=\"$1\"; fi\n  shift\ndone\nexec ffmpeg -nostdin -v error -f lavfi -i testsrc2=size=160x90:rate=10 -t 2 -c:v libx264 \"${{output%%\\%*}}mp4\"\n",
+            calls.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&downloader, std::fs::Permissions::from_mode(0o700)).unwrap();
+    engine.downloader = downloader;
+    sqlx::query("INSERT INTO sources(url,channel_id,title,mode) VALUES ('u','UC1234567890123456789012','Channel','manual')").execute(&engine.pool).await.unwrap();
+    engine
+        .save_entries(
+            1,
+            &[Entry {
+                id: "abcdefghijk".into(),
+                title: "Video".into(),
+            }],
+            false,
+        )
+        .await
+        .unwrap();
+
+    let target = dir.path().join("saved");
+    std::fs::create_dir(&target).unwrap();
+    let saved = engine.save_original(1, target.clone()).await.unwrap();
+    assert_eq!(saved, target.join("tehom-original-abcdefghijk.mp4"));
+    assert!((tehom_media::duration(&saved).unwrap() - 2.0).abs() < 0.2);
+    let snapshot = engine.snapshot().await.unwrap();
+    assert!(snapshot.videos[0].local_available);
+    assert!(
+        snapshot.clips.is_empty(),
+        "saving an original creates no clips"
+    );
+
+    // Saving again reuses the download and never replaces an existing file.
+    let bytes = std::fs::read(&saved).unwrap();
+    assert!(engine.save_original(1, target.clone()).await.is_err());
+    assert_eq!(std::fs::read(&saved).unwrap(), bytes);
+    let named = target.join("copy.mp4");
+    assert_eq!(engine.save_original(1, named.clone()).await.unwrap(), named);
+    assert_eq!(std::fs::read(&named).unwrap(), bytes);
+    assert_eq!(std::fs::read_to_string(&calls).unwrap().lines().count(), 1);
+    let leftovers = std::fs::read_dir(&target)
+        .unwrap()
+        .filter(|e| {
+            e.as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".tehom-")
+        })
+        .count();
+    assert_eq!(leftovers, 0);
+    assert!(engine.save_original(99, target).await.is_err());
+}

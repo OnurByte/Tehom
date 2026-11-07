@@ -31,6 +31,37 @@ pub fn require_space(path: &Path, required_bytes: u64) -> io::Result<()> {
     Ok(())
 }
 
+/// Copies `source` to `destination` through a temporary file in the
+/// destination folder, publishing only a complete copy and never replacing
+/// an existing file.
+pub fn copy_noclobber(source: &Path, destination: &Path) -> io::Result<()> {
+    if destination.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "Hedef dosya zaten var",
+        ));
+    }
+    let parent = destination
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let size = std::fs::metadata(source)?.len();
+    require_space(parent, size.saturating_add(64 * 1024 * 1024))?;
+    let mut temporary = tempfile::Builder::new()
+        .prefix(".tehom-")
+        .suffix(".part")
+        .tempfile_in(parent)?;
+    let copied = io::copy(&mut std::fs::File::open(source)?, temporary.as_file_mut())?;
+    if copied != size {
+        return Err(io::Error::other("Kopyalama eksik kaldı"));
+    }
+    temporary.as_file().sync_all()?;
+    temporary
+        .persist_noclobber(destination)
+        .map_err(|error| error.error)?;
+    Ok(())
+}
+
 pub fn duration(path: &Path) -> io::Result<f64> {
     Ok(inspect(path)?.duration)
 }
