@@ -10,6 +10,17 @@ pub enum AutomationMode {
     Paused,
 }
 
+/// One recorded video state change (spec §14 `events`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Event {
+    pub id: i64,
+    pub video_id: i64,
+    pub level: String,
+    pub state: String,
+    pub message: Option<String>,
+    pub created_at: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Source {
     pub id: i64,
@@ -110,4 +121,7 @@ pub struct EngineSnapshot {
     pub export_directory: PathBuf,
     #[serde(default)]
     pub export_profile: ExportProfile,
+    /// Most recent state changes, newest first (at most 100).
+    #[serde(default)]
+    pub events: Vec<Event>,
 }

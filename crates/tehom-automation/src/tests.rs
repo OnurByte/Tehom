@@ -1341,3 +1341,65 @@ async fn auto_export_uses_selected_profile_and_recovery_keeps_the_started_one() 
     );
     assert_eq!(std::fs::read(&output).unwrap(), published);
 }
+#[tokio::test]
+async fn state_changes_are_recorded_as_events_and_survive_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Automation::open(dir.path().into()).await.unwrap();
+    sqlx::query("INSERT INTO sources(url,channel_id,title,mode) VALUES ('u','UC1234567890123456789012','Channel','auto_draft')").execute(&engine.pool).await.unwrap();
+    engine
+        .save_entries(
+            1,
+            &[Entry {
+                id: "abcdefghijk".into(),
+                title: "Video".into(),
+            }],
+            false,
+        )
+        .await
+        .unwrap();
+    // No model configured: the job stops for input with an explanation.
+    assert!(engine.process_next().await.unwrap());
+    sqlx::query("UPDATE videos SET state='running'")
+        .execute(&engine.pool)
+        .await
+        .unwrap();
+    engine.pool.close().await;
+    drop(engine);
+    let engine = Automation::open(dir.path().into()).await.unwrap();
+    engine.cancel_video(1).await.unwrap();
+    engine.retry_video(1).await.unwrap();
+    let events = engine.snapshot().await.unwrap().events;
+    let states: Vec<&str> = events.iter().rev().map(|e| e.state.as_str()).collect();
+    assert_eq!(
+        states,
+        [
+            "queued",
+            "running",
+            "needs_input",
+            "running",
+            "retryable",
+            "cancelled",
+            "queued"
+        ]
+    );
+    let stopped = events.iter().find(|e| e.state == "needs_input").unwrap();
+    assert_eq!(stopped.level, "warning");
+    assert!(stopped.message.as_deref().unwrap().contains("AI model"));
+    assert!(
+        events
+            .iter()
+            .all(|e| e.video_id == 1 && e.created_at.ends_with('Z'))
+    );
+
+    // History is bounded.
+    sqlx::query("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<10050) INSERT INTO events(video_id,level,state) SELECT 1,'info','queued' FROM n")
+        .execute(&engine.pool)
+        .await
+        .unwrap();
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
+        .fetch_one(&engine.pool)
+        .await
+        .unwrap();
+    assert!(count <= 10_000, "{count}");
+    assert_eq!(engine.snapshot().await.unwrap().events.len(), 100);
+}

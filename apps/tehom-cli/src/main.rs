@@ -53,6 +53,11 @@ impl From<Profile> for tehom_core::ExportProfile {
 #[derive(Subcommand)]
 enum Command {
     Status,
+    /// Recent job state changes (read-only; works while the daemon runs).
+    Events {
+        #[arg(long)]
+        video: Option<i64>,
+    },
     Add {
         url: String,
         /// Defaults to automation.default_mode, else auto-draft.
@@ -183,6 +188,28 @@ async fn main() -> Result<()> {
         );
         return Ok(());
     }
+    if let Command::Events { video } = args.command {
+        for event in Automation::read_snapshot(data)
+            .await?
+            .events
+            .into_iter()
+            .rev()
+            .filter(|event| video.is_none_or(|id| event.video_id == id))
+        {
+            println!(
+                "{} video={} {} {}{}",
+                event.created_at,
+                event.video_id,
+                event.level,
+                event.state,
+                event
+                    .message
+                    .map(|message| format!(": {message}"))
+                    .unwrap_or_default()
+            );
+        }
+        return Ok(());
+    }
     let engine = Automation::open(data).await?;
     if let Some(ai) = config.ai {
         engine.set_ai(ai.into()).await?;
@@ -200,7 +227,7 @@ async fn main() -> Result<()> {
         }
     }
     match args.command {
-        Command::Status | Command::Service(_) => {
+        Command::Status | Command::Events { .. } | Command::Service(_) => {
             unreachable!("handled before opening the writable engine")
         }
         Command::Add { url, mode } => println!(

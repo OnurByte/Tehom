@@ -14,7 +14,9 @@ use std::{
     },
     time::Duration,
 };
-use tehom_core::{AiConfig, AutomationMode, Clip, EngineSnapshot, ExportProfile, Source, Video};
+use tehom_core::{
+    AiConfig, AutomationMode, Clip, EngineSnapshot, Event, ExportProfile, Source, Video,
+};
 use tokio::sync::Mutex;
 
 #[derive(Clone)]
@@ -261,7 +263,13 @@ impl Automation {
             .max_connections(4)
             .connect_with(options)
             .await?;
-        sqlx::raw_sql("CREATE TABLE IF NOT EXISTS sources(id INTEGER PRIMARY KEY,url TEXT NOT NULL,channel_id TEXT NOT NULL UNIQUE,title TEXT NOT NULL,mode TEXT NOT NULL,last_checked TEXT,error TEXT); CREATE TABLE IF NOT EXISTS videos(id INTEGER PRIMARY KEY,source_id INTEGER NOT NULL REFERENCES sources(id),external_id TEXT NOT NULL UNIQUE,title TEXT NOT NULL,url TEXT NOT NULL,state TEXT NOT NULL,error TEXT,local_path TEXT); CREATE TABLE IF NOT EXISTS clips(id INTEGER PRIMARY KEY,video_id INTEGER NOT NULL REFERENCES videos(id),title TEXT NOT NULL,start_ms INTEGER NOT NULL,end_ms INTEGER NOT NULL,reason TEXT NOT NULL DEFAULT '',output_path TEXT,UNIQUE(video_id,start_ms,end_ms)); CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL); UPDATE videos SET state='retryable',error='Interrupted; ready to retry' WHERE state='running';").execute(&pool).await?;
+        sqlx::raw_sql("CREATE TABLE IF NOT EXISTS sources(id INTEGER PRIMARY KEY,url TEXT NOT NULL,channel_id TEXT NOT NULL UNIQUE,title TEXT NOT NULL,mode TEXT NOT NULL,last_checked TEXT,error TEXT); CREATE TABLE IF NOT EXISTS videos(id INTEGER PRIMARY KEY,source_id INTEGER NOT NULL REFERENCES sources(id),external_id TEXT NOT NULL UNIQUE,title TEXT NOT NULL,url TEXT NOT NULL,state TEXT NOT NULL,error TEXT,local_path TEXT); CREATE TABLE IF NOT EXISTS clips(id INTEGER PRIMARY KEY,video_id INTEGER NOT NULL REFERENCES videos(id),title TEXT NOT NULL,start_ms INTEGER NOT NULL,end_ms INTEGER NOT NULL,reason TEXT NOT NULL DEFAULT '',output_path TEXT,UNIQUE(video_id,start_ms,end_ms)); CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL); \
+            CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY,video_id INTEGER NOT NULL,level TEXT NOT NULL,state TEXT NOT NULL,message TEXT,created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))); \
+            CREATE INDEX IF NOT EXISTS events_video ON events(video_id,id); \
+            CREATE TRIGGER IF NOT EXISTS video_created AFTER INSERT ON videos BEGIN INSERT INTO events(video_id,level,state,message) VALUES(NEW.id,'info',NEW.state,NEW.error); END; \
+            CREATE TRIGGER IF NOT EXISTS video_changed AFTER UPDATE OF state,error ON videos WHEN OLD.state IS NOT NEW.state OR OLD.error IS NOT NEW.error BEGIN INSERT INTO events(video_id,level,state,message) VALUES(NEW.id,CASE WHEN NEW.state IN ('failed','needs_input','retryable') THEN 'warning' ELSE 'info' END,NEW.state,NEW.error); END; \
+            CREATE TRIGGER IF NOT EXISTS events_bounded AFTER INSERT ON events BEGIN DELETE FROM events WHERE id <= NEW.id - 10000; END; \
+            UPDATE videos SET state='retryable',error='Interrupted; ready to retry' WHERE state='running';").execute(&pool).await?;
         let source_columns = sqlx::query("PRAGMA table_info(sources)")
             .fetch_all(&pool)
             .await?;
@@ -1539,6 +1547,29 @@ async fn snapshot_from_pool(
         })
         .collect::<Vec<_>>();
     let (videos, clips) = with_file_availability(videos, clips);
+    // Older databases opened read-only may predate the events table.
+    let has_events: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='events')",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    let events = if has_events {
+        sqlx::query("SELECT * FROM events ORDER BY id DESC LIMIT 100")
+            .fetch_all(&mut *tx)
+            .await?
+            .into_iter()
+            .map(|r| Event {
+                id: r.get("id"),
+                video_id: r.get("video_id"),
+                level: r.get("level"),
+                state: r.get("state"),
+                message: r.get("message"),
+                created_at: r.get("created_at"),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     Ok(EngineSnapshot {
         sources,
         videos,
@@ -1563,5 +1594,6 @@ async fn snapshot_from_pool(
         .await?
         .and_then(|name| ExportProfile::parse(&name))
         .unwrap_or_default(),
+        events,
     })
 }
