@@ -194,6 +194,7 @@ impl Tehom {
                     .bg(gpui_kit::Hsla::from(p.background).opacity(0.7))
                     .flex()
                     .justify_center()
+                    .items_start()
                     .pt(px(96.))
                     .key_context("CommandPalette")
                     .on_action(cx.listener(Self::close_palette))
@@ -251,7 +252,10 @@ impl Tehom {
         }
         let step = self.onboarding?;
         let snapshot = self.engine_snapshot.as_ref();
-        let ai_ready = snapshot.is_some_and(|s| !s.ai.model.trim().is_empty());
+        // Ready once a remote provider is allowed or a local model is named.
+        let ai_ready = snapshot.is_some_and(|s| {
+            (s.ai.provider.is_remote() && s.ai.remote_consent) || !s.ai.model.trim().is_empty()
+        });
         let (title, body) = match step {
             0 => (
                 "Paste a link. Get clips as MP4 files.",
@@ -259,7 +263,7 @@ impl Tehom {
             ),
             1 => (
                 "Choose who picks the clips",
-                "Use your own API key for OpenAI, Anthropic, Gemini or OpenRouter, or a model running on this computer. You can also skip this and trim clips by hand.",
+                "Use an API key (OpenAI, Anthropic, Gemini, OpenRouter), your Codex or Claude Code subscription, or a model on this computer. You can also skip this and trim clips by hand.",
             ),
             _ => (
                 "Where should clips go?",
@@ -276,12 +280,16 @@ impl Tehom {
                 .inset_0()
                 .bg(p.background)
                 .overflow_y_scroll()
+                // A column whose child keeps its height, so short windows scroll
+                // instead of clipping the buttons.
                 .flex()
-                .justify_center()
+                .flex_col()
+                .items_center()
                 .child(
                     div()
+                        .flex_shrink_0()
                         .w(px(640.))
-                        .py(px(64.))
+                        .py(px(48.))
                         .flex()
                         .flex_col()
                         .gap(px(24.))
@@ -309,11 +317,18 @@ impl Tehom {
                         .when(step == 1, |page| {
                             page.child(self.ai_card(cx)).when(ai_ready, |page| {
                                 page.child(div().text_sm().child(format!(
-                                    "Ready: {} with {}.",
+                                    "Ready: {} ({}).",
                                     snapshot.map(|s| s.ai.provider.label()).unwrap_or_default(),
-                                    snapshot.map(|s| s.ai.model.clone()).unwrap_or_default()
+                                    snapshot
+                                        .map(|s| s.ai.model.clone())
+                                        .filter(|model| !model.is_empty())
+                                        .unwrap_or_else(|| "default model".into())
                                 )))
                             })
+                        })
+                        // The status bar is hidden behind the guide, so echo it here.
+                        .when_some(self.guide_note.clone(), |page, note| {
+                            page.child(div().text_sm().text_color(p.muted).child(note))
                         })
                         .when(step == 2, |page| {
                             page.child(
@@ -348,6 +363,7 @@ impl Tehom {
                                             _ => "Finish",
                                         })
                                         .on_click(cx.listener(move |view, _, window, cx| {
+                                            view.guide_note = None;
                                             if step >= 2 {
                                                 view.finish_onboarding(window, cx);
                                             } else {
@@ -362,6 +378,7 @@ impl Tehom {
                                             .h(px(44.))
                                             .label("Back")
                                             .on_click(cx.listener(move |view, _, _, cx| {
+                                                view.guide_note = None;
                                                 view.onboarding = Some(step - 1);
                                                 cx.notify();
                                             })),

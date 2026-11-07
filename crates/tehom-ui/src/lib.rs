@@ -47,6 +47,8 @@ pub struct Tehom {
     /// First-run guide step, when shown.
     onboarding: Option<u8>,
     onboarding_checked: bool,
+    /// Result of the last action taken inside the guide.
+    guide_note: Option<String>,
     update: about::UpdateState,
     update_checked: bool,
     source_mode: AutomationMode,
@@ -171,6 +173,7 @@ impl Tehom {
             palette: None,
             onboarding: None,
             onboarding_checked: false,
+            guide_note: None,
             update: about::UpdateState::Idle,
             update_checked: false,
             source_mode: AutomationMode::AutoDraft,
