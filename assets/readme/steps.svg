@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="278" viewBox="0 0 1200 278" role="img" aria-label="Four steps: paste a link, AI finds moments, check and trim, save as MP4">
+<rect width="1200" height="278" rx="28" fill="#161616"/>
+<g transform="translate(24 24)">
+<rect width="276" height="230" rx="22" fill="#262626" stroke="#393939"/>
+<rect x="22" y="0.5" width="232" height="5" rx="2.5" fill="#be95ff"/>
+<rect x="24" y="30" width="64" height="64" rx="18" fill="#be95ff" opacity=".16"/>
+<g transform="translate(34 40)"><g fill="none" stroke="#be95ff" stroke-width="4" stroke-linecap="round"><rect x="2" y="12" width="24" height="16" rx="8"/><rect x="18" y="12" width="24" height="16" rx="8"/></g></g>
+<text x="248" y="62" font-size="40" font-weight="800" fill="#393939" text-anchor="end" font-family="-apple-system, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif">1</text>
+<text x="24" y="128" font-size="23" font-weight="700" fill="#f2f4f8" font-family="-apple-system, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif">Paste a link</text>
+<text x="24" y="160" font-size="17" fill="#a8a8b3" font-family="-apple-system, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif">A YouTube channel, a video</text>
+<text x="24" y="186" font-size="17" fill="#a8a8b3" font-family="-apple-system, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif">or a file on your computer.</text>
+</g>
+<g transform="translate(318 24)">
+<rect width="276" height="230" rx="22" fill="#262626" stroke="#393939"/>
+<rect x="22" y="0.5" width="232" height="5" rx="2.5" fill="#78a9ff"/>
+<rect x="24" y="30" width="64" height="64" rx="18" fill="#78a9ff" opacity=".16"/>
+<g transform="translate(34 40)"><path d="M22 2 C25 16 30 19 42 22 C30 25 25 28 22 42 C19 28 14 25 2 22 C14 19 19 16 22 2 Z" fill="#78a9ff"/></g>
+<text x="248" y="62" font-size="40" font-weight="800" fill="#393939" text-anchor="end" font-family="-apple-system, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif">2</text>
+<text x="24" y="128" font-size="23" font-weight="700" fill="#f2f4f8" font-family="-apple-system, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif">AI finds moments</text>
+<text x="24" y="160" font-size="17" fill="#a8a8b3" font-family="-apple-system, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif">Your own local model reads</text>
+<text x="24" y="186" font-size="17" fill="#a8a8b3" font-family="-apple-system, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif">the captions and picks.</text>
+</g>
+<g transform="translate(612 24)">
+<rect width="276" height="230" rx="22" fill="#262626" stroke="#393939"/>
+<rect x="22" y="0.5" width="232" height="5" rx="2.5" fill="#33b1ff"/>
+<rect x="24" y="30" width="64" height="64" rx="18" fill="#33b1ff" opacity=".16"/>
+<g transform="translate(34 40)"><g fill="none" stroke="#33b1ff" stroke-width="4" stroke-linecap="round"><circle cx="10" cy="32" r="7"/><circle cx="34" cy="32" r="7"/><path d="M15 27 L36 4 M29 27 L8 4"/></g></g>
+<text x="248" y="62" font-size="40" font-weight="800" fill="#393939" text-anchor="end" font-family="-apple-system, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif">3</text>
+<text x="24" y="128" font-size="23" font-weight="700" fill="#f2f4f8" font-family="-apple-system, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif">Check and trim</text>
+<text x="24" y="160" font-size="17" fill="#a8a8b3" font-family="-apple-system, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif">Watch each draft, move the</text>
+<text x="24" y="186" font-size="17" fill="#a8a8b3" font-family="-apple-system, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif">start or end if you like.</text>
+</g>
+<g transform="translate(906 24)">
+<rect width="276" height="230" rx="22" fill="#262626" stroke="#393939"/>
+<rect x="22" y="0.5" width="232" height="5" rx="2.5" fill="#ff7eb6"/>
+<rect x="24" y="30" width="64" height="64" rx="18" fill="#ff7eb6" opacity=".16"/>
+<g transform="translate(34 40)"><g fill="none" stroke="#ff7eb6" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><path d="M22 4 V28 M12 18 L22 28 L32 18"/><path d="M4 30 V38 H40 V30"/></g></g>
+<text x="248" y="62" font-size="40" font-weight="800" fill="#393939" text-anchor="end" font-family="-apple-system, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif">4</text>
+<text x="24" y="128" font-size="23" font-weight="700" fill="#f2f4f8" font-family="-apple-system, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif">Save as MP4</text>
+<text x="24" y="160" font-size="17" fill="#a8a8b3" font-family="-apple-system, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif">Clips land in your folder,</text>
+<text x="24" y="186" font-size="17" fill="#a8a8b3" font-family="-apple-system, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif">by hand or automatically.</text>
+</g>
+</svg>

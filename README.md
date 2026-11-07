@@ -5,265 +5,103 @@
 
 # Tehom
 
-**Paste a video or channel link. Get short clips as MP4 files, made on your own computer.**
+<img src="assets/readme/hero.svg" width="100%" alt="Paste a link, Tehom finds the best moments and saves them as short clips">
 
-Tehom is a native Rust desktop app (GPUI Kit) and CLI. It downloads a video, reads its captions, asks a **local** AI model for the best moments and renders them with FFmpeg. Nothing is uploaded or published anywhere.
+> **Early version, still in development.** Tested on Linux; macOS and Windows builds run in CI. Cards marked *COMING* are not built yet. Full detail: [status](docs/status.md).
 
-> **Status:** under active development, not a released product. Every card below says what is working, experimental or still missing. Full detail: [requirement status](docs/status.md) · [specification](docs/master-spec.txt).
+## Install with one command
 
-**Legend:** ✅ working and tested · 🧪 experimental · ⏳ not built yet
+<img src="assets/readme/install.svg" width="100%" alt="One command to install on macOS, Linux and Windows">
 
----
+**macOS and Linux** (Terminal):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/OnurByte/Tehom/main/install.sh | sh
+```
+
+**Windows** (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/OnurByte/Tehom/main/install.ps1 | iex
+```
+
+The installer puts Tehom in your user folder (no admin rights), checks the download's SHA-256 and adds Tehom to your app menu. If FFmpeg, yt-dlp or GStreamer are missing, it shows the exact command and asks before installing them. You also need a local AI model, for example [Ollama](https://ollama.com).
+
+> The installer downloads from [GitHub Releases](https://github.com/OnurByte/Tehom/releases). Until the first release is published, build from source (see [Development](#development)). Release files are checksum-verified but not yet code-signed.
 
 ## How it works
 
-<table>
-<tr>
-<td width="25%" valign="top">
+<img src="assets/readme/steps.svg" width="100%" alt="Four steps: paste a link, AI finds moments, check and trim, save as MP4">
 
-### 1 · Add
-Paste a **YouTube channel**, a **single video** or pick a **local file**.
+## What it can do
 
-</td>
-<td width="25%" valign="top">
+<img src="assets/readme/features.svg" width="100%" alt="Features: any clip shape, automatic channel watching, private by design, caption friendly, safe files, experimental Kick VODs">
 
-### 2 · Analyse
-Captions are read and sent to **your local model** (Ollama or OpenAI-compatible on `127.0.0.1`).
-
-</td>
-<td width="25%" valign="top">
-
-### 3 · Review
-Up to five 20–90 s drafts. Play, trim and save new versions.
-
-</td>
-<td width="25%" valign="top">
-
-### 4 · Save
-MP4 files land in your folder, manually or automatically.
-
-</td>
-</tr>
-</table>
+<img src="assets/readme/coming.svg" width="100%" alt="Coming later: speech to text, bring your own AI key, captions on clips">
 
 ---
 
-## Features
+## For power users
 
-<table>
-<tr>
-<td width="33%" valign="top">
+<details>
+<summary><b>Command line cheat sheet</b></summary>
 
-#### 📺 Sources ✅
-- YouTube channels via RSS (new videos only)
-- Single YouTube videos, shorts, live links
-- Local video files, read in place
-- Duplicate videos are never processed twice
-
-</td>
-<td width="33%" valign="top">
-
-#### 🤖 Local AI ✅
-- Ollama or OpenAI-compatible server
-- Loopback only; no cloud, no API keys
-- Every suggested range is validated
-- Invalid output produces no clip
-
-</td>
-<td width="33%" valign="top">
-
-#### 🎬 Export ✅
-- Vertical 1080×1920, horizontal 1920×1080 or original size
-- Never overwrites an existing file
-- Partial renders are never published
-- Live progress while rendering
-
-</td>
-</tr>
-<tr>
-<td valign="top">
-
-#### ⚙️ Automation ✅
-- Modes: Manual, Auto Draft, Auto Export, Paused
-- Background daemon and systemd user service
-- Survives restarts and crashes
-- Cancelled jobs never restart by themselves
-
-</td>
-<td valign="top">
-
-#### 📝 Transcripts ✅
-- Platform captions (Turkish preferred)
-- Upload SRT/VTT with a language tag
-- Export → edit → re-import as a new version
-- No automatic speech recognition
-
-</td>
-<td valign="top">
-
-#### 🗂️ Your files ✅
-- Save the original video separately
-- Missing or moved files are flagged, not hidden
-- Optional cleanup of downloads (off by default)
-- Full event history of every job
-
-</td>
-</tr>
-<tr>
-<td valign="top">
-
-#### 🧪 Experimental
-- Kick VOD links (`kick.com/video/<id>`)
-- Debian package build script (unsigned)
-
-</td>
-<td valign="top">
-
-#### ⏳ Not built yet
-- Speech recognition (manual, opt-in)
-- Remote AI with your own key
-- Captions on clips, drag reframing
-- Light theme, parallel jobs
-
-</td>
-<td valign="top">
-
-#### ⏳ Release gates
-- Signed installers (deb, Flatpak, dmg, exe)
-- Updates and rollback
-- macOS/Windows end-to-end runs
-- Security and licence audit
-
-</td>
-</tr>
-</table>
-
----
-
-## Quick start
-
-<table>
-<tr>
-<td width="50%" valign="top">
-
-#### 🖥️ Desktop
-
-```sh
-cargo run -p tehom-desktop
-```
-
-1. **Settings** → choose your local model and clip folder
-2. **Home** → paste a channel or video link, pick a mode
-3. **Clips** → review, trim, save
-
-</td>
-<td width="50%" valign="top">
-
-#### ⌨️ Command line
-
-```sh
-tehom ai --model your-installed-model
-tehom add https://www.youtube.com/@channel --mode auto-export
-tehom run-once
-tehom status
-```
-
-</td>
-</tr>
-</table>
-
-**You need:** Rust 1.99.1, FFmpeg/ffprobe, yt-dlp, GStreamer with base, good and libav plug-ins, and a local model server. On Windows/macOS use the official [GStreamer installers](https://gstreamer.freedesktop.org/download/); the [CI workflow](.github/workflows/native-prototype.yml) lists the exact Linux packages.
-
----
-
-## CLI cheat sheet
-
-<table>
-<tr>
-<td width="50%" valign="top">
-
-#### Sources and jobs
 | Command | Does |
 | --- | --- |
-| `tehom add URL --mode auto-draft` | Channel, video or Kick VOD |
+| `tehom ai --model NAME` | Choose your local model |
+| `tehom add URL --mode auto-draft` | Add a channel, video or Kick VOD |
 | `tehom import-video FILE` | Queue a local file |
-| `tehom check` / `run-once` | Look for new videos / process queue |
-| `tehom retry ID` / `cancel ID` | Control one job |
-| `tehom status` / `events --video ID` | Read state (works while daemon runs) |
-
-</td>
-<td width="50%" valign="top">
-
-#### Clips and files
-| Command | Does |
-| --- | --- |
-| `tehom revise-clip ID --start-ms … --end-ms …` | New draft version |
+| `tehom check` / `tehom run-once` | Look for new videos / process the queue |
+| `tehom retry ID` / `tehom cancel ID` | Control one job |
+| `tehom status` / `tehom events --video ID` | Read state (works while the daemon runs) |
+| `tehom revise-clip ID --start-ms … --end-ms …` | Save a new draft version |
 | `tehom export-profile vertical\|horizontal\|original` | Clip shape |
 | `tehom save-original ID ~/Videos` | Keep the source video |
-| `tehom export-transcript ID edit.srt` | Edit captions |
-| `tehom import-transcript ID file.srt --language tr` | Add a caption version |
-| `tehom cleanup --dry-run` | Free downloaded sources |
+| `tehom export-transcript ID edit.srt` | Edit captions, then import them back |
+| `tehom import-transcript ID file.tr.srt` | Add a caption version (language from the name) |
+| `tehom cleanup --dry-run` | Free space used by downloads |
 
-</td>
-</tr>
-<tr>
-<td valign="top">
+Modes: `manual`, `auto-draft`, `auto-export`, `paused`. Use `--data DIR` for another data folder.
 
-#### Background service (Linux)
+</details>
+
+<details>
+<summary><b>Run in the background (Linux)</b></summary>
+
 ```sh
 tehom service install --config ~/.config/tehom/tehom.toml --enable
 tehom service uninstall --disable
 ```
-See [user-service guide](docs/headless-service.md).
 
-</td>
-<td valign="top">
+Copy [`config/tehom.example.toml`](config/tehom.example.toml) first. Every key is either applied or rejected with a reason. See the [user-service guide](docs/headless-service.md).
 
-#### Configuration
-Copy [`config/tehom.example.toml`](config/tehom.example.toml). Every key is either applied or rejected with a reason; unknown keys are errors. CLI `--data` and `--interval-minutes` override the file.
+</details>
 
-</td>
-</tr>
-</table>
+<details>
+<summary><b>Safety and limits</b></summary>
 
----
+- The engine only contacts `www.youtube.com` and your loopback model; social and publishing APIs are refused in code. yt-dlp downloads the videos.
+- Writes are atomic and never replace existing files; partial renders are never published. [Disk and model details](docs/disk-and-models.md).
+- No web app, SaaS, accounts, social upload, scheduler or AppImage.
 
-## Safety
+</details>
 
-<table>
-<tr>
-<td width="33%" valign="top">
+<details id="development">
+<summary><b>Development</b></summary>
 
-#### 🔒 Network
-The engine only talks to `www.youtube.com` and your loopback model. Social and publishing APIs are refused in code.
-
-</td>
-<td width="33%" valign="top">
-
-#### 💾 Files
-Writes are atomic and never replace existing files. Disk space is checked before downloads and renders. [Details](docs/disk-and-models.md).
-
-</td>
-<td width="33%" valign="top">
-
-#### 🚫 Out of scope
-No web shell, SaaS, accounts, social upload, scheduler or AppImage.
-
-</td>
-</tr>
-</table>
-
----
-
-## Development
+Needs Rust 1.99.1, FFmpeg/ffprobe, yt-dlp and GStreamer with base, good and libav plug-ins. The [CI workflow](.github/workflows/native-prototype.yml) lists exact packages per platform.
 
 ```sh
+cargo run -p tehom-desktop
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
-packaging/linux/build-deb.sh   # optional: unsigned .deb in target/deb/
+packaging/release-archive.sh       # the archive the installers download
+packaging/linux/build-deb.sh       # optional unsigned .deb
 ```
 
-Tests render real media with FFmpeg. Preview tests need the GStreamer plug-ins above and fail without them. A passing build is not proof of playback or packaging; see [evidence](docs/evidence/).
+Pushing a `v*` tag runs the [release workflow](.github/workflows/release.yml), which builds the archives for Linux (x86_64, arm64), macOS (Apple Silicon, Intel) and Windows. Card images are generated by [`assets/readme/generate.py`](assets/readme/generate.py).
 
-**Licence:** AGPL-3.0-or-later. Geist fonts under the included OFL. The brand geometry is the user's original; see [asset provenance](assets/README.md).
+</details>
+
+**Licence:** AGPL-3.0-or-later. Geist fonts under the included OFL. The brand logo is the original supplied design; see [asset provenance](assets/README.md).

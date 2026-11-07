@@ -1,0 +1,87 @@
+name: Release
+# Pushing a tag such as v0.1.0 builds every platform archive that install.sh
+# and install.ps1 download, with SHA-256 files, and attaches them to a GitHub
+# release. Archives are not code-signed or notarised yet.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm, macos-15, macos-15-intel, windows-2025]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: 2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld pkg-config libasound2-dev libfontconfig1-dev libfreetype6-dev libxkbcommon-x11-dev libwayland-dev libxcb1-dev libvulkan-dev libssl-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+      - name: macOS dependencies
+        if: runner.os == 'macOS'
+        run: |
+          curl -fL https://gstreamer.freedesktop.org/data/pkg/osx/1.28.8/gstreamer-1.0-1.28.8-universal.pkg -o "$RUNNER_TEMP/gstreamer.pkg"
+          curl -fL https://gstreamer.freedesktop.org/data/pkg/osx/1.28.8/gstreamer-1.0-devel-1.28.8-universal.pkg -o "$RUNNER_TEMP/gstreamer-devel.pkg"
+          sudo installer -pkg "$RUNNER_TEMP/gstreamer.pkg" -target /
+          sudo installer -pkg "$RUNNER_TEMP/gstreamer-devel.pkg" -target /
+          echo 'PKG_CONFIG_PATH=/Library/Frameworks/GStreamer.framework/Versions/1.0/lib/pkgconfig' >> "$GITHUB_ENV"
+          echo 'RUSTFLAGS=-C link-arg=-Wl,-rpath,/Library/Frameworks/GStreamer.framework/Versions/1.0/lib' >> "$GITHUB_ENV"
+          echo 'MACOSX_DEPLOYMENT_TARGET=13.0' >> "$GITHUB_ENV"
+      - name: Windows dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install pkgconfiglite --no-progress -y
+          $installer = "$env:RUNNER_TEMP/gstreamer.exe"
+          Invoke-WebRequest 'https://gstreamer.freedesktop.org/data/pkg/windows/1.28.8/msvc/gstreamer-1.0-msvc-x86_64-1.28.8.exe' -OutFile $installer
+          $root = "$env:RUNNER_TEMP/gstreamer"
+          $process = Start-Process $installer -ArgumentList @('/VERYSILENT', '/NORESTART', '/CURRENTUSER', '/TYPE=devel', "/DIR=$root") -PassThru -Wait
+          if ($process.ExitCode -ne 0) { throw "GStreamer installation failed: $($process.ExitCode)" }
+          "$root/bin" >> $env:GITHUB_PATH
+          "PKG_CONFIG_PATH=$($root.Replace('\','/'))/lib/pkgconfig" >> $env:GITHUB_ENV
+          "GSTREAMER_1_0_ROOT_MSVC_X86_64=$root" >> $env:GITHUB_ENV
+      - name: Build release binaries
+        shell: bash
+        run: cargo build --release --locked -p tehom-cli -p tehom-desktop
+      - name: Pack archive
+        shell: bash
+        run: packaging/release-archive.sh target/release
+      - name: Smoke-test the packed CLI
+        shell: bash
+        run: |
+          mkdir -p smoke
+          if [[ -f target/dist/tehom-windows-x86_64.zip ]]; then
+            7z x -osmoke target/dist/tehom-windows-x86_64.zip >/dev/null
+            smoke/tehom/tehom.exe --version
+          else
+            tar -xzf target/dist/tehom-*.tar.gz -C smoke
+            smoke/tehom/tehom --version
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: archive-${{ matrix.runner }}
+          path: target/dist/
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "Tehom $GITHUB_REF_NAME" --notes "Install: see README. Archives are SHA-256 checked by the installers but not code-signed or notarised."
