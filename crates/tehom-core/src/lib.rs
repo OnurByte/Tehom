@@ -194,6 +194,10 @@ impl Default for AiConfig {
     }
 }
 
+fn enabled() -> bool {
+    true
+}
+
 /// Output geometry for automatic exports (spec v0.5 output profiles).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -243,4 +247,7 @@ pub struct EngineSnapshot {
     /// The first-run guide was completed or skipped.
     #[serde(default)]
     pub onboarded: bool,
+    /// Look for a new release when the desktop app starts.
+    #[serde(default = "enabled")]
+    pub check_updates: bool,
 }

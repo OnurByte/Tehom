@@ -1,3 +1,4 @@
+mod about;
 mod automation_ui;
 mod shell;
 pub mod theme;
@@ -46,6 +47,8 @@ pub struct Tehom {
     /// First-run guide step, when shown.
     onboarding: Option<u8>,
     onboarding_checked: bool,
+    update: about::UpdateState,
+    update_checked: bool,
     source_mode: AutomationMode,
     source_busy: bool,
     backend: Option<Arc<Backend>>,
@@ -168,6 +171,8 @@ impl Tehom {
             palette: None,
             onboarding: None,
             onboarding_checked: false,
+            update: about::UpdateState::Idle,
+            update_checked: false,
             source_mode: AutomationMode::AutoDraft,
             source_busy: false,
             backend: None,
@@ -894,6 +899,7 @@ mod tests {
             export_profile: tehom_core::ExportProfile::Horizontal,
             events: Vec::new(),
             onboarded: true,
+            check_updates: false,
         }
     }
 
@@ -1090,6 +1096,41 @@ mod tests {
                     .is_some()
             );
             assert!(window.try_find_by_label("Local model server").is_none());
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn about_card_offers_an_available_update_and_the_sidebar_says_so(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, view) = open_view(cx, snapshot(dir.path(), true));
+        cx.update_window(handle, |_, window, cx| {
+            view.update(cx, |view, cx| {
+                view.page = Page::Settings;
+                view.update = about::UpdateState::Ready(tehom_automation::update::UpdateStatus {
+                    current: tehom_automation::update::CURRENT_VERSION.into(),
+                    available: true,
+                    latest: tehom_automation::update::Release {
+                        tag: "v9.9.9".into(),
+                        version: (9, 9, 9),
+                        url: "https://github.com/OnurByte/Tehom/releases/tag/v9.9.9".into(),
+                        notes: String::new(),
+                    },
+                });
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert!(window.try_find_by_label("Update to v9.9.9").is_some());
+            assert!(window.try_find_by_label("Install update").is_some());
+            for label in [
+                "What's new",
+                "Open clip folder",
+                "Open data folder",
+                "Report a problem",
+            ] {
+                assert!(window.try_find_by_label(label).is_some(), "{label}");
+            }
         })
         .unwrap();
     }

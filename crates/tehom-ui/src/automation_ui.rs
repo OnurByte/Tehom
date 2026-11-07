@@ -12,9 +12,9 @@ pub(crate) enum Page {
     Settings,
 }
 
-pub(super) struct Backend {
-    runtime: tokio::runtime::Runtime,
-    engine: Automation,
+pub(crate) struct Backend {
+    pub(crate) runtime: tokio::runtime::Runtime,
+    pub(crate) engine: Automation,
 }
 
 pub(crate) enum Action {
@@ -36,6 +36,7 @@ pub(crate) enum Action {
     ExportDirectory(PathBuf),
     ExportProfile(tehom_core::ExportProfile),
     Onboarded,
+    CheckUpdates(bool),
 }
 
 impl Tehom {
@@ -273,6 +274,14 @@ impl Tehom {
                                 "Captions saved for editing: {}. Edit them, then add them back with \"Add captions\".",
                                 path.display()
                             )
+                        }
+                        Action::CheckUpdates(enabled) => {
+                            backend.engine.set_check_updates(enabled).await?;
+                            if enabled {
+                                "Tehom will look for updates when it starts.".into()
+                            } else {
+                                "Automatic update checks are off.".into()
+                            }
                         }
                         Action::Onboarded => {
                             backend.engine.mark_onboarded().await?;
@@ -849,6 +858,7 @@ impl Tehom {
             .gap_4()
             .child(div().text_3xl().child("Settings"))
             .child(self.ai_card(cx))
+            .child(self.about_card(cx))
             .child(
                 div()
                     .p_5()
@@ -910,8 +920,12 @@ impl Tehom {
 }
 
 impl Render for Tehom {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.check_onboarding();
+        self.maybe_check_updates(window, cx);
+        let update_tag = self
+            .available_update()
+            .map(|status| status.latest.tag.clone());
         let p = crate::theme::palette(cx);
         let menu = SidebarMenu::new().children(
             [
@@ -955,12 +969,21 @@ impl Render for Tehom {
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(p.muted)
-                            .child("Runs on this computer"),
-                    )
+                    .when_some(update_tag, |footer, tag| {
+                        footer.child(
+                            Button::new("update-banner")
+                                .h(px(44.))
+                                .primary()
+                                .label(format!("Update to {tag}"))
+                                .on_click(
+                                    cx.listener(|view, _, _, cx| view.navigate(Page::Settings, cx)),
+                                ),
+                        )
+                    })
+                    .child(div().text_xs().text_color(p.muted).child(format!(
+                        "Tehom {}",
+                        tehom_automation::update::CURRENT_VERSION
+                    )))
                     .child(
                         Button::new("local-video")
                             .h(px(44.))
