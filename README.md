@@ -4,7 +4,7 @@
 </picture>
 
 <p align="center">
-  <a href="https://github.com/OnurByte/Tehom/releases/latest"><b>Download</b></a> ⁜ Linux, macOS and Windows ⁜ Free and open source
+  <a href="https://github.com/OnurByte/Tehom/releases/latest"><b>Download</b></a> ⁜ Linux, macOS and Windows ⁜ Free and open source ⁜ Built with <a href="https://gpui-kit.com/">GPUI Kit</a>
 </p>
 
 ## Install
@@ -84,7 +84,7 @@ More: [security](docs/security.md), [disk and models](docs/disk-and-models.md).
 <details>
 <summary><b>Build from source</b></summary>
 
-Needs Rust 1.99.1, FFmpeg, yt-dlp and GStreamer (base, good and libav plug-ins).
+A native Rust app built with [GPUI Kit](https://gpui-kit.com/). Needs Rust 1.99.1, FFmpeg, yt-dlp and GStreamer (base, good and libav plug-ins).
 
 ```sh
 cargo run -p tehom-desktop
