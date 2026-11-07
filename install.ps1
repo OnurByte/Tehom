@@ -114,7 +114,15 @@ try {
             }
             if ($Missing -contains 'gstreamer') {
                 $Installer = Join-Path $Temp 'gstreamer.exe'
-                Invoke-WebRequest "https://gstreamer.freedesktop.org/data/pkg/windows/$GstVersion/msvc/gstreamer-1.0-msvc-x86_64-$GstVersion.exe" -OutFile $Installer -UseBasicParsing
+                for ($Try = 1; $Try -le 5; $Try++) {
+                    try {
+                        Invoke-WebRequest "https://gstreamer.freedesktop.org/data/pkg/windows/$GstVersion/msvc/gstreamer-1.0-msvc-x86_64-$GstVersion.exe" -OutFile $Installer -UseBasicParsing
+                        break
+                    } catch {
+                        if ($Try -eq 5) { throw }
+                        Start-Sleep -Seconds (5 * $Try)
+                    }
+                }
                 $Process = Start-Process $Installer -ArgumentList @('/VERYSILENT', '/NORESTART', '/CURRENTUSER', "/DIR=$GstRoot") -PassThru -Wait
                 if ($Process.ExitCode -ne 0) { Write-Host "GStreamer could not be installed (code $($Process.ExitCode))." }
             }

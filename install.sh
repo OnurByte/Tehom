@@ -50,7 +50,7 @@ trap 'rm -rf "$tmp"' EXIT INT TERM
 
 fetch() {
     if have curl; then
-        curl -fsSL --retry 3 "$1" -o "$2"
+        curl -fsSL --retry 5 --retry-all-errors "$1" -o "$2"
     elif have wget; then
         wget -q "$1" -O "$2"
     else
@@ -140,7 +140,7 @@ if [ -n "$missing" ]; then
     if [ "$os" = macos ]; then
         have brew || fail "Homebrew is required: https://brew.sh, then run this command again"
         pkg="gstreamer-1.0-$GST_VERSION-universal.pkg"
-        command="brew install ffmpeg yt-dlp && curl -fL https://gstreamer.freedesktop.org/data/pkg/osx/$GST_VERSION/$pkg -o /tmp/$pkg && sudo installer -pkg /tmp/$pkg -target /"
+        command="brew install ffmpeg yt-dlp && curl -fL --retry 5 --retry-all-errors https://gstreamer.freedesktop.org/data/pkg/osx/$GST_VERSION/$pkg -o /tmp/$pkg && sudo installer -pkg /tmp/$pkg -target /"
     elif have apt-get; then
         command="sudo apt-get install -y ffmpeg yt-dlp gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav"
     elif have pacman; then
