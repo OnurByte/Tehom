@@ -676,6 +676,31 @@ impl Automation {
                 .await?,
         )
     }
+    /// Writes the transcript in effect (latest upload, else platform
+    /// captions) as an editable SRT. Never overwrites `destination`; the
+    /// edited file is imported back as a new version, keeping the original.
+    pub async fn export_transcript(&self, id: i64, destination: PathBuf) -> Result<()> {
+        use tokio::io::AsyncWriteExt;
+        let mut transcript = self.uploaded_transcript(id).await?;
+        if transcript.is_none() {
+            let folder = self.directory.join("videos").join(id.to_string());
+            if tokio::fs::metadata(&folder).await.is_ok_and(|m| m.is_dir()) {
+                let folder = tokio::fs::canonicalize(folder).await?;
+                transcript = load_transcript(&folder).await?.map(|(text, _)| text);
+            }
+        }
+        let transcript = transcript.context("This video has no transcript to export")?;
+        let srt = transcript_srt(&transcript)?;
+        let mut file = tokio::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&destination)
+            .await
+            .with_context(|| format!("Could not create {}", destination.display()))?;
+        file.write_all(srt.as_bytes()).await?;
+        file.sync_all().await?;
+        Ok(())
+    }
     /// Saves the original video, independent of clips (spec §8 "Orijinali
     /// indir"). Downloads it first when needed; never overwrites `destination`.
     /// A directory destination receives `tehom-original-<video>.<ext>`.
@@ -1485,6 +1510,34 @@ fn timestamp(input: &str) -> Result<u64> {
         "Invalid subtitle timestamp"
     );
     Ok((hours * 3600 + min * 60 + sec) * 1000 + millis.parse::<u64>()?)
+}
+/// Renders a normalized transcript (`[start-end] text` lines) as SRT.
+fn transcript_srt(normalized: &str) -> Result<String> {
+    let clock = |ms: u64| {
+        format!(
+            "{:02}:{:02}:{:02},{:03}",
+            ms / 3_600_000,
+            ms / 60_000 % 60,
+            ms / 1000 % 60,
+            ms % 1000
+        )
+    };
+    let mut srt = String::new();
+    for (index, line) in normalized.lines().enumerate() {
+        let (range, text) = line
+            .strip_prefix('[')
+            .and_then(|rest| rest.split_once("] "))
+            .context("Invalid stored transcript line")?;
+        let (start, end) = range.split_once('-').context("Invalid stored range")?;
+        srt.push_str(&format!(
+            "{}\n{} --> {}\n{}\n\n",
+            index + 1,
+            clock(start.parse()?),
+            clock(end.parse()?),
+            text
+        ));
+    }
+    Ok(srt)
 }
 fn parse_transcript(input: &str) -> Result<String> {
     let normalized = input.replace("\r\n", "\n");

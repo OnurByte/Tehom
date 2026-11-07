@@ -30,6 +30,7 @@ enum Action {
     Import(i64, PathBuf),
     Cancel(i64),
     SaveOriginal(i64),
+    ExportTranscript(i64),
     ExportDirectory(PathBuf),
     ExportProfile(tehom_core::ExportProfile),
 }
@@ -242,6 +243,16 @@ impl Tehom {
                             let folder = backend.engine.snapshot().await?.export_directory;
                             let saved = backend.engine.save_original(id, folder).await?;
                             format!("Orijinal video kaydedildi: {}", saved.display())
+                        }
+                        Action::ExportTranscript(id) => {
+                            let folder = backend.engine.snapshot().await?.export_directory;
+                            tokio::fs::create_dir_all(&folder).await?;
+                            let path = folder.join(format!("tehom-transcript-{id}.srt"));
+                            backend.engine.export_transcript(id, path.clone()).await?;
+                            format!(
+                                "Altyazı düzenlemek için kaydedildi: {}. Düzenleyip \"Altyazı yükle\" ile yeni sürüm olarak ekleyebilirsin.",
+                                path.display()
+                            )
                         }
                         Action::ExportProfile(profile) => {
                             backend.engine.set_export_profile(profile).await?;
@@ -572,6 +583,20 @@ impl Tehom {
                                             .disabled(self.source_busy)
                                             .on_click(cx.listener(move |view, _, window, cx| {
                                                 view.act(Action::Retry(id), window, cx)
+                                            })),
+                                    )
+                                },
+                            )
+                            .when(
+                                video.state != "running" && video.transcript_language.is_some()
+                                    || matches!(video.state.as_str(), "complete" | "completed"),
+                                |v| {
+                                    v.child(
+                                        Button::new(("export-transcript", id as usize))
+                                            .label("Altyazıyı dışa aktar")
+                                            .disabled(self.source_busy)
+                                            .on_click(cx.listener(move |view, _, window, cx| {
+                                                view.act(Action::ExportTranscript(id), window, cx)
                                             })),
                                     )
                                 },

@@ -1482,3 +1482,65 @@ async fn export_progress_is_visible_while_running_and_cleared_after() {
     // Progress updates do not flood the event history.
     assert!(snapshot.events.len() <= 4, "{:?}", snapshot.events);
 }
+#[tokio::test]
+async fn transcripts_round_trip_through_editable_srt_as_new_versions() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Automation::open(dir.path().join("data")).await.unwrap();
+    sqlx::query("INSERT INTO sources(url,channel_id,title,mode) VALUES ('u','UC1234567890123456789012','C','manual')").execute(&engine.pool).await.unwrap();
+    engine
+        .save_entries(
+            1,
+            &[Entry {
+                id: "abcdefghijk".into(),
+                title: "V".into(),
+            }],
+            false,
+        )
+        .await
+        .unwrap();
+    let edited = dir.path().join("edited.srt");
+    assert!(engine.export_transcript(1, edited.clone()).await.is_err());
+    let folder = dir.path().join("data/videos/1");
+    std::fs::create_dir_all(&folder).unwrap();
+    let platform = "WEBVTT\n\n00:00:01.500 --> 00:00:04.000\nİlk satır\n\n01:02:03.004 --> 01:02:05.000\nSon satır\n";
+    std::fs::write(folder.join("source.tr.vtt"), platform).unwrap();
+
+    engine.export_transcript(1, edited.clone()).await.unwrap();
+    let srt = std::fs::read_to_string(&edited).unwrap();
+    assert_eq!(
+        srt,
+        "1\n00:00:01,500 --> 00:00:04,000\nİlk satır\n\n2\n01:02:03,004 --> 01:02:05,000\nSon satır\n\n"
+    );
+    assert_eq!(
+        parse_transcript(&srt).unwrap(),
+        parse_transcript(platform).unwrap()
+    );
+    // Exporting again never overwrites the user's edit target.
+    std::fs::write(&edited, srt.replace("İlk satır", "Düzeltilmiş satır")).unwrap();
+    assert!(engine.export_transcript(1, edited.clone()).await.is_err());
+
+    engine
+        .import_transcript(1, edited.clone(), Some("tr"))
+        .await
+        .unwrap();
+    assert!(
+        engine
+            .uploaded_transcript(1)
+            .await
+            .unwrap()
+            .unwrap()
+            .contains("Düzeltilmiş satır")
+    );
+    // The platform original is untouched and still available.
+    assert_eq!(
+        std::fs::read_to_string(folder.join("source.tr.vtt")).unwrap(),
+        platform
+    );
+    let second = dir.path().join("second.srt");
+    engine.export_transcript(1, second.clone()).await.unwrap();
+    assert!(
+        std::fs::read_to_string(second)
+            .unwrap()
+            .contains("Düzeltilmiş satır")
+    );
+}

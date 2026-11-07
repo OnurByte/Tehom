@@ -106,6 +106,11 @@ enum Command {
         #[arg(long)]
         end_ms: u64,
     },
+    /// Write the transcript in effect as an editable SRT (never overwrites).
+    ExportTranscript {
+        id: i64,
+        path: PathBuf,
+    },
     /// Save the original video file to PATH (a file or a folder).
     SaveOriginal {
         id: i64,
@@ -275,6 +280,7 @@ async fn main() -> Result<()> {
                 .import_transcript(id, path, language.as_deref())
                 .await?
         }
+        Command::ExportTranscript { id, path } => engine.export_transcript(id, path).await?,
         Command::SaveOriginal { id, path } => {
             println!("{}", engine.save_original(id, path).await?.display())
         }
