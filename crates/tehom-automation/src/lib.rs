@@ -14,7 +14,7 @@ use std::{
     },
     time::Duration,
 };
-use tehom_core::{AiConfig, AutomationMode, Clip, EngineSnapshot, Source, Video};
+use tehom_core::{AiConfig, AutomationMode, Clip, EngineSnapshot, ExportProfile, Source, Video};
 use tokio::sync::Mutex;
 
 #[derive(Clone)]
@@ -284,7 +284,7 @@ impl Automation {
             .fetch_all(&pool)
             .await?;
         let mut migration = pool.begin().await?;
-        for column in ["export_identity", "export_intent_path"] {
+        for column in ["export_identity", "export_intent_path", "export_profile"] {
             if !clip_columns
                 .iter()
                 .any(|row| row.get::<String, _>("name") == column)
@@ -586,6 +586,9 @@ impl Automation {
         ai_endpoint(&ai)?;
         ensure!(ai.model.len() <= 256, "Model name is too long");
         self.put_setting("ai", &serde_json::to_string(&ai)?).await
+    }
+    pub async fn set_export_profile(&self, profile: ExportProfile) -> Result<()> {
+        self.put_setting("export_profile", profile.name()).await
     }
     pub async fn set_export_directory(&self, directory: PathBuf) -> Result<()> {
         tokio::fs::create_dir_all(&directory).await?;
@@ -1089,7 +1092,7 @@ impl Automation {
                 .fetch_one(&self.pool)
                 .await?;
                 let saved = sqlx::query(
-                    "SELECT output_path,export_identity,export_intent_path FROM clips WHERE id=?",
+                    "SELECT output_path,export_identity,export_intent_path,export_profile FROM clips WHERE id=?",
                 )
                 .bind(clip_id)
                 .fetch_one(&self.pool)
@@ -1108,22 +1111,36 @@ impl Automation {
                             .export_directory
                             .join(format!("tehom-{id}-{clip_id}.mp4"))
                     });
+                // A resumed export keeps the profile it was started with.
+                let profile = saved
+                    .get::<Option<String>, _>("export_profile")
+                    .and_then(|name| ExportProfile::parse(&name))
+                    .unwrap_or(snapshot.export_profile);
                 // Persist ownership before publication, so restart can distinguish our MP4 from a collision.
-                sqlx::query("UPDATE clips SET export_identity=?,export_intent_path=? WHERE id=?")
+                sqlx::query("UPDATE clips SET export_identity=?,export_intent_path=?,export_profile=? WHERE id=?")
                     .bind(&identity)
                     .bind(output.to_str().context("Invalid export path")?)
+                    .bind(profile.name())
                     .bind(clip_id)
                     .execute(&self.pool)
                     .await?;
                 let input = input.clone();
                 let export = output.clone();
                 let flag = cancel.clone();
+                let expected = profile.dimensions(info.width, info.height);
+                let framing = match profile {
+                    ExportProfile::Original => tehom_media::Framing::Source,
+                    _ => tehom_media::Framing::Fill {
+                        width: expected.0,
+                        height: expected.1,
+                    },
+                };
                 tokio::task::spawn_blocking(move || -> Result<()> {
                     let start = candidate.start_ms as f64 / 1000.0;
                     let end = candidate.end_ms as f64 / 1000.0;
                     if !export.exists() {
-                        tehom_media::export_automated(
-                            &input, &export, start, end, &flag, &identity,
+                        tehom_media::export_framed(
+                            &input, &export, start, end, &flag, &identity, framing,
                         )?;
                     }
                     ensure!(
@@ -1133,8 +1150,7 @@ impl Automation {
                     );
                     let info = tehom_media::inspect(&export)?;
                     ensure!(
-                        info.width == 1080
-                            && info.height == 1920
+                        (info.width, info.height) == expected
                             && (info.duration - (end - start)).abs() <= 0.25,
                         "Existing export does not match the intended clip duration or dimensions"
                     );
@@ -1540,5 +1556,12 @@ async fn snapshot_from_pool(
         .await?
         .map(PathBuf::from)
         .unwrap_or_else(|| directory.join("exports")),
+        export_profile: sqlx::query_scalar::<_, String>(
+            "SELECT value FROM settings WHERE key='export_profile'",
+        )
+        .fetch_optional(&mut *tx)
+        .await?
+        .and_then(|name| ExportProfile::parse(&name))
+        .unwrap_or_default(),
     })
 }

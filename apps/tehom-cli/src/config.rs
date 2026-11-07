@@ -147,8 +147,8 @@ impl Config {
             }
             if let Some(orientation) = &export.orientation {
                 ensure!(
-                    orientation == "vertical",
-                    "export.orientation yalnız \"vertical\" olabilir; yatay/genel profiller henüz yok"
+                    tehom_core::ExportProfile::parse(orientation).is_some(),
+                    "export.orientation \"vertical\", \"horizontal\" veya \"original\" olmalı"
                 );
             }
         }
@@ -249,7 +249,7 @@ listen = "127.0.0.1:8787"
             "[automation]\nmax_concurrent_downloads = 99",
             "[automation]\ndefault_mode = \"auto_publish\"",
             "[export]\nformat = \"mov\"",
-            "[export]\norientation = \"horizontal\"",
+            "[export]\norientation = \"square\"",
             "[export]\ndirectory = \"\"",
             "[ai]\nprovider = \"cloud\"\nendpoint = \"http://127.0.0.1:1\"\nmodel = \"m\"",
             "[ai]\nprovider = \"ollama\"\nendpoint = \"http://127.0.0.1:8080/v1\"\nmodel = \"m\"",

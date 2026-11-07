@@ -73,3 +73,32 @@ fn disabled_automation_blocks_daemon_and_default_mode_applies() {
     let snapshot: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
     assert_eq!(snapshot["sources"][0]["mode"], "manual", "{snapshot}");
 }
+
+#[test]
+fn export_orientation_is_applied_and_cli_profile_overrides() {
+    let folder = tempfile::tempdir().unwrap();
+    let config = folder.path().join("tehom.toml");
+    std::fs::write(
+        &config,
+        "[data]\ndirectory = \"data\"\n[export]\norientation = \"horizontal\"\n",
+    )
+    .unwrap();
+    let profile = |command: &mut Command| {
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let snapshot: serde_json::Value =
+            serde_json::from_slice(&tehom(&config).arg("status").output().unwrap().stdout).unwrap();
+        snapshot["export_profile"].as_str().unwrap().to_owned()
+    };
+    assert_eq!(profile(tehom(&config).arg("check")), "horizontal");
+    let mut plain = Command::new(env!("CARGO_BIN_EXE_tehom"));
+    plain
+        .arg("--data")
+        .arg(folder.path().join("data"))
+        .args(["export-profile", "original"]);
+    assert_eq!(profile(&mut plain), "original");
+}

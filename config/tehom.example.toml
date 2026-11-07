@@ -14,7 +14,7 @@ max_concurrent_renders = 1
 
 [export]
 directory = "../exports"
-# Only mp4 / vertical (1080x1920) output exists today; other values are rejected.
+# format: only mp4. orientation: vertical (1080x1920), horizontal (1920x1080) or original.
 format = "mp4"
 orientation = "vertical"
 

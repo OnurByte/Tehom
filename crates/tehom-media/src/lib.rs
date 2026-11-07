@@ -88,7 +88,7 @@ fn inspect_cancellable(path: &Path, cancelled: &AtomicBool) -> io::Result<VideoI
                 "-select_streams",
                 "v:0",
                 "-show_entries",
-                "format=duration:stream=width,height,codec_name",
+                "format=duration:stream=width,height,codec_name:stream_side_data=rotation:stream_tags=rotate",
                 "-of",
                 "json",
             ])
@@ -110,10 +110,26 @@ fn inspect_cancellable(path: &Path, cancelled: &AtomicBool) -> io::Result<VideoI
             .filter(|n| *n > 0)
             .ok_or_else(|| io::Error::other("Video görüntüsü bulunamadı"))
     };
+    // Report display geometry: FFmpeg auto-rotates on decode, so a
+    // quarter-turn rotation swaps the stored width and height.
+    let rotation = stream["side_data_list"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find_map(|data| data["rotation"].as_f64())
+        .or_else(|| stream["tags"]["rotate"].as_str()?.parse::<f64>().ok())
+        .unwrap_or(0.0);
+    let quarter_turn = (rotation.round() as i64).rem_euclid(180) == 90;
+    let (width, height) = (dimension("width")?, dimension("height")?);
+    let (width, height) = if quarter_turn {
+        (height, width)
+    } else {
+        (width, height)
+    };
     Ok(VideoInfo {
         duration: seconds,
-        width: dimension("width")?,
-        height: dimension("height")?,
+        width,
+        height,
         codec: stream["codec_name"]
             .as_str()
             .unwrap_or("unknown")
@@ -135,6 +151,26 @@ pub fn export_cancellable(
     render(input, output, start, end, cancelled, None)
 }
 
+/// Frame geometry for an automatic export.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Framing {
+    /// Scale to cover `width`×`height`, then centre-crop.
+    Fill { width: u32, height: u32 },
+    /// Keep the source geometry, trimmed to even dimensions.
+    Source,
+}
+impl Framing {
+    fn filter(self) -> String {
+        match self {
+            Self::Fill { width, height } => format!(
+                "scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1"
+            ),
+            Self::Source => "scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1".into(),
+        }
+    }
+}
+
+/// Vertical 1080×1920 automatic export.
 pub fn export_automated(
     input: &Path,
     output: &Path,
@@ -142,6 +178,30 @@ pub fn export_automated(
     end: f64,
     cancelled: &AtomicBool,
     identity: &str,
+) -> io::Result<()> {
+    export_framed(
+        input,
+        output,
+        start,
+        end,
+        cancelled,
+        identity,
+        Framing::Fill {
+            width: 1080,
+            height: 1920,
+        },
+    )
+}
+
+/// Automatic export with an ownership identity and the given framing.
+pub fn export_framed(
+    input: &Path,
+    output: &Path,
+    start: f64,
+    end: f64,
+    cancelled: &AtomicBool,
+    identity: &str,
+    framing: Framing,
 ) -> io::Result<()> {
     if identity.is_empty()
         || identity.len() > 128
@@ -154,7 +214,14 @@ pub fn export_automated(
             "Geçersiz dışa aktarma kimliği",
         ));
     }
-    render(input, output, start, end, cancelled, Some(identity))
+    render(
+        input,
+        output,
+        start,
+        end,
+        cancelled,
+        Some((identity, framing)),
+    )
 }
 
 pub fn export_identity(path: &Path) -> io::Result<Option<String>> {
@@ -194,7 +261,7 @@ fn render(
     start: f64,
     end: f64,
     cancelled: &AtomicBool,
-    identity: Option<&str>,
+    identity: Option<(&str, Framing)>,
 ) -> io::Result<()> {
     let total = inspect_cancellable(input, cancelled)?.duration;
     if !start.is_finite() || !end.is_finite() || start < 0.0 || end <= start || end > total {
@@ -256,10 +323,10 @@ fn render(
             "-movflags",
             "+faststart",
         ]);
-    if let Some(identity) = identity {
+    if let Some((identity, framing)) = identity {
         command.args([
             "-vf",
-            "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1",
+            &framing.filter(),
             "-metadata",
             &format!("comment=tehom:{identity}"),
         ]);

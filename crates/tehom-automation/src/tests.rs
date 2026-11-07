@@ -1280,3 +1280,64 @@ async fn original_is_saved_separately_without_redownload_or_overwrite() {
     assert_eq!(leftovers, 0);
     assert!(engine.save_original(99, target).await.is_err());
 }
+#[tokio::test]
+async fn auto_export_uses_selected_profile_and_recovery_keeps_the_started_one() {
+    // Fresh export with the selected profile.
+    let (_dir, engine, output) = saved_draft_fixture().await;
+    engine
+        .set_export_profile(ExportProfile::Original)
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.snapshot().await.unwrap().export_profile,
+        ExportProfile::Original
+    );
+    assert!(engine.process_next().await.unwrap());
+    let snapshot = engine.snapshot().await.unwrap();
+    assert_eq!(
+        snapshot.videos[0].state, "complete",
+        "{:?}",
+        snapshot.videos[0].error
+    );
+    let info = tehom_media::inspect(&output).unwrap();
+    assert_eq!((info.width, info.height), (160, 90));
+    let stored: String = sqlx::query_scalar("SELECT export_profile FROM clips WHERE id=1")
+        .fetch_one(&engine.pool)
+        .await
+        .unwrap();
+    assert_eq!(stored, "original");
+
+    // A crash after publishing a horizontal export: the profile setting has
+    // since changed, but recovery verifies against the profile it started with.
+    let (dir, engine, output) = saved_draft_fixture().await;
+    tehom_media::export_framed(
+        &dir.path().join("videos/1/source.mp4"),
+        &output,
+        0.0,
+        20.0,
+        &AtomicBool::new(false),
+        "expected-identity",
+        tehom_media::Framing::Fill {
+            width: 1920,
+            height: 1080,
+        },
+    )
+    .unwrap();
+    sqlx::query("UPDATE clips SET export_profile='horizontal' WHERE id=1")
+        .execute(&engine.pool)
+        .await
+        .unwrap();
+    engine
+        .set_export_profile(ExportProfile::Vertical)
+        .await
+        .unwrap();
+    let published = std::fs::read(&output).unwrap();
+    assert!(engine.process_next().await.unwrap());
+    let snapshot = engine.snapshot().await.unwrap();
+    assert_eq!(
+        snapshot.videos[0].state, "complete",
+        "{:?}",
+        snapshot.videos[0].error
+    );
+    assert_eq!(std::fs::read(&output).unwrap(), published);
+}

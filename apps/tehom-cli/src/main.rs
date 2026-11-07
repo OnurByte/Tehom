@@ -35,6 +35,21 @@ impl From<Mode> for AutomationMode {
         }
     }
 }
+#[derive(Clone, Copy, ValueEnum)]
+enum Profile {
+    Vertical,
+    Horizontal,
+    Original,
+}
+impl From<Profile> for tehom_core::ExportProfile {
+    fn from(profile: Profile) -> Self {
+        match profile {
+            Profile::Vertical => Self::Vertical,
+            Profile::Horizontal => Self::Horizontal,
+            Profile::Original => Self::Original,
+        }
+    }
+}
 #[derive(Subcommand)]
 enum Command {
     Status,
@@ -67,6 +82,11 @@ enum Command {
     Models,
     ExportDirectory {
         path: PathBuf,
+    },
+    /// Output geometry for automatic exports.
+    ExportProfile {
+        #[arg(value_enum)]
+        profile: Profile,
     },
     ImportVideo {
         path: PathBuf,
@@ -167,8 +187,17 @@ async fn main() -> Result<()> {
     if let Some(ai) = config.ai {
         engine.set_ai(ai.into()).await?;
     }
-    if let Some(directory) = config.export.and_then(|export| export.directory) {
-        engine.set_export_directory(directory).await?;
+    if let Some(export) = config.export {
+        if let Some(directory) = export.directory {
+            engine.set_export_directory(directory).await?;
+        }
+        if let Some(profile) = export
+            .orientation
+            .as_deref()
+            .and_then(tehom_core::ExportProfile::parse)
+        {
+            engine.set_export_profile(profile).await?;
+        }
     }
     match args.command {
         Command::Status | Command::Service(_) => {
@@ -200,6 +229,7 @@ async fn main() -> Result<()> {
             }
         }
         Command::ExportDirectory { path } => engine.set_export_directory(path).await?,
+        Command::ExportProfile { profile } => engine.set_export_profile(profile.into()).await?,
         Command::ImportVideo { path, mode } => println!(
             "{}",
             serde_json::to_string_pretty(

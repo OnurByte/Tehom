@@ -31,6 +31,7 @@ enum Action {
     Cancel(i64),
     SaveOriginal(i64),
     ExportDirectory(PathBuf),
+    ExportProfile(tehom_core::ExportProfile),
 }
 
 impl Tehom {
@@ -241,6 +242,10 @@ impl Tehom {
                             let folder = backend.engine.snapshot().await?.export_directory;
                             let saved = backend.engine.save_original(id, folder).await?;
                             format!("Orijinal video kaydedildi: {}", saved.display())
+                        }
+                        Action::ExportProfile(profile) => {
+                            backend.engine.set_export_profile(profile).await?;
+                            "Çıktı biçimi kaydedildi; yeni otomatik klipler bu biçimde oluşturulur.".into()
                         }
                         Action::ExportDirectory(path) => {
                             backend.engine.set_export_directory(path).await?;
@@ -691,7 +696,31 @@ impl Tehom {
                             .on_click(cx.listener(|view, _, window, cx| {
                                 view.choose_export_directory(window, cx)
                             })),
-                    ),
+                    )
+                    .child(div().text_lg().child("Otomatik klip biçimi"))
+                    .child(div().flex().gap_2().children(
+                        tehom_core::ExportProfile::ALL.into_iter().enumerate().map(
+                            |(index, profile)| {
+                                let selected = self
+                                    .engine_snapshot
+                                    .as_ref()
+                                    .is_some_and(|s| s.export_profile == profile);
+                                Button::new(("export-profile", index))
+                                    .label(match profile {
+                                        tehom_core::ExportProfile::Vertical => "Dikey 1080×1920",
+                                        tehom_core::ExportProfile::Horizontal => "Yatay 1920×1080",
+                                        tehom_core::ExportProfile::Original => "Özgün boyut",
+                                    })
+                                    .disabled(unavailable)
+                                    .when(selected, |button| {
+                                        button.bg(rgb(0x30283d)).text_color(rgb(0xbe95ff))
+                                    })
+                                    .on_click(cx.listener(move |view, _, window, cx| {
+                                        view.act(Action::ExportProfile(profile), window, cx)
+                                    }))
+                            },
+                        ),
+                    )),
             )
             .into_any_element()
     }
