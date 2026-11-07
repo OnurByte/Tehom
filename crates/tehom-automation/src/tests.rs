@@ -1659,3 +1659,40 @@ async fn kick_vod_is_queued_once_as_experimental_and_never_polled() {
     assert_eq!(engine.check_now().await.unwrap(), 0);
     assert!(engine.requests.lock().unwrap().is_empty());
 }
+
+#[test]
+fn subtitle_language_is_read_from_conventional_file_names() {
+    let language = |name: &str| subtitle_name_language(std::path::Path::new(name));
+    assert_eq!(language("/d/talk.tr.srt").as_deref(), Some("tr"));
+    assert_eq!(language("/d/my.talk.en-US.vtt").as_deref(), Some("en-US"));
+    assert_eq!(language("/d/talk.srt"), None);
+    assert_eq!(language("/d/talk.final.srt"), None);
+    assert_eq!(language("/d/talk.TR.srt"), None);
+}
+#[tokio::test]
+async fn uploaded_subtitle_language_falls_back_to_the_file_name() {
+    let directory = tempfile::tempdir().unwrap();
+    let engine = Automation::open(directory.path().join("data"))
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO sources(id,url,channel_id,title,mode) VALUES(1,'u','UC1234567890123456789012','F','manual')").execute(&engine.pool).await.unwrap();
+    sqlx::query("INSERT INTO videos(id,source_id,external_id,title,url,state) VALUES(1,1,'abcdefghijk','F','u','needs_input')").execute(&engine.pool).await.unwrap();
+    let file = directory.path().join("talk.de.srt");
+    std::fs::write(&file, "1\n00:00:00,000 --> 00:00:25,000\nHallo\n").unwrap();
+    engine
+        .import_transcript(1, file.clone(), None)
+        .await
+        .unwrap();
+    let language = |engine: &Automation| {
+        let engine = engine.clone();
+        async move {
+            engine.snapshot().await.unwrap().videos[0]
+                .transcript_language
+                .clone()
+        }
+    };
+    assert_eq!(language(&engine).await.as_deref(), Some("de"));
+    // An explicit tag wins over the file name.
+    engine.import_transcript(1, file, Some("tr")).await.unwrap();
+    assert_eq!(language(&engine).await.as_deref(), Some("tr"));
+}

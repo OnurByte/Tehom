@@ -857,6 +857,12 @@ impl Automation {
                 "Language must be a tag such as tr or en-US"
             );
         }
+        // Without an explicit tag, use the common `name.<lang>.srt` convention.
+        let inferred = language
+            .is_none()
+            .then(|| subtitle_name_language(&path))
+            .flatten();
+        let language = language.or(inferred.as_deref());
         let _guard = self
             .worker
             .try_lock()
@@ -1570,6 +1576,13 @@ fn language_tag(tag: &str) -> bool {
         && (2..=3).contains(&primary.len())
         && primary.bytes().all(|b| b.is_ascii_lowercase())
         && parts.all(|p| (1..=8).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_alphanumeric()))
+}
+/// The language tag in a subtitle file name such as `talk.tr.srt` or
+/// `talk.en-US.vtt`; `None` when the second-to-last part is not a tag.
+fn subtitle_name_language(path: &std::path::Path) -> Option<String> {
+    let stem = path.file_stem()?.to_str()?;
+    let (_, language) = stem.rsplit_once('.')?;
+    language_tag(language).then(|| language.to_owned())
 }
 /// yt-dlp names captions `source.<lang>.<ext>`.
 fn caption_language(path: &std::path::Path) -> Option<String> {
