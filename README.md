@@ -60,6 +60,7 @@ tehom import-transcript VIDEO_ID /path/to/subtitles.srt --language tr
 tehom export-transcript VIDEO_ID edit.srt   # edit, then import-transcript as a new version
 tehom save-original VIDEO_ID ~/Videos   # original file, separate from clips
 tehom events --video VIDEO_ID           # state-change history; works while the daemon runs
+tehom cleanup --dry-run                  # downloaded sources of completed videos; local files are never deleted
 tehom retry VIDEO_ID
 ```
 

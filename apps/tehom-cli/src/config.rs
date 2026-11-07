@@ -20,6 +20,14 @@ pub struct Config {
     pub export: Option<Export>,
     pub ai: Option<Model>,
     pub server: Option<Server>,
+    pub storage: Option<Storage>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Storage {
+    /// `false` lets Auto Export delete a video's downloaded source once all
+    /// of its clips are saved. Defaults to keeping downloads.
+    pub keep_downloads: bool,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

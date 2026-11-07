@@ -106,6 +106,12 @@ enum Command {
         #[arg(long)]
         end_ms: u64,
     },
+    /// Delete downloaded source media of completed videos (never local files).
+    Cleanup {
+        /// Only report what would be freed.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Write the transcript in effect as an editable SRT (never overwrites).
     ExportTranscript {
         id: i64,
@@ -219,6 +225,9 @@ async fn main() -> Result<()> {
     if let Some(ai) = config.ai {
         engine.set_ai(ai.into()).await?;
     }
+    if let Some(storage) = config.storage {
+        engine.set_keep_downloads(storage.keep_downloads).await?;
+    }
     if let Some(export) = config.export {
         if let Some(directory) = export.directory {
             engine.set_export_directory(directory).await?;
@@ -279,6 +288,22 @@ async fn main() -> Result<()> {
             engine
                 .import_transcript(id, path, language.as_deref())
                 .await?
+        }
+        Command::Cleanup { dry_run } => {
+            let freed = engine.cleanup_downloads(dry_run).await?;
+            for (id, bytes) in &freed {
+                println!("video={id} {:.1} MiB", *bytes as f64 / 1_048_576.0);
+            }
+            let total: u64 = freed.iter().map(|(_, bytes)| bytes).sum();
+            println!(
+                "{} {:.1} MiB",
+                if dry_run {
+                    "Boşaltılabilir:"
+                } else {
+                    "Boşaltıldı:"
+                },
+                total as f64 / 1_048_576.0
+            );
         }
         Command::ExportTranscript { id, path } => engine.export_transcript(id, path).await?,
         Command::SaveOriginal { id, path } => {

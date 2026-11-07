@@ -1544,3 +1544,57 @@ async fn transcripts_round_trip_through_editable_srt_as_new_versions() {
             .contains("Düzeltilmiş satır")
     );
 }
+#[tokio::test]
+async fn downloads_are_removed_only_by_user_preference_and_never_local_files() {
+    // Default: downloads are kept after Auto Export.
+    let (dir, engine, output) = saved_draft_fixture().await;
+    let source = dir.path().join("videos/1/source.mp4");
+    assert!(engine.process_next().await.unwrap());
+    assert!(source.exists() && output.exists());
+
+    // Explicit opt-out: the source goes, subtitles and the exported clip stay.
+    let (dir, engine, output) = saved_draft_fixture().await;
+    let source = dir.path().join("videos/1/source.mp4");
+    let captions = dir.path().join("videos/1/source.en.vtt");
+    std::fs::write(&captions, "WEBVTT\n\n00:00:00.000 --> 00:00:25.000\nKept\n").unwrap();
+    engine.set_keep_downloads(false).await.unwrap();
+    assert!(engine.process_next().await.unwrap());
+    let snapshot = engine.snapshot().await.unwrap();
+    assert_eq!(
+        snapshot.videos[0].state, "complete",
+        "{:?}",
+        snapshot.videos[0].error
+    );
+    assert!(!source.exists());
+    assert!(captions.exists() && output.exists());
+    assert!(!snapshot.videos[0].local_available);
+    assert!(snapshot.clips[0].output_available);
+
+    // Manual cleanup: dry run reports, real run deletes, local imports untouched.
+    let (dir, engine, _output) = saved_draft_fixture().await;
+    let source = dir.path().join("videos/1/source.mp4");
+    assert!(engine.process_next().await.unwrap());
+    let size = std::fs::metadata(&source).unwrap().len();
+    let user_file = dir.path().join("my-video.mp4");
+    std::fs::copy(&source, &user_file).unwrap();
+    engine
+        .import_video(user_file.clone(), AutomationMode::Manual)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE videos SET state='complete' WHERE url LIKE 'local:%'")
+        .execute(&engine.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.cleanup_downloads(true).await.unwrap(),
+        vec![(1, size)]
+    );
+    assert!(source.exists());
+    assert_eq!(
+        engine.cleanup_downloads(false).await.unwrap(),
+        vec![(1, size)]
+    );
+    assert!(!source.exists());
+    assert!(user_file.exists());
+    assert!(engine.cleanup_downloads(false).await.unwrap().is_empty());
+}

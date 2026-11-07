@@ -18,6 +18,11 @@ directory = "../exports"
 format = "mp4"
 orientation = "vertical"
 
+[storage]
+# false lets Auto Export delete a video's downloaded source after all its clips
+# are saved (local files are never deleted). Also: tehom cleanup [--dry-run].
+keep_downloads = true
+
 [ai]
 # ollama (native API) or openai-compatible (endpoint ending in /v1). Loopback only.
 provider = "ollama"

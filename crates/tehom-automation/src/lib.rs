@@ -1007,7 +1007,79 @@ impl Automation {
             .bind(id)
             .execute(&self.pool)
             .await?;
+        // Automatic cleanup only with the user's explicit opt-out of keeping
+        // downloads, and only once every clip already exists as a file.
+        if state == "complete"
+            && mode == AutomationMode::AutoExport
+            && !self.keep_downloads().await?
+            && let Err(error) = self.remove_downloads(&[id], false).await
+        {
+            eprintln!("Download cleanup: {error}");
+        }
         Ok(true)
+    }
+    pub async fn set_keep_downloads(&self, keep: bool) -> Result<()> {
+        self.put_setting("keep_downloads", if keep { "true" } else { "false" })
+            .await
+    }
+    async fn keep_downloads(&self) -> Result<bool> {
+        Ok(
+            sqlx::query_scalar::<_, String>(
+                "SELECT value FROM settings WHERE key='keep_downloads'",
+            )
+            .fetch_optional(&self.pool)
+            .await?
+            .is_none_or(|value| value != "false"),
+        )
+    }
+    /// Deletes downloaded source media of completed videos from application
+    /// data. Local imports, subtitles and exports are never touched; a later
+    /// retry or "save original" downloads the source again. Returns the
+    /// (video id, bytes) that were, or with `dry_run` would be, freed.
+    pub async fn cleanup_downloads(&self, dry_run: bool) -> Result<Vec<(i64, u64)>> {
+        let _guard = self
+            .worker
+            .try_lock()
+            .context("Wait for the current video job before cleaning up")?;
+        let ids: Vec<i64> = sqlx::query_scalar(
+            "SELECT id FROM videos WHERE state IN ('complete','completed') AND url NOT LIKE 'local:%' ORDER BY id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        self.remove_downloads(&ids, dry_run).await
+    }
+    async fn remove_downloads(&self, ids: &[i64], dry_run: bool) -> Result<Vec<(i64, u64)>> {
+        let mut freed = Vec::new();
+        for &id in ids {
+            let url: Option<String> = sqlx::query_scalar("SELECT url FROM videos WHERE id=?")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?;
+            if url.is_none_or(|url| url.starts_with("local:")) {
+                continue;
+            }
+            let folder = self.directory.join("videos").join(id.to_string());
+            let Ok(mut entries) = tokio::fs::read_dir(&folder).await else {
+                continue;
+            };
+            let mut bytes = 0;
+            while let Some(entry) = entries.next_entry().await? {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let subtitle = name.ends_with(".vtt") || name.ends_with(".srt");
+                // symlink_metadata: never follow a link out of application data.
+                let metadata = tokio::fs::symlink_metadata(entry.path()).await?;
+                if name.starts_with("source.") && !subtitle && metadata.is_file() {
+                    bytes += metadata.len();
+                    if !dry_run {
+                        tokio::fs::remove_file(entry.path()).await?;
+                    }
+                }
+            }
+            if bytes > 0 {
+                freed.push((id, bytes));
+            }
+        }
+        Ok(freed)
     }
     async fn run_video(
         &self,
