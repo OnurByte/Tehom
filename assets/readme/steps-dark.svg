@@ -12,8 +12,8 @@
 <svg x="264.0" y="84" width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><g fill="none" stroke="url(#iface)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" filter="url(#idepth)"><path d="M14 4 C15.5 11 18 13.5 25 15 C18 16.5 15.5 19 14 26 C12.5 19 10 16.5 3 15 C10 13.5 12.5 11 14 4 Z"/><path d="M25 3 V9 M22 6 H28"/></g></svg>
 <text x="456.0" y="104" font-size="14" font-weight="400" fill="#ffffff" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">02</text>
 <text x="264.0" y="152" font-size="16" font-weight="500" fill="#ffffff" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">Let it choose</text>
-<text x="264.0" y="180" font-size="14" font-weight="400" fill="#ffffff" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">Your local model reads</text>
-<text x="264.0" y="202" font-size="14" font-weight="400" fill="#ffffff" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">the captions and picks.</text>
+<text x="264.0" y="180" font-size="14" font-weight="400" fill="#ffffff" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">Your AI reads the</text>
+<text x="264.0" y="202" font-size="14" font-weight="400" fill="#ffffff" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">captions and picks.</text>
 <svg x="496.0" y="84" width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><g fill="none" stroke="url(#iface)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" filter="url(#idepth)"><rect x="3" y="5" width="26" height="18" rx="4"/><path d="M13 10 L19 14 L13 18 Z"/><path d="M3 28 H29"/><path d="M10 26 V30"/></g></svg>
 <text x="688.0" y="104" font-size="14" font-weight="400" fill="#ffffff" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">03</text>
 <text x="496.0" y="152" font-size="16" font-weight="500" fill="#ffffff" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">Review</text>

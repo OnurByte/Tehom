@@ -1933,3 +1933,116 @@ fn byok_requests_may_only_reach_their_own_provider() {
     }
     assert!(model_name("openai/gpt-4o-mini") && model_name("claude-haiku-5-5"));
 }
+
+#[cfg(unix)]
+fn cli_fixture(directory: &std::path::Path, script: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = directory.join("agent-cli");
+    std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    path
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn agent_clis_run_without_tools_and_return_structured_clips() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("args");
+    let stdin = dir.path().join("stdin");
+    let clips = r#"{"clips":[{"start_ms":0,"end_ms":25000,"title":"A","reason":"B"}]}"#;
+    // Claude Code prints one JSON result with structured_output.
+    let claude = cli_fixture(
+        dir.path(),
+        &format!(
+            "for a in \"$@\"; do printf '%s\\n' \"$a\" >> '{}'; done\ncat > '{}'\nprintf '%s' '{{\"type\":\"result\",\"is_error\":false,\"structured_output\":{clips}}}'",
+            log.display(),
+            stdin.display()
+        ),
+    );
+    let mut engine = Automation::open(dir.path().join("data")).await.unwrap();
+    engine.cli_program = Some(claude);
+    let ai = AiConfig {
+        model: "haiku".into(),
+        provider: AiProvider::ClaudeCode,
+        remote_consent: true,
+        ..Default::default()
+    };
+    engine.set_ai(ai.clone()).await.unwrap();
+    engine.ai_ready(&ai).unwrap();
+    let found = engine.analyze(&ai, "[0-25000] Hello\n").await.unwrap();
+    assert_eq!((found[0].start_ms, found[0].end_ms), (0, 25000));
+    let args = std::fs::read_to_string(&log).unwrap();
+    let args: Vec<&str> = args.lines().collect();
+    let tools = args.iter().position(|a| *a == "--tools").unwrap();
+    assert_eq!(args[tools + 1], "", "Claude Code must run with no tools");
+    for flag in [
+        "-p",
+        "--no-session-persistence",
+        "--strict-mcp-config",
+        "--json-schema",
+    ] {
+        assert!(args.contains(&flag), "{flag}");
+    }
+    assert_eq!(
+        std::fs::read_to_string(&stdin).unwrap(),
+        "[0-25000] Hello\n"
+    );
+
+    // Codex writes its last message to the requested file.
+    std::fs::remove_file(&log).unwrap();
+    let codex = cli_fixture(
+        &dir.path().join("data"),
+        &format!(
+            "out=\nwhile [ \"$#\" -gt 0 ]; do printf '%s\\n' \"$1\" >> '{}'; [ \"$1\" = --output-last-message ] && {{ shift; printf '%s\\n' \"$1\" >> '{}'; out=\"$1\"; }}; shift; done\ncat > /dev/null\nprintf '%s' '{clips}' > \"$out\"",
+            log.display(),
+            log.display()
+        ),
+    );
+    engine.cli_program = Some(codex);
+    let ai = AiConfig {
+        model: String::new(),
+        provider: AiProvider::Codex,
+        remote_consent: true,
+        ..Default::default()
+    };
+    engine.set_ai(ai.clone()).await.unwrap();
+    let found = engine.analyze(&ai, "[0-25000] Hello\n").await.unwrap();
+    assert_eq!(found.len(), 1);
+    let args = std::fs::read_to_string(&log).unwrap();
+    assert!(
+        args.contains("exec\n")
+            && args.contains("--sandbox\nread-only\n")
+            && args.contains("--ephemeral\n")
+    );
+    assert!(
+        !args.contains("\n-m\n"),
+        "an empty model uses the user's Codex default"
+    );
+
+    // A signed-out CLI is a clear "Needs input", and consent stays required.
+    let signed_out = cli_fixture(
+        &dir.path().join("data"),
+        "cat > /dev/null\nprintf '%s' '{\"type\":\"result\",\"is_error\":true,\"result\":\"Not logged in\"}'",
+    );
+    engine.cli_program = Some(signed_out);
+    let ai = AiConfig {
+        model: "haiku".into(),
+        provider: AiProvider::ClaudeCode,
+        remote_consent: true,
+        ..Default::default()
+    };
+    let error = engine
+        .analyze(&ai, "[0-25000] Hello\n")
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.starts_with("Needs input:") && error.contains("Not logged in"),
+        "{error}"
+    );
+    let no_consent = AiConfig {
+        remote_consent: false,
+        ..ai
+    };
+    assert!(engine.set_ai(no_consent).await.is_err());
+}

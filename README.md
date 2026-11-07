@@ -1,9 +1,9 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/readme/hero-dark.svg">
-  <img src="assets/readme/hero-light.svg" width="100%" alt="Tehom. Paste a link. Get clips as MP4 files. A local AI model picks the moments worth keeping; nothing is posted anywhere.">
+  <img src="assets/readme/hero-light.svg" width="100%" alt="Tehom. Paste a link. Get clips as MP4 files. The AI you choose picks the moments worth keeping; nothing is ever posted for you.">
 </picture>
 
-> **Early version, still in development.** Tested on Linux; macOS and Windows builds pass CI. Full detail: [status](docs/status.md).
+**Version 0.1** ⁜ [Download](https://github.com/OnurByte/Tehom/releases/latest) for Linux, macOS and Windows ⁜ verified end to end on Linux with real YouTube videos ([evidence](docs/evidence/byok-live.md)) ⁜ [what is next](docs/status.md)
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/readme/install-dark.svg">
@@ -18,7 +18,17 @@ curl -fsSL https://raw.githubusercontent.com/OnurByte/Tehom/main/install.sh | sh
 irm https://raw.githubusercontent.com/OnurByte/Tehom/main/install.ps1 | iex
 ```
 
-The installer puts Tehom in your user folder without admin rights, checks the download's SHA-256 and adds Tehom to your app menu. If FFmpeg, yt-dlp or GStreamer are missing, it shows the command and asks before running it. You also need a local AI model, for example [Ollama](https://ollama.com). Release files are checksum-verified but not yet code-signed.
+The installer puts Tehom in your user folder without admin rights, checks the download's SHA-256 and adds Tehom to your app menu. If FFmpeg, yt-dlp or GStreamer are missing, it shows the command and asks before running it. Release files are checksum-verified but not yet code-signed.
+
+**Pick your AI on first launch.** A short guide asks once:
+
+| Option | What you need |
+| --- | --- |
+| Your API key | OpenAI, Anthropic, Gemini or OpenRouter. The key lives in your system keyring. |
+| Your subscription | A signed-in [Codex](https://github.com/openai/codex) or [Claude Code](https://claude.com/claude-code) CLI. No key needed. |
+| On this computer | Ollama, llama.cpp, LM Studio or vLLM. Nothing leaves your machine. |
+
+Only captions are sent to the AI you allow; videos and clips stay on your computer. Press **Ctrl+K** (Cmd+K on macOS) anywhere to find any action.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/readme/steps-dark.svg">
@@ -27,7 +37,7 @@ The installer puts Tehom in your user folder without admin rights, checks the do
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/readme/features-dark.svg">
-  <img src="assets/readme/features-light.svg" width="100%" alt="What it does: vertical, horizontal or original clips; watches channels; stays on your computer; uses captions; keeps your files; Kick videos (experimental). Planned: speech to text on request, your own AI key, captions on clips, reframing.">
+  <img src="assets/readme/features-light.svg" width="100%" alt="What it does: vertical, horizontal or original clips; watches channels; your choice of AI; uses captions; private by default; Kick videos (experimental).">
 </picture>
 
 ---
@@ -39,7 +49,8 @@ The installer puts Tehom in your user folder without admin rights, checks the do
 
 | Command | Does |
 | --- | --- |
-| `tehom ai --model NAME` | Choose your local model |
+| `tehom ai --provider codex --consent` | Use Codex, Claude Code (`claude-code`), `openai`, `anthropic`, `gemini`, `openrouter` or `local` |
+| `tehom ai-key anthropic` | Save an API key in the system keyring (read from stdin, never argv) |
 | `tehom add URL --mode auto-draft` | Add a channel, video or Kick VOD |
 | `tehom import-video FILE` | Queue a local file |
 | `tehom check` / `tehom run-once` | Look for new videos / process the queue |

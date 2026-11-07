@@ -46,6 +46,10 @@ enum AiChoice {
     Anthropic,
     Gemini,
     Openrouter,
+    /// The signed-in Claude Code CLI (your subscription).
+    ClaudeCode,
+    /// The signed-in Codex CLI (your subscription).
+    Codex,
 }
 impl From<AiChoice> for tehom_core::AiProvider {
     fn from(choice: AiChoice) -> Self {
@@ -55,6 +59,8 @@ impl From<AiChoice> for tehom_core::AiProvider {
             AiChoice::Anthropic => Self::Anthropic,
             AiChoice::Gemini => Self::Gemini,
             AiChoice::Openrouter => Self::Openrouter,
+            AiChoice::ClaudeCode => Self::ClaudeCode,
+            AiChoice::Codex => Self::Codex,
         }
     }
 }
@@ -201,7 +207,11 @@ async fn main() -> Result<()> {
     }
     if let Command::AiKey { provider, remove } = &args.command {
         let provider: tehom_core::AiProvider = (*provider).into();
-        anyhow::ensure!(provider.is_remote(), "Local models do not use API keys");
+        anyhow::ensure!(
+            provider.uses_api_key(),
+            "{} does not use an API key",
+            provider.label()
+        );
         if *remove {
             tehom_automation::delete_api_key(provider)?;
             println!("Removed the {} key", provider.label());

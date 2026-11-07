@@ -91,14 +91,20 @@ pub enum AiProvider {
     Anthropic,
     Gemini,
     Openrouter,
+    /// The signed-in Claude Code CLI on this computer (your subscription).
+    ClaudeCode,
+    /// The signed-in Codex CLI on this computer (your subscription).
+    Codex,
 }
 impl AiProvider {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 7] = [
         Self::Local,
         Self::Openai,
         Self::Anthropic,
         Self::Gemini,
         Self::Openrouter,
+        Self::ClaudeCode,
+        Self::Codex,
     ];
     pub fn name(self) -> &'static str {
         match self {
@@ -107,6 +113,8 @@ impl AiProvider {
             Self::Anthropic => "anthropic",
             Self::Gemini => "gemini",
             Self::Openrouter => "openrouter",
+            Self::ClaudeCode => "claude_code",
+            Self::Codex => "codex",
         }
     }
     pub fn parse(name: &str) -> Option<Self> {
@@ -121,6 +129,8 @@ impl AiProvider {
             Self::Anthropic => "Anthropic",
             Self::Gemini => "Google Gemini",
             Self::Openrouter => "OpenRouter",
+            Self::ClaudeCode => "Claude Code",
+            Self::Codex => "Codex",
         }
     }
     pub fn is_remote(self) -> bool {
@@ -134,6 +144,7 @@ impl AiProvider {
             Self::Anthropic => Some("api.anthropic.com"),
             Self::Gemini => Some("generativelanguage.googleapis.com"),
             Self::Openrouter => Some("openrouter.ai"),
+            Self::ClaudeCode | Self::Codex => None,
         }
     }
     /// Environment variable checked before the OS keyring (useful for the daemon).
@@ -144,6 +155,7 @@ impl AiProvider {
             Self::Anthropic => Some("ANTHROPIC_API_KEY"),
             Self::Gemini => Some("GEMINI_API_KEY"),
             Self::Openrouter => Some("OPENROUTER_API_KEY"),
+            Self::ClaudeCode | Self::Codex => None,
         }
     }
     /// A sensible default model, shown as a suggestion.
@@ -154,6 +166,20 @@ impl AiProvider {
             Self::Anthropic => "claude-haiku-5-5",
             Self::Gemini => "gemini-2.5-flash",
             Self::Openrouter => "openai/gpt-4o-mini",
+            Self::ClaudeCode => "haiku",
+            Self::Codex => "",
+        }
+    }
+    /// Providers reached over HTTPS with the user's own API key.
+    pub fn uses_api_key(self) -> bool {
+        self.host().is_some()
+    }
+    /// The local agent CLI that runs this provider, signed in by the user.
+    pub fn program(self) -> Option<&'static str> {
+        match self {
+            Self::ClaudeCode => Some("claude"),
+            Self::Codex => Some("codex"),
+            _ => None,
         }
     }
 }

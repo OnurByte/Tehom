@@ -95,6 +95,8 @@ pub enum Provider {
     Anthropic,
     Gemini,
     Openrouter,
+    ClaudeCode,
+    Codex,
 }
 impl Provider {
     fn remote(&self) -> Option<tehom_core::AiProvider> {
@@ -105,6 +107,8 @@ impl Provider {
             Self::Anthropic => Some(P::Anthropic),
             Self::Gemini => Some(P::Gemini),
             Self::Openrouter => Some(P::Openrouter),
+            Self::ClaudeCode => Some(P::ClaudeCode),
+            Self::Codex => Some(P::Codex),
         }
     }
 }

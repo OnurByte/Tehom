@@ -133,8 +133,8 @@ for theme in THEMES:
     c.mark(40, 40, 56)
     c.text(112, 79, "Tehom", size=32)
     c.text(40, 158, "Paste a link. Get clips as MP4 files.", size=36)
-    wrap(c, 40, 198, ["A local AI model picks the moments worth keeping. Everything runs",
-                      "on your computer, and nothing is posted anywhere."], size=16, gap=26)
+    wrap(c, 40, 198, ["The AI you choose picks the moments worth keeping. Videos stay on",
+                      "your computer, and nothing is ever posted for you."], size=16, gap=26)
     c.save("hero", theme, 248, "Tehom. Paste a link. Get clips as MP4 files.")
 
     # Steps: one section, four ordered columns.
@@ -143,7 +143,7 @@ for theme in THEMES:
     c.text(32, 52, "How it works", size=18)
     steps = [
         ("link", "Add a link", ["A YouTube channel, one", "video or a local file."]),
-        ("spark", "Let it choose", ["Your local model reads", "the captions and picks."]),
+        ("spark", "Let it choose", ["Your AI reads the", "captions and picks."]),
         ("review", "Review", ["Watch each draft and", "adjust start or end."]),
         ("save", "Save", ["MP4 files land in your", "folder, by hand or auto."]),
     ]
@@ -161,9 +161,9 @@ for theme in THEMES:
     features = [
         ("shape", "Vertical, horizontal or original", ["1080 × 1920 for Shorts and Reels,", "1920 × 1080 or the source size."], "Works"),
         ("watch", "Watches channels", ["New videos on a channel become", "drafts or MP4 files on their own."], "Works"),
-        ("local", "Stays on your computer", ["Only the video site and your local", "model are contacted. No posting."], "Works"),
+        ("spark", "Your AI, your choice", ["OpenAI, Anthropic, Gemini, OpenRouter,", "Codex, Claude Code or a local model."], "Works"),
         ("captions", "Uses captions", ["Platform captions, or SRT and VTT", "files you add or correct."], "Works"),
-        ("files", "Keeps your files", ["Existing files are never replaced;", "unfinished clips never appear."], "Works"),
+        ("local", "Private by default", ["Videos stay here; only captions go to", "the AI you allow. Nothing is posted."], "Works"),
         ("lab", "Kick videos", ["Paste a kick.com video link.", "Downloading is still being tested."], "Experimental"),
     ]
     c.text(0, 26, "What it does", size=18)
@@ -175,10 +175,10 @@ for theme in THEMES:
         c.pill(x + item_w - 20, y + 24, status)
         c.text(x + 20, y + 76, title, size=16, weight=500)
         wrap(c, x + 20, y + 104, lines)
-    planned = "Planned ⁜ speech to text on request ⁜ your own AI key ⁜ captions on clips ⁜ reframing"
+    planned = "Also ⁜ Ctrl+K command palette ⁜ never overwrites files ⁜ Planned ⁜ speech to text ⁜ captions on clips"
     c.text(0, 48 + 2 * item_h + gap + 40, planned, size=14, muted=True)
     height = 48 + 2 * item_h + gap + 56
-    c.save("features", theme, height, "What it does, and what is planned")
+    c.save("features", theme, height, "What it does")
 
     # Install: two machine-data blocks.
     c = Canvas(theme)

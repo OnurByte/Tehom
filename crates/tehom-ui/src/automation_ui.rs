@@ -227,14 +227,15 @@ impl Tehom {
                         }
                         Action::Byok(ai, key) => {
                             let provider = ai.provider;
-                            if !key.trim().is_empty() {
+                            if provider.uses_api_key() && !key.trim().is_empty() {
                                 tokio::task::spawn_blocking(move || {
                                     tehom_automation::store_api_key(provider, &key)
                                 })
                                 .await??;
                             }
                             anyhow::ensure!(
-                                tehom_automation::api_key(provider)?.is_some(),
+                                !provider.uses_api_key()
+                                    || tehom_automation::api_key(provider)?.is_some(),
                                 "Paste your {} API key first",
                                 provider.label()
                             );
@@ -671,7 +672,7 @@ impl Tehom {
             .unwrap_or_default();
         let provider = self.ai_provider.unwrap_or(saved);
         // Only the presence of a key is checked; the key itself never reaches the view.
-        let key_saved = provider.is_remote()
+        let key_saved = provider.uses_api_key()
             && match self.ai_key_saved.get() {
                 Some((cached, saved)) if cached == provider => saved,
                 _ => {
@@ -764,6 +765,12 @@ impl Tehom {
                                 ),
                         )
                     })
+                    .when(provider.program().is_some(), |card| {
+                        card.child(div().text_sm().text_color(p.muted).child(format!(
+                            "Uses the {} CLI you are signed in to on this computer, with no tools enabled. No API key is needed.",
+                            provider.label()
+                        )))
+                    })
                     .when(provider.is_remote(), |card| {
                         card.child(
                             Input::new(&self.ai_model)
@@ -771,17 +778,19 @@ impl Tehom {
                                 .aria_label("AI model")
                                 .disabled(unavailable),
                         )
-                        .child(
-                            Input::new(&self.ai_key)
-                                .h(px(44.))
-                                .aria_label("API key")
-                                .disabled(unavailable),
-                        )
-                        .child(div().text_sm().text_color(p.muted).child(if key_saved {
+                        .when(provider.uses_api_key(), |card| {
+                            card.child(
+                                Input::new(&self.ai_key)
+                                    .h(px(44.))
+                                    .aria_label("API key")
+                                    .disabled(unavailable),
+                            )
+                        })
+                        .when(provider.uses_api_key(), |card| card.child(div().text_sm().text_color(p.muted).child(if key_saved {
                             format!("A {} key is saved. Paste a new one to replace it.", provider.label())
                         } else {
                             "Your key is stored in the system keyring, never in Tehom's files.".to_string()
-                        }))
+                        })))
                         .child(div().text_sm().child(format!(
                             "Captions of each video are sent to {} to choose clips. Videos stay on this computer.",
                             provider.label()
