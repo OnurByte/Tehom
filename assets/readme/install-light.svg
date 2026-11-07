@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="180" viewBox="0 0 960 180" role="img" aria-label="Install with one command on macOS, Linux and Windows">
+<defs><radialGradient id="tr" cx="1" cy="0" r="0.5" gradientUnits="objectBoundingBox"><stop offset="0" stop-color="#585858"/><stop offset="1" stop-color="#585858" stop-opacity="0"/></radialGradient><radialGradient id="bl" cx="0" cy="1" r="0.5" gradientUnits="objectBoundingBox"><stop offset="0" stop-color="#585858"/><stop offset="1" stop-color="#585858" stop-opacity="0"/></radialGradient><linearGradient id="face" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#606060"/><stop offset="1" stop-color="#0d0d0d"/></linearGradient></defs>
+<text x="0" y="26" font-size="18" font-weight="400" fill="#0d0d0d" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">Install with one command</text>
+<rect x="0.5" y="48.5" width="467.0" height="131" rx="12" fill="#f2f2f2" stroke="#b3b3b3"/>
+<rect x="0.5" y="48.5" width="467.0" height="131" rx="12" fill="none" stroke="url(#tr)"/>
+<rect x="0.5" y="48.5" width="467.0" height="131" rx="12" fill="none" stroke="url(#bl)"/>
+<text x="20.0" y="80" font-size="14" font-weight="400" fill="#333333" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">macOS ⁜ Linux</text>
+<text x="20.0" y="120" font-size="15" font-weight="400" fill="#0d0d0d" text-anchor="start" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">curl -fsSL https://raw.githubusercontent.com/</text>
+<text x="20.0" y="146" font-size="15" font-weight="400" fill="#0d0d0d" text-anchor="start" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">OnurByte/Tehom/main/install.sh | sh</text>
+<rect x="492.5" y="48.5" width="467.0" height="131" rx="12" fill="#f2f2f2" stroke="#b3b3b3"/>
+<rect x="492.5" y="48.5" width="467.0" height="131" rx="12" fill="none" stroke="url(#tr)"/>
+<rect x="492.5" y="48.5" width="467.0" height="131" rx="12" fill="none" stroke="url(#bl)"/>
+<text x="512.0" y="80" font-size="14" font-weight="400" fill="#333333" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">Windows PowerShell</text>
+<text x="512.0" y="120" font-size="15" font-weight="400" fill="#0d0d0d" text-anchor="start" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">irm https://raw.githubusercontent.com/</text>
+<text x="512.0" y="146" font-size="15" font-weight="400" fill="#0d0d0d" text-anchor="start" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">OnurByte/Tehom/main/install.ps1 | iex</text>
+</svg>

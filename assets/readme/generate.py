@@ -1,91 +1,170 @@
-# Regenerates the README card SVGs: python3 assets/readme/generate.py assets/readme
-# hero.svg is hand-written; the brand logo is intentionally not used here.
+# Regenerates the README card SVGs in both system themes:
+#   python3 assets/readme/generate.py assets/readme
+#
+# Follows the onur.af brand standard (brand.md, docs/design.md): monochrome
+# tokens, Helvetica Neue, normal-weight headings with size-based hierarchy,
+# 12 px card corners, the shared corner-lit 1 px edge, no glow, no accent
+# colour, no animation, no em dash or middle dot (the separator is ⁜).
+# The Tehom mark is embedded from assets/brand/icon.svg with its viewBox,
+# path data and evenodd fill rule unchanged; only the icon material is applied.
+import re
 import sys
-out = sys.argv[1]
-FONT = 'font-family="-apple-system, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif"'
+from pathlib import Path
 
-ICONS = {
-    "link": '<g fill="none" stroke="{c}" stroke-width="4" stroke-linecap="round"><rect x="2" y="12" width="24" height="16" rx="8"/><rect x="18" y="12" width="24" height="16" rx="8"/></g>',
-    "spark": '<path d="M22 2 C25 16 30 19 42 22 C30 25 25 28 22 42 C19 28 14 25 2 22 C14 19 19 16 22 2 Z" fill="{c}"/>',
-    "scissors": '<g fill="none" stroke="{c}" stroke-width="4" stroke-linecap="round"><circle cx="10" cy="32" r="7"/><circle cx="34" cy="32" r="7"/><path d="M15 27 L36 4 M29 27 L8 4"/></g>',
-    "save": '<g fill="none" stroke="{c}" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><path d="M22 4 V28 M12 18 L22 28 L32 18"/><path d="M4 30 V38 H40 V30"/></g>',
-    "clock": '<g fill="none" stroke="{c}" stroke-width="4" stroke-linecap="round"><circle cx="22" cy="22" r="18"/><path d="M22 11 V22 L30 27"/></g>',
-    "shield": '<g fill="none" stroke="{c}" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"><path d="M22 3 L39 9 V21 C39 31 32 38 22 41 C12 38 5 31 5 21 V9 Z"/><path d="M14 22 L20 28 L31 16"/></g>',
-    "text": '<g fill="none" stroke="{c}" stroke-width="4" stroke-linecap="round"><rect x="3" y="6" width="38" height="32" rx="7"/><path d="M11 18 H33 M11 27 H25"/></g>',
-    "folder": '<g fill="none" stroke="{c}" stroke-width="4" stroke-linejoin="round"><path d="M3 10 H17 L21 15 H41 V37 H3 Z"/></g>',
-    "phone": '<g fill="none" stroke="{c}" stroke-width="4" stroke-linejoin="round"><rect x="11" y="2" width="22" height="40" rx="5"/><path d="M19 22 L27 27 L19 32 Z" fill="{c}" stroke="none"/></g>',
+out = Path(sys.argv[1])
+source = (Path(__file__).resolve().parents[1] / "brand" / "icon.svg").read_text()
+MARK_PATH = re.search(r' d="([^"]+)"', source).group(1)
+assert 'fill-rule="evenodd"' in source and 'viewBox="0 0 512 512"' in source
+
+THEMES = {
+    "dark": dict(background="#000000", text="#ffffff", muted="#ffffff", border="#404040",
+                 surface="#222222", face=("#ffffff", "#a0a0a0"), shadow=("#606060", 0.95)),
+    "light": dict(background="#ffffff", text="#0d0d0d", muted="#333333", border="#b3b3b3",
+                  surface="#f2f2f2", face=("#606060", "#0d0d0d"), shadow=("#000000", 0.8)),
 }
+SANS = 'font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif"'
+MONO = 'font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"'
+WIDTH = 960
 
-def esc(s):
-    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-def card(x, y, w, h, color, icon, title, lines, badge=None, number=None):
-    parts = [f'<g transform="translate({x} {y})">',
-             f'<rect width="{w}" height="{h}" rx="22" fill="#262626" stroke="#393939"/>',
-             f'<rect x="22" y="0.5" width="{w-44}" height="5" rx="2.5" fill="{color}"/>',
-             f'<rect x="24" y="30" width="64" height="64" rx="18" fill="{color}" opacity=".16"/>',
-             f'<g transform="translate(34 40)">{ICONS[icon].format(c=color)}</g>']
-    if number is not None:
-        parts.append(f'<text x="{w-28}" y="62" font-size="40" font-weight="800" fill="#393939" text-anchor="end" {FONT}>{number}</text>')
-    parts.append(f'<text x="24" y="128" font-size="23" font-weight="700" fill="#f2f4f8" {FONT}>{esc(title)}</text>')
+def mix(a, b, weight):
+    """color-mix(in srgb, a weight, b)."""
+    pa = [int(a[i:i + 2], 16) for i in (1, 3, 5)]
+    pb = [int(b[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#" + "".join(f"{round(x * weight + y * (1 - weight)):02x}" for x, y in zip(pa, pb))
+
+
+def esc(text):
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+class Canvas:
+    def __init__(self, theme):
+        self.t = THEMES[theme]
+        self.parts = []
+        light = mix(self.t["text"], self.t["border"], 0.55)
+        # Corner lights: ellipses spanning half of each element's own size.
+        self.defs = [
+            f'<radialGradient id="tr" cx="1" cy="0" r="0.5" gradientUnits="objectBoundingBox">'
+            f'<stop offset="0" stop-color="{light}"/><stop offset="1" stop-color="{light}" stop-opacity="0"/></radialGradient>',
+            f'<radialGradient id="bl" cx="0" cy="1" r="0.5" gradientUnits="objectBoundingBox">'
+            f'<stop offset="0" stop-color="{light}"/><stop offset="1" stop-color="{light}" stop-opacity="0"/></radialGradient>',
+            f'<linearGradient id="face" x1="0" y1="0" x2="1" y2="1">'
+            f'<stop offset="0" stop-color="{self.t["face"][0]}"/><stop offset="1" stop-color="{self.t["face"][1]}"/></linearGradient>',
+        ]
+
+    def card(self, x, y, w, h, fill=None):
+        fill = fill or self.t["background"]
+        box = f'x="{x + 0.5}" y="{y + 0.5}" width="{w - 1}" height="{h - 1}" rx="12"'
+        self.parts += [
+            f'<rect {box} fill="{fill}" stroke="{self.t["border"]}"/>',
+            f'<rect {box} fill="none" stroke="url(#tr)"/>',
+            f'<rect {box} fill="none" stroke="url(#bl)"/>',
+        ]
+
+    def text(self, x, y, content, size=16, weight=400, muted=False, mono=False, anchor="start"):
+        colour = self.t["muted"] if muted else self.t["text"]
+        family = MONO if mono else SANS
+        self.parts.append(
+            f'<text x="{x}" y="{y}" font-size="{size}" font-weight="{weight}" fill="{colour}" '
+            f'text-anchor="{anchor}" {family}>{esc(content)}</text>')
+
+    def pill(self, x, y, label):
+        width = 20 + len(label) * 7.4
+        self.parts.append(
+            f'<rect x="{x - width + 0.5}" y="{y + 0.5}" width="{width - 1}" height="23" rx="8" '
+            f'fill="none" stroke="{self.t["border"]}"/>')
+        self.text(x - width / 2, y + 16, label, size=13, muted=True, anchor="middle")
+
+    def mark(self, x, y, size):
+        s = size
+        colour, alpha = self.t["shadow"]
+        self.defs.append(
+            f'<filter id="depth" x="-10%" y="-10%" width="130%" height="130%">'
+            f'<feDropShadow dx="{0.02 * s:.2f}" dy="{0.04 * s:.2f}" stdDeviation="{0.005 * s:.2f}" '
+            f'flood-color="{colour}" flood-opacity="{alpha}"/></filter>')
+        self.parts.append(
+            f'<svg x="{x}" y="{y}" width="{s}" height="{s}" viewBox="0 0 512 512" aria-hidden="true">'
+            f'<path fill="url(#face)" fill-rule="evenodd" filter="url(#depth)" d="{MARK_PATH}"/></svg>')
+
+    def save(self, name, theme, height, label):
+        body = "\n".join(self.parts)
+        defs = "".join(self.defs)
+        (out / f"{name}-{theme}.svg").write_text(
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{height}" '
+            f'viewBox="0 0 {WIDTH} {height}" role="img" aria-label="{esc(label)}">\n'
+            f"<defs>{defs}</defs>\n{body}\n</svg>\n")
+
+
+def wrap(c, x, y, lines, size=14, gap=22, muted=True):
     for i, line in enumerate(lines):
-        parts.append(f'<text x="24" y="{160 + i*26}" font-size="17" fill="#a8a8b3" {FONT}>{esc(line)}</text>')
-    if badge:
-        label, bcolor = badge
-        bw = 16 + len(label) * 8.6
-        parts.append(f'<rect x="{w-24-bw}" y="38" width="{bw}" height="28" rx="14" fill="{bcolor}" opacity=".18"/>')
-        parts.append(f'<text x="{w-24-bw/2}" y="57" font-size="14" font-weight="700" fill="{bcolor}" text-anchor="middle" {FONT}>{esc(label)}</text>')
-    parts.append('</g>')
-    return "\n".join(parts)
+        c.text(x, y + i * gap, line, size=size, muted=muted)
 
-def svg(name, w, h, label, body):
-    open(f"{out}/{name}.svg", "w").write(
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}" role="img" aria-label="{esc(label)}">\n'
-        f'<rect width="{w}" height="{h}" rx="28" fill="#161616"/>\n{body}\n</svg>\n')
 
-P, B, C, K, G, Y = "#be95ff", "#78a9ff", "#33b1ff", "#ff7eb6", "#42be65", "#f1c21b"
+for theme in THEMES:
+    # Hero: signature, statement, short description.
+    c = Canvas(theme)
+    c.card(0, 0, WIDTH, 248)
+    c.mark(40, 40, 56)
+    c.text(112, 79, "Tehom", size=32)
+    c.text(40, 158, "Paste a link. Get clips as MP4 files.", size=36)
+    wrap(c, 40, 198, ["A local AI model picks the moments worth keeping. Everything runs",
+                      "on your computer, and nothing is posted anywhere."], size=16, gap=26)
+    c.save("hero", theme, 248, "Tehom. Paste a link. Get clips as MP4 files.")
 
-steps = [
-    (P, "link", "Paste a link", ["A YouTube channel, a video", "or a file on your computer."]),
-    (B, "spark", "AI finds moments", ["Your own local model reads", "the captions and picks."]),
-    (C, "scissors", "Check and trim", ["Watch each draft, move the", "start or end if you like."]),
-    (K, "save", "Save as MP4", ["Clips land in your folder,", "by hand or automatically."]),
-]
-body = "\n".join(card(24 + i * 294, 24, 276, 230, c, ic, t, l, number=i + 1) for i, (c, ic, t, l) in enumerate(steps))
-svg("steps", 1200, 278, "Four steps: paste a link, AI finds moments, check and trim, save as MP4", body)
+    # Steps: one section, four ordered columns.
+    c = Canvas(theme)
+    c.card(0, 0, WIDTH, 216)
+    c.text(32, 52, "How it works", size=18)
+    steps = [
+        ("Add a link", ["A YouTube channel, one", "video or a local file."]),
+        ("Let it choose", ["Your local model reads", "the captions and picks."]),
+        ("Review", ["Watch each draft and", "adjust start or end."]),
+        ("Save", ["MP4 files land in your", "folder, by hand or auto."]),
+    ]
+    column = (WIDTH - 64 - 3 * 32) / 4
+    for i, (title, lines) in enumerate(steps):
+        x = 32 + i * (column + 32)
+        c.text(x, 104, f"0{i + 1}", size=14, muted=True, mono=True)
+        c.text(x, 132, title, size=16, weight=500)
+        wrap(c, x, 160, lines)
+    c.save("steps", theme, 216, "How it works: add a link, let it choose, review, save")
 
-OK = ("WORKS", G)
-EXP = ("EXPERIMENTAL", Y)
-SOON = ("COMING", "#a8a8b3")
-features = [
-    (P, "phone", "Any shape", ["Vertical for Shorts/Reels,", "horizontal, or original size."], OK),
-    (B, "clock", "Runs on its own", ["Watch a channel; new videos", "become clips while you sleep."], OK),
-    (G, "shield", "Private by design", ["Talks only to the video site and", "your computer. Never posts."], OK),
-    (C, "text", "Caption friendly", ["Uses video captions; bring", "or fix your own SRT files."], OK),
-    (K, "folder", "Your files are safe", ["Nothing is ever overwritten;", "half-made clips never appear."], OK),
-    (Y, "link", "Kick VODs", ["Paste a kick.com video link.", "Still being tested."], EXP),
-]
-body = "\n".join(card(24 + (i % 3) * 392, 24 + (i // 3) * 254, 368, 230, c, ic, t, l, badge=b) for i, (c, ic, t, l, b) in enumerate(features))
-svg("features", 1200, 532, "Features: any clip shape, automatic channel watching, private by design, caption friendly, safe files, experimental Kick VODs", body)
+    # Features: section heading, 2 × 3 grid of bordered items with plain status.
+    c = Canvas(theme)
+    features = [
+        ("Vertical, horizontal or original", ["1080 × 1920 for Shorts and Reels,", "1920 × 1080 or the source size."], "Works"),
+        ("Watches channels", ["New videos on a channel become", "drafts or MP4 files on their own."], "Works"),
+        ("Stays on your computer", ["Only the video site and your local", "model are contacted. No posting."], "Works"),
+        ("Uses captions", ["Platform captions, or SRT and VTT", "files you add or correct."], "Works"),
+        ("Keeps your files", ["Existing files are never replaced;", "unfinished clips never appear."], "Works"),
+        ("Kick videos", ["Paste a kick.com video link.", "Downloading is still being tested."], "Experimental"),
+    ]
+    c.text(0, 26, "What it does", size=18)
+    item_w, item_h, gap = (WIDTH - 2 * 24) / 3, 152, 24
+    for i, (title, lines, status) in enumerate(features):
+        x, y = (i % 3) * (item_w + gap), 48 + (i // 3) * (item_h + gap)
+        c.card(x, y, item_w, item_h)
+        c.pill(x + item_w - 20, y + 20, status)
+        c.text(x + 20, y + 76, title, size=16, weight=500)
+        wrap(c, x + 20, y + 104, lines)
+    planned = "Planned ⁜ speech to text on request ⁜ your own AI key ⁜ captions on clips ⁜ reframing"
+    c.text(0, 48 + 2 * item_h + gap + 40, planned, size=14, muted=True)
+    height = 48 + 2 * item_h + gap + 56
+    c.save("features", theme, height, "What it does, and what is planned")
 
-soon = [
-    ("#a8a8b3", "text", "Speech to text", ["For videos without captions.", "Only when you ask for it."], SOON),
-    ("#a8a8b3", "spark", "Bring your own AI key", ["Optional cloud models, with", "your explicit permission."], SOON),
-    ("#a8a8b3", "scissors", "Captions on clips", ["Burned-in subtitles and", "drag-to-reframe."], SOON),
-]
-body = "\n".join(card(24 + i * 392, 24, 368, 230, c, ic, t, l, badge=b) for i, (c, ic, t, l, b) in enumerate(soon))
-svg("coming", 1200, 278, "Coming later: speech to text, bring your own AI key, captions on clips", body)
-
-def terminal(x, y, w, title, color, lines):
-    parts = [f'<g transform="translate({x} {y})">',
-             f'<rect width="{w}" height="150" rx="20" fill="#0b0b0f" stroke="#393939"/>',
-             f'<circle cx="28" cy="26" r="6" fill="#ee5396"/><circle cx="48" cy="26" r="6" fill="#f1c21b"/><circle cx="68" cy="26" r="6" fill="#42be65"/>',
-             f'<text x="{w-24}" y="31" font-size="16" font-weight="700" fill="{color}" text-anchor="end" {FONT}>{esc(title)}</text>']
-    for i, (prompt, cmd) in enumerate(lines):
-        parts.append(f'<text x="28" y="{82 + i*30}" font-size="17" fill="#f2f4f8" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"><tspan fill="{color}">{esc(prompt)}</tspan> {esc(cmd)}</text>')
-    parts.append('</g>')
-    return "\n".join(parts)
-
-body = (terminal(24, 24, 564, "macOS · Linux", P, [("$", "curl -fsSL https://raw.githubusercontent.com/"), (" ", "OnurByte/Tehom/main/install.sh | sh")]) + "\n" +
-        terminal(612, 24, 564, "Windows", B, [("PS>", "irm https://raw.githubusercontent.com/"), ("   ", "OnurByte/Tehom/main/install.ps1 | iex")]))
-svg("install", 1200, 198, "One command to install: curl install.sh | sh on macOS and Linux, irm install.ps1 | iex on Windows", body)
+    # Install: two machine-data blocks.
+    c = Canvas(theme)
+    c.text(0, 26, "Install with one command", size=18)
+    blocks = [
+        ("macOS ⁜ Linux", ["curl -fsSL https://raw.githubusercontent.com/", "OnurByte/Tehom/main/install.sh | sh"]),
+        ("Windows PowerShell", ["irm https://raw.githubusercontent.com/", "OnurByte/Tehom/main/install.ps1 | iex"]),
+    ]
+    block_w = (WIDTH - 24) / 2
+    for i, (label, lines) in enumerate(blocks):
+        x = i * (block_w + 24)
+        c.card(x, 48, block_w, 132, fill=THEMES[theme]["surface"])
+        c.text(x + 20, 80, label, size=14, muted=True)
+        for j, line in enumerate(lines):
+            c.text(x + 20, 120 + j * 26, line, size=15, mono=True)
+    c.save("install", theme, 180, "Install with one command on macOS, Linux and Windows")
