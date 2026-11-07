@@ -9,7 +9,11 @@ use tehom_automation::Automation;
 use tehom_core::{AiConfig, AutomationMode};
 
 #[derive(Parser)]
-#[command(name = "tehom", version, about = "Yerel video ve kanal otomasyonu")]
+#[command(
+    name = "tehom",
+    version,
+    about = "Clips from videos and channels, made on your computer"
+)]
 struct Args {
     #[arg(long, global = true)]
     data: Option<PathBuf>,
@@ -32,6 +36,31 @@ impl From<Mode> for AutomationMode {
             Mode::AutoDraft => Self::AutoDraft,
             Mode::AutoExport => Self::AutoExport,
             Mode::Paused => Self::Paused,
+        }
+    }
+}
+#[derive(Clone, Copy, PartialEq, ValueEnum)]
+enum AiChoice {
+    Local,
+    Openai,
+    Anthropic,
+    Gemini,
+    Openrouter,
+    /// The signed-in Claude Code CLI (your subscription).
+    ClaudeCode,
+    /// The signed-in Codex CLI (your subscription).
+    Codex,
+}
+impl From<AiChoice> for tehom_core::AiProvider {
+    fn from(choice: AiChoice) -> Self {
+        match choice {
+            AiChoice::Local => Self::Local,
+            AiChoice::Openai => Self::Openai,
+            AiChoice::Anthropic => Self::Anthropic,
+            AiChoice::Gemini => Self::Gemini,
+            AiChoice::Openrouter => Self::Openrouter,
+            AiChoice::ClaudeCode => Self::ClaudeCode,
+            AiChoice::Codex => Self::Codex,
         }
     }
 }
@@ -78,11 +107,27 @@ enum Command {
         #[arg(long,value_parser=clap::value_parser!(u64).range(1..=1440))]
         interval_minutes: Option<u64>,
     },
+    /// Choose the AI that picks clips: a local server or your own API key.
     Ai {
+        #[arg(long, value_enum, default_value = "local")]
+        provider: AiChoice,
+        /// Local servers only.
         #[arg(long, default_value = "http://127.0.0.1:11434")]
         endpoint: String,
         #[arg(long)]
         model: String,
+        /// Allow captions to be sent to the chosen remote provider.
+        #[arg(long)]
+        consent: bool,
+    },
+    /// Save an API key in the system keyring. The key is read from stdin,
+    /// never from the command line: `tehom ai-key openai` then paste it.
+    AiKey {
+        #[arg(value_enum)]
+        provider: AiChoice,
+        /// Remove the saved key instead.
+        #[arg(long)]
+        remove: bool,
     },
     Models,
     ExportDirectory {
@@ -160,6 +205,29 @@ async fn main() -> Result<()> {
     if let Command::Service(command) = &args.command {
         return manage_service(command, args.config.as_deref());
     }
+    if let Command::AiKey { provider, remove } = &args.command {
+        let provider: tehom_core::AiProvider = (*provider).into();
+        anyhow::ensure!(
+            provider.uses_api_key(),
+            "{} does not use an API key",
+            provider.label()
+        );
+        if *remove {
+            tehom_automation::delete_api_key(provider)?;
+            println!("Removed the {} key", provider.label());
+        } else {
+            let key = if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                rpassword::prompt_password(format!("{} API key: ", provider.label()))?
+            } else {
+                let mut line = String::new();
+                std::io::stdin().read_line(&mut line)?;
+                line
+            };
+            tehom_automation::store_api_key(provider, &key)?;
+            println!("Saved the {} key in the system keyring", provider.label());
+        }
+        return Ok(());
+    }
     let config = args
         .config
         .as_deref()
@@ -181,7 +249,7 @@ async fn main() -> Result<()> {
     if matches!(args.command, Command::Daemon { .. }) {
         anyhow::ensure!(
             automation_enabled,
-            "Otomasyon yapılandırmada kapalı (automation.enabled = false); daemon başlatılmadı"
+            "Automation is off in the configuration (automation.enabled = false); the daemon did not start"
         );
     }
     let data = args
@@ -191,7 +259,7 @@ async fn main() -> Result<()> {
             directories::ProjectDirs::from("org", "Tehom", "Tehom")
                 .map(|d| d.data_local_dir().to_path_buf())
         })
-        .context("Veri klasörü belirlenemedi")?;
+        .context("Could not find a data folder")?;
     if matches!(args.command, Command::Status) {
         println!(
             "{}",
@@ -241,7 +309,7 @@ async fn main() -> Result<()> {
         }
     }
     match args.command {
-        Command::Status | Command::Events { .. } | Command::Service(_) => {
+        Command::Status | Command::Events { .. } | Command::Service(_) | Command::AiKey { .. } => {
             unreachable!("handled before opening the writable engine")
         }
         Command::Add { url, mode } => println!(
@@ -263,7 +331,21 @@ async fn main() -> Result<()> {
             let interval_minutes = interval_minutes.unwrap_or(configured_interval);
             daemon::run(&engine, interval_minutes).await?;
         }
-        Command::Ai { endpoint, model } => engine.set_ai(AiConfig { endpoint, model }).await?,
+        Command::Ai {
+            provider,
+            endpoint,
+            model,
+            consent,
+        } => {
+            engine
+                .set_ai(AiConfig {
+                    endpoint,
+                    model,
+                    provider: provider.into(),
+                    remote_consent: consent,
+                })
+                .await?
+        }
         Command::Models => {
             for model in engine.local_models().await? {
                 println!("{model}");
@@ -297,11 +379,7 @@ async fn main() -> Result<()> {
             let total: u64 = freed.iter().map(|(_, bytes)| bytes).sum();
             println!(
                 "{} {:.1} MiB",
-                if dry_run {
-                    "Boşaltılabilir:"
-                } else {
-                    "Boşaltıldı:"
-                },
+                if dry_run { "Can be freed:" } else { "Freed:" },
                 total as f64 / 1_048_576.0
             );
         }
@@ -318,37 +396,37 @@ async fn main() -> Result<()> {
 fn manage_service(command: &ServiceCommand, config: Option<&std::path::Path>) -> Result<()> {
     anyhow::ensure!(
         cfg!(target_os = "linux"),
-        "systemd kullanıcı servisi yalnızca Linux'ta desteklenir"
+        "The systemd user service is only supported on Linux"
     );
     let directory = service::unit_directory()?;
     match command {
         ServiceCommand::Install { enable } => {
-            let config = config.context("Servis kurulumu için --config gerekli")?;
+            let config = config.context("Installing the service needs --config")?;
             // Validate before installing so the daemon does not fail at boot.
             let parsed = Config::load(config)?;
             anyhow::ensure!(
                 parsed.automation.as_ref().is_none_or(|a| a.enabled),
-                "automation.enabled = false olan yapılandırma için servis kurulmaz"
+                "No service is installed for a configuration with automation.enabled = false"
             );
             let config = config.canonicalize()?;
             let binary = std::env::current_exe()
-                .context("Çalışan tehom dosyası bulunamadı")?
+                .context("Could not locate the running tehom binary")?
                 .canonicalize()?;
             let text = service::unit(&binary, &config)?;
             match service::install(&directory, &text)? {
                 service::Installed::Created => println!(
-                    "Servis yazıldı: {}",
+                    "Service written: {}",
                     directory.join(service::UNIT_NAME).display()
                 ),
-                service::Installed::AlreadyPresent => println!("Servis zaten kurulu"),
+                service::Installed::AlreadyPresent => println!("Service already installed"),
             }
             if *enable {
                 service::systemctl(&["daemon-reload"])?;
                 service::systemctl(&["enable", "--now", service::UNIT_NAME])?;
-                println!("Servis etkinleştirildi");
+                println!("Service enabled");
             } else {
                 println!(
-                    "Başlatmak için: systemctl --user daemon-reload && systemctl --user enable --now {}",
+                    "To start it: systemctl --user daemon-reload && systemctl --user enable --now {}",
                     service::UNIT_NAME
                 );
             }
@@ -359,17 +437,17 @@ fn manage_service(command: &ServiceCommand, config: Option<&std::path::Path>) ->
             }
             match service::uninstall(&directory)? {
                 service::Removed::Removed => {
-                    println!("Servis dosyası silindi");
+                    println!("Service file removed");
                     if *disable {
                         service::systemctl(&["daemon-reload"])?;
                     } else {
                         println!(
-                            "Çalışıyorsa durdurun: systemctl --user disable --now {}",
+                            "If it is running, stop it: systemctl --user disable --now {}",
                             service::UNIT_NAME
                         );
                     }
                 }
-                service::Removed::NotInstalled => println!("Kurulu servis yok"),
+                service::Removed::NotInstalled => println!("No service installed"),
             }
         }
     }

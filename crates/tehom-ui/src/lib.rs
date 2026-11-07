@@ -1,4 +1,6 @@
 mod automation_ui;
+mod shell;
+pub mod theme;
 use automation_ui::{Backend, Page};
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
@@ -12,8 +14,9 @@ use gpui_kit::{
     },
     div, img,
     prelude::*,
-    px, rgb, svg,
+    px, svg,
 };
+pub use shell::{ClosePalette, TogglePalette, bind_keys};
 use std::{
     path::PathBuf,
     sync::{
@@ -30,6 +33,19 @@ pub struct Tehom {
     source_url: Entity<InputState>,
     ai_endpoint: Entity<InputState>,
     ai_model: Entity<InputState>,
+    /// Masked; read only when saving and never shown or stored by the view.
+    ai_key: Entity<InputState>,
+    /// The provider chosen in Settings; `None` follows the saved configuration.
+    ai_provider: Option<tehom_core::AiProvider>,
+    /// Whether a key is saved for a provider, cached so rendering never
+    /// queries the keyring; cleared when the provider or key changes.
+    ai_key_saved: std::cell::Cell<Option<(tehom_core::AiProvider, bool)>>,
+    /// Root focus, so window shortcuts work before any field is focused.
+    focus: gpui_kit::FocusHandle,
+    palette: Option<shell::CommandPalette>,
+    /// First-run guide step, when shown.
+    onboarding: Option<u8>,
+    onboarding_checked: bool,
     source_mode: AutomationMode,
     source_busy: bool,
     backend: Option<Arc<Backend>>,
@@ -61,13 +77,22 @@ pub struct Tehom {
 }
 
 impl Tehom {
+    /// The root focus handle; focus it after opening the window.
+    pub fn focus_handle(&self) -> gpui_kit::FocusHandle {
+        self.shell_focus().clone()
+    }
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let source_url = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("YouTube kanal veya video bağlantısı")
+            InputState::new(window, cx).placeholder("youtube.com/@channel or a video link")
         });
         let ai_endpoint =
             cx.new(|cx| InputState::new(window, cx).default_value("http://127.0.0.1:11434"));
-        let ai_model = cx.new(|cx| InputState::new(window, cx).placeholder("Yerel model adı"));
+        let ai_model = cx.new(|cx| InputState::new(window, cx).placeholder("Model name"));
+        let ai_key = cx.new(|cx| {
+            InputState::new(window, cx)
+                .masked(true)
+                .placeholder("Paste your API key")
+        });
         let engine_stop = Arc::new(AtomicBool::new(false));
         let start = cx.new(|cx| InputState::new(window, cx).default_value("0"));
         let end = cx.new(|cx| InputState::new(window, cx).default_value("0"));
@@ -119,7 +144,7 @@ impl Tehom {
                             }
                             if let Some(error) = snapshot.error {
                                 view.status =
-                                    "Video oynatılamadı. Başka bir dosya seçebilirsin.".into();
+                                    "The video could not be played. Try another file.".into();
                                 view.details = Some(error);
                             }
                             cx.notify();
@@ -136,6 +161,13 @@ impl Tehom {
             source_url,
             ai_endpoint,
             ai_model,
+            ai_key,
+            ai_provider: None,
+            ai_key_saved: std::cell::Cell::new(None),
+            focus: cx.focus_handle(),
+            palette: None,
+            onboarding: None,
+            onboarding_checked: false,
             source_mode: AutomationMode::AutoDraft,
             source_busy: false,
             backend: None,
@@ -160,7 +192,7 @@ impl Tehom {
             metadata: String::new(),
             busy: false,
             cancellation: None,
-            status: "Başlamak için bilgisayarından bir video seç.".into(),
+            status: "Choose a video on your computer to begin.".into(),
             details: None,
             show_details: false,
             _refresh: refresh,
@@ -175,7 +207,7 @@ impl Tehom {
         self.pending_range = None;
         self.editing_clip = None;
         self.busy = true;
-        self.status = "Video açılıyor…".into();
+        self.status = "Opening video…".into();
         self.details = None;
         self.preview = None;
         self.source = None;
@@ -229,11 +261,11 @@ impl Tehom {
                         {
                             eprintln!("Draft preview: {error}");
                         }
-                        view.status = "Hazır. Başlangıç ve bitişi seçip MP4 kaydet.".into();
+                        view.status = "Ready. Choose the start and end, then save the MP4.".into();
                     }
                     Err(error) => {
                         view.status =
-                            "Video açılamadı. Dosyayı ve video bileşenlerini kontrol et.".into();
+                            "The video could not be opened. Check the file and the GStreamer plug-ins.".into();
                         view.details = Some(error.to_string());
                     }
                 }
@@ -244,12 +276,12 @@ impl Tehom {
         cx.notify();
     }
 
-    fn pick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn pick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let picker = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("Video seç".into()),
+            prompt: Some("Choose video".into()),
         });
         cx.spawn_in(window, async move |view, cx| {
             let result = picker.await;
@@ -261,7 +293,7 @@ impl Tehom {
                 }
                 Ok(Ok(None)) => {}
                 error => {
-                    view.status = "Dosya seçimi açılamadı. Tekrar deneyebilirsin.".into();
+                    view.status = "The file picker could not open. Try again.".into();
                     view.details = Some(format!("{error:?}"));
                     cx.notify();
                 }
@@ -275,7 +307,7 @@ impl Tehom {
             && let Err(error) =
                 preview.set_volume((preview.snapshot().volume + change).clamp(0., 1.))
         {
-            self.status = "Ses düzeyi değiştirilemedi.".into();
+            self.status = "Volume could not be changed.".into();
             self.details = Some(error.to_string());
         }
         cx.notify();
@@ -285,7 +317,7 @@ impl Tehom {
         if let Some(preview) = &self.preview
             && let Err(error) = preview.seek(Duration::from_secs_f64(seconds.clamp(0., self.total)))
         {
-            self.status = "Seçilen zamana gidilemedi.".into();
+            self.status = "Could not move to that time.".into();
             self.details = Some(error.to_string());
         }
         cx.notify();
@@ -298,7 +330,7 @@ impl Tehom {
         let start = self.start.read(cx).value().parse::<f64>();
         let end = self.end.read(cx).value().parse::<f64>();
         let (Ok(start), Ok(end)) = (start, end) else {
-            self.status = "Başlangıç ve bitişi saniye olarak yaz. Örnek: 12.5".into();
+            self.status = "Enter start and end in seconds, for example 12.5".into();
             cx.notify();
             return;
         };
@@ -308,13 +340,13 @@ impl Tehom {
             || end <= start
             || end > self.total + 0.0005
         {
-            self.status = "Bitiş başlangıçtan sonra ve videonun içinde olmalı.".into();
+            self.status = "The end must be after the start and inside the video.".into();
             cx.notify();
             return;
         }
         let end = end.min(self.total);
         let parent = input.parent().unwrap_or(std::path::Path::new("."));
-        let picker = cx.prompt_for_new_path(parent, Some("tehom-klip.mp4"));
+        let picker = cx.prompt_for_new_path(parent, Some("tehom-clip.mp4"));
         self.busy = true;
         self.details = None;
         cx.spawn_in(window, async move |view, cx| {
@@ -323,7 +355,7 @@ impl Tehom {
                 error => {
                     let _ = view.update(cx, |view, cx| {
                         view.busy = false;
-                        view.status = "Kayıt konumu seçilemedi. Tekrar deneyebilirsin.".into();
+                        view.status = "The save location could not be chosen. Try again.".into();
                         view.details = Some(format!("{error:?}"));
                         cx.notify();
                     });
@@ -346,7 +378,7 @@ impl Tehom {
                 output.with_extension("mp4")
             };
             let _ = view.update(cx, |view, cx| {
-                view.status = "Klip hazırlanıyor…".into();
+                view.status = "Saving clip…".into();
                 cx.notify();
             });
             let saved_path = output.clone();
@@ -365,15 +397,15 @@ impl Tehom {
                 view.busy = false;
                 view.cancellation = None;
                 match result {
-                    Ok(()) => view.status = format!("MP4 kaydedildi: {}", saved_path.display()),
+                    Ok(()) => view.status = format!("MP4 saved: {}", saved_path.display()),
                     Err(error) => {
                         view.status = match error.kind() {
                             std::io::ErrorKind::AlreadyExists => {
-                                "Bu adla bir dosya var. Başka bir ad seç."
+                                "A file with this name exists. Choose another name."
                             }
-                            std::io::ErrorKind::Interrupted => "Klip hazırlama iptal edildi.",
-                            std::io::ErrorKind::StorageFull => "Klip için yeterli disk alanı yok.",
-                            _ => "Klip kaydedilemedi. Konumu ve boş disk alanını kontrol et.",
+                            std::io::ErrorKind::Interrupted => "Clip export cancelled.",
+                            std::io::ErrorKind::StorageFull => "There is not enough disk space for this clip.",
+                            _ => "The clip could not be saved. Check the location and free disk space.",
                         }
                         .into();
                         view.details = Some(error.to_string());
@@ -388,6 +420,7 @@ impl Tehom {
 
 impl Tehom {
     fn render_editor(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let p = crate::theme::palette(cx);
         let snapshot = self
             .preview
             .as_ref()
@@ -401,17 +434,17 @@ impl Tehom {
             .flex_col()
             .gap_4()
             .p_6()
-            .bg(rgb(0x161616))
-            .text_color(rgb(0xf2f4f8))
+            .bg(p.background)
+            .text_color(p.text)
             .child(
                 div()
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(div().text_xl().child("Klip düzenleyici"))
+                    .child(div().text_xl().child("Clip editor"))
                     .child(
-                        Button::new("open")
-                            .label("Video aç")
+                        Button::new("open").h(px(44.))
+                            .label("Open video")
                             .disabled(self.busy)
                             .on_click(cx.listener(|view, _, window, cx| view.pick(window, cx))),
                     ),
@@ -422,8 +455,8 @@ impl Tehom {
                     .flex_col()
                     .flex_1()
                     .min_h(px(200.))
-                    .bg(rgb(0x262626))
-                    .rounded_lg()
+                    .bg(p.background).border_1().border_color(p.border)
+                    .rounded(px(12.))
                     .items_center()
                     .justify_center()
                     .overflow_hidden()
@@ -431,7 +464,7 @@ impl Tehom {
                         element.child(img(image).size_full().object_fit(ObjectFit::Contain))
                     })
                     .when(self.image.is_none(), |element| {
-                        element.child("Video önizlemesi")
+                        element.child("Video preview")
                     }),
             )
             .child(
@@ -441,13 +474,13 @@ impl Tehom {
                     .focusable()
                     .tab_stop(true)
                     .aria_label(
-                        "Zaman çizelgesi. Oklarla ilerle, Home ve End ile başa veya sona git.",
+                        "Timeline. Use the arrow keys to move, Home and End to jump to the start or end.",
                     )
                     .border_1()
-                    .border_color(rgb(0x393939))
+                    .border_color(p.border)
                     .rounded_md()
                     .p_2()
-                    .focus(|style| style.border_color(rgb(0x78a9ff)))
+                    .focus(move |style| style.border_color(p.text))
                     .on_key_down(cx.listener(|view, event: &KeyDownEvent, _, cx| {
                         let position = view
                             .preview
@@ -467,7 +500,7 @@ impl Tehom {
                     .child(
                         Slider::new(&self.timeline)
                             .disabled(!ready)
-                            .accessibility_label("Videoda zaman seç")
+                            .accessibility_label("Choose a time in the video")
                             .w_full(),
                     ),
             )
@@ -478,7 +511,7 @@ impl Tehom {
                     .flex_wrap()
                     .items_center()
                     .child(
-                        Button::new("back")
+                        Button::new("back").h(px(44.))
                             .label("−5 sn")
                             .disabled(!ready)
                             .on_click(cx.listener(move |view, _, _, cx| {
@@ -486,22 +519,22 @@ impl Tehom {
                             })),
                     )
                     .child(
-                        Button::new("play")
-                            .label(if snapshot.paused { "Oynat" } else { "Duraklat" })
+                        Button::new("play").h(px(44.))
+                            .label(if snapshot.paused { "Play" } else { "Pause" })
                             .disabled(!ready)
                             .on_click(cx.listener(|view, _, _, cx| {
                                 if let Some(preview) = &view.preview
                                     && let Err(error) =
                                         preview.set_paused(!preview.snapshot().paused)
                                 {
-                                    view.status = "Oynatma durumu değiştirilemedi.".into();
+                                    view.status = "Playback could not be changed.".into();
                                     view.details = Some(error.to_string());
                                 }
                                 cx.notify();
                             })),
                     )
                     .child(
-                        Button::new("forward")
+                        Button::new("forward").h(px(44.))
                             .label("+5 sn")
                             .disabled(!ready)
                             .on_click(
@@ -510,15 +543,15 @@ impl Tehom {
                     )
                     .child(format!("{position:.2} / {:.2} saniye", self.total))
                     .child(
-                        Button::new("volume-down")
-                            .label("Sesi azalt")
+                        Button::new("volume-down").h(px(44.))
+                            .label("Volume down")
                             .disabled(!ready)
                             .on_click(cx.listener(|view, _, _, cx| view.adjust_volume(-0.1, cx))),
                     )
-                    .child(format!("Ses: %{:.0}", snapshot.volume * 100.))
+                    .child(format!("Volume {:.0}%", snapshot.volume * 100.))
                     .child(
-                        Button::new("volume-up")
-                            .label("Sesi artır")
+                        Button::new("volume-up").h(px(44.))
+                            .label("Volume up")
                             .disabled(!ready)
                             .on_click(cx.listener(|view, _, _, cx| view.adjust_volume(0.1, cx))),
                     ),
@@ -535,17 +568,17 @@ impl Tehom {
                             .flex_col()
                             .gap_1()
                             .w(px(150.))
-                            .child("Başlangıç (saniye)")
+                            .child("Start (seconds)")
                             .child(
-                                Input::new(&self.start)
+                                Input::new(&self.start).h(px(44.))
                                     .id("start")
                                     .disabled(self.busy || !ready)
-                                    .aria_label("Klip başlangıcı, saniye"),
+                                    .aria_label("Clip start, seconds"),
                             ),
                     )
                     .child(
-                        Button::new("mark-start")
-                            .label("Buradan başlat")
+                        Button::new("mark-start").h(px(44.))
+                            .label("Start here")
                             .disabled(!ready || self.busy)
                             .on_click(cx.listener(move |view, _, window, cx| {
                                 view.start.update(cx, |state, cx| {
@@ -559,17 +592,17 @@ impl Tehom {
                             .flex_col()
                             .gap_1()
                             .w(px(150.))
-                            .child("Bitiş (saniye)")
+                            .child("End (seconds)")
                             .child(
-                                Input::new(&self.end)
+                                Input::new(&self.end).h(px(44.))
                                     .id("end")
                                     .disabled(self.busy || !ready)
-                                    .aria_label("Klip bitişi, saniye"),
+                                    .aria_label("Clip end, seconds"),
                             ),
                     )
                     .child(
-                        Button::new("mark-end")
-                            .label("Burada bitir")
+                        Button::new("mark-end").h(px(44.))
+                            .label("End here")
                             .disabled(!ready || self.busy)
                             .on_click(cx.listener(move |view, _, window, cx| {
                                 view.end.update(cx, |state, cx| {
@@ -579,8 +612,8 @@ impl Tehom {
                     )
                     .when_some(self.editing_clip, |element, id| {
                         element.child(
-                            Button::new("save-draft")
-                                .label("Yeni taslak kaydet")
+                            Button::new("save-draft").h(px(44.))
+                                .label("Save new draft")
                                 .disabled(!ready || self.busy || self.source_busy)
                                 .on_click(cx.listener(move |view, _, window, cx| {
                                     view.save_draft_revision(id, window, cx)
@@ -588,9 +621,9 @@ impl Tehom {
                         )
                     })
                     .child(
-                        Button::new("save")
+                        Button::new("save").h(px(44.))
                             .primary()
-                            .label("MP4 kaydet")
+                            .label("Save MP4")
                             .disabled(!ready || self.busy)
                             .on_click(cx.listener(|view, _, window, cx| view.save(window, cx))),
                     ),
@@ -598,19 +631,19 @@ impl Tehom {
             .when(self.editing_clip.is_some(), |element| {
                 element.child(
                     div().text_sm().child(
-                        "Yeni taslak 20–90 saniye olmalı. Önceki taslak ve dosyalar korunur.",
+                        "A draft must be 20 to 90 seconds. Earlier drafts and files are kept.",
                     ),
                 )
             })
             .when(self.cancellation.is_some(), |element| {
                 element.child(
-                    Button::new("cancel")
-                        .label("İptal et")
+                    Button::new("cancel").h(px(44.))
+                        .label("Cancel")
                         .on_click(cx.listener(|view, _, _, cx| {
                             if let Some(cancelled) = &view.cancellation {
                                 cancelled.store(true, Ordering::Release);
                             }
-                            view.status = "İptal ediliyor…".into();
+                            view.status = "Cancelling…".into();
                             cx.notify();
                         })),
                 )
@@ -628,11 +661,11 @@ impl Tehom {
             )
             .when(self.details.is_some(), |element| {
                 element.child(
-                    Button::new("details")
+                    Button::new("details").h(px(44.))
                         .label(if self.show_details {
-                            "Ayrıntıları gizle"
+                            "Hide details"
                         } else {
-                            "Ayrıntılar"
+                            "Details"
                         })
                         .on_click(cx.listener(|view, _, _, cx| {
                             view.show_details = !view.show_details;
@@ -688,7 +721,7 @@ mod tests {
     #[gpui_kit::test]
     fn home_leads_with_channel_automation(cx: &mut TestAppContext) {
         cx.update(gpui_kit::init);
-        let (handle, _) = cx.update(|cx| {
+        let (handle, view) = cx.update(|cx| {
             open_window(WindowOptions::default(), cx, |window, cx| {
                 cx.new(|cx| Tehom::new(window, cx))
             })
@@ -698,13 +731,19 @@ mod tests {
             window.render_frame(cx);
             assert_eq!(
                 window
-                    .find_by_label("YouTube kanal veya video adresi")
+                    .find_by_label("YouTube channel or video address")
                     .label(),
-                Some("YouTube kanal veya video adresi")
+                Some("YouTube channel or video address")
             );
             assert_eq!(window.find("add-channel").disabled(), Some(true));
             assert_eq!(window.find("import-local-video").disabled(), Some(true));
-            assert_eq!(window.find_by_label("Kaynaklar").label(), Some("Kaynaklar"));
+            // The second sidebar entry opens Sources.
+            window.click("0-1", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle, |_, _, cx| {
+            assert!(view.read(cx).page == Page::Sources);
         })
         .unwrap();
     }
@@ -762,7 +801,9 @@ mod tests {
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
             assert_ne!(
-                window.find_by_label("Videoda zaman seç").disabled(),
+                window
+                    .find_by_label("Choose a time in the video")
+                    .disabled(),
                 Some(true)
             );
             window.click("timeline-keyboard", cx);
@@ -852,6 +893,7 @@ mod tests {
             export_directory: directory.to_path_buf(),
             export_profile: tehom_core::ExportProfile::Horizontal,
             events: Vec::new(),
+            onboarded: true,
         }
     }
 
@@ -894,17 +936,17 @@ mod tests {
         cx.update(gpui_kit::init);
         let present = tempfile::tempdir().unwrap();
         render_page(cx, Page::Clips, snapshot(present.path(), true), |window| {
-            assert_eq!(window.find_all_by_label("Taslağı düzenle").len(), 1);
-            assert_eq!(window.find_all_by_label("Klibi aç").len(), 1);
-            assert_eq!(window.find_all_by_label("Orijinali kaydet").len(), 1);
-            assert_eq!(window.find_all_by_label("Altyazıyı dışa aktar").len(), 1);
+            assert_eq!(window.find_all_by_label("Edit draft").len(), 1);
+            assert_eq!(window.find_all_by_label("Open clip").len(), 1);
+            assert_eq!(window.find_all_by_label("Save original").len(), 1);
+            assert_eq!(window.find_all_by_label("Export captions").len(), 1);
         });
         let missing = tempfile::tempdir().unwrap();
         render_page(cx, Page::Clips, snapshot(missing.path(), false), |window| {
-            assert!(window.find_all_by_label("Taslağı düzenle").is_empty());
-            assert!(window.find_all_by_label("Klibi aç").is_empty());
+            assert!(window.find_all_by_label("Edit draft").is_empty());
+            assert!(window.find_all_by_label("Open clip").is_empty());
             // The original can be downloaded again, so saving it stays available.
-            assert_eq!(window.find_all_by_label("Orijinali kaydet").len(), 1);
+            assert_eq!(window.find_all_by_label("Save original").len(), 1);
         });
         let settings = tempfile::tempdir().unwrap();
         render_page(
@@ -912,10 +954,143 @@ mod tests {
             Page::Settings,
             snapshot(settings.path(), true),
             |window| {
-                for label in ["Dikey 1080×1920", "Yatay 1920×1080", "Özgün boyut"] {
+                for label in [
+                    "Vertical 1080 × 1920",
+                    "Horizontal 1920 × 1080",
+                    "Original size",
+                ] {
                     assert_eq!(window.find_all_by_label(label).len(), 1, "{label}");
                 }
             },
         );
+    }
+
+    #[test]
+    fn palette_commands_filter_by_every_word() {
+        assert_eq!(
+            shell::Command::matching("").len(),
+            shell::Command::ALL.len()
+        );
+        let shapes = shell::Command::matching("clip shape");
+        assert_eq!(shapes.len(), 3);
+        let titles: Vec<_> = shell::Command::matching("go CLIPS")
+            .into_iter()
+            .map(|(_, t)| t)
+            .collect();
+        assert_eq!(titles, ["Go to Clips"]);
+        assert!(shell::Command::matching("publish to tiktok").is_empty());
+    }
+
+    fn open_view(
+        cx: &mut TestAppContext,
+        snapshot: EngineSnapshot,
+    ) -> (gpui_kit::AnyWindowHandle, Entity<Tehom>) {
+        cx.update(|cx| {
+            shell::bind_keys(cx);
+            open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds {
+                        origin: point(px(0.), px(0.)),
+                        size: size(px(1100.), px(1400.)),
+                    })),
+                    ..Default::default()
+                },
+                cx,
+                |window, cx| {
+                    cx.new(|cx| {
+                        let mut view = Tehom::new(window, cx);
+                        view.engine_snapshot = Some(snapshot);
+                        view
+                    })
+                },
+            )
+            .unwrap()
+        })
+    }
+
+    #[gpui_kit::test]
+    fn ctrl_k_opens_the_palette_and_escape_closes_it(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, view) = open_view(cx, snapshot(dir.path(), true));
+        cx.update_window(handle, |_, window, cx| {
+            let focus = view.read(cx).focus_handle();
+            window.focus(&focus, cx);
+            window.render_frame(cx);
+            window.dispatch_action(Box::new(TogglePalette), cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(view.read(cx).palette.is_some());
+            assert!(window.try_find_by_label("Command").is_some());
+            window.dispatch_action(Box::new(ClosePalette), cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle, |_, _, cx| {
+            assert!(view.read(cx).palette.is_none());
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn first_run_guide_walks_through_ai_and_folder(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let dir = tempfile::tempdir().unwrap();
+        let mut fresh = snapshot(dir.path(), true);
+        fresh.onboarded = false;
+        let (handle, view) = open_view(cx, fresh);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(view.read(cx).onboarding, Some(0));
+            assert!(window.try_find_by_label("Get started").is_some());
+            assert!(window.try_find_by_label("Skip setup").is_some());
+            window.click("onboarding-next", cx);
+            window.render_frame(cx);
+            assert_eq!(view.read(cx).onboarding, Some(1));
+            for provider in [
+                "OpenAI",
+                "Anthropic",
+                "Google Gemini",
+                "OpenRouter",
+                "Local model",
+            ] {
+                assert!(window.try_find_by_label(provider).is_some(), "{provider}");
+            }
+            assert!(window.try_find_by_label("Continue without AI").is_some());
+            window.click("onboarding-next", cx);
+            window.render_frame(cx);
+            assert!(window.try_find_by_label("Finish").is_some());
+            assert!(window.try_find_by_label("Back").is_some());
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn choosing_a_remote_provider_shows_a_masked_key_field_and_consent(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, view) = open_view(cx, snapshot(dir.path(), true));
+        cx.update_window(handle, |_, window, cx| {
+            view.update(cx, |view, cx| {
+                view.page = Page::Settings;
+                view.ai_provider = Some(tehom_core::AiProvider::Anthropic);
+                view.ai_key_saved
+                    .set(Some((tehom_core::AiProvider::Anthropic, false)));
+                cx.notify();
+            });
+            window.render_frame(cx);
+            let key = window.find_by_label("API key");
+            assert_eq!(key.value(), None, "the key field must not expose its value");
+            assert!(
+                window
+                    .try_find_by_label("Allow and use Anthropic")
+                    .is_some()
+            );
+            assert!(window.try_find_by_label("Local model server").is_none());
+        })
+        .unwrap();
     }
 }

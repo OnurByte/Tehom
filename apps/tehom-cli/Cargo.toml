@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
+rpassword = "7"
 clap = { version = "4", features = ["derive"] }
 directories = "6"
 serde_json = "1"

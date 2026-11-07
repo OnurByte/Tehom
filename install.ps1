@@ -18,12 +18,12 @@ $GstVersion = '1.28.8'
 $InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\Tehom'
 
 function Fail($Message) {
-    Write-Host "Tehom kurulumu durdu: $Message" -ForegroundColor Red
+    Write-Host "Tehom install stopped: $Message" -ForegroundColor Red
     throw $Message
 }
 
 if (-not [Environment]::Is64BitOperatingSystem -or $env:PROCESSOR_ARCHITECTURE -eq 'ARM64') {
-    Fail 'Şimdilik yalnızca 64 bit x86 Windows destekleniyor.'
+    Fail 'Only 64-bit x86 Windows is supported for now.'
 }
 
 $Asset = 'tehom-windows-x86_64.zip'
@@ -36,7 +36,7 @@ $Temp = Join-Path ([IO.Path]::GetTempPath()) ("tehom-" + [Guid]::NewGuid())
 New-Item -ItemType Directory -Path $Temp | Out-Null
 
 try {
-    Write-Host 'Tehom indiriliyor (Windows, x86_64)…'
+    Write-Host 'Downloading Tehom (Windows, x86_64)…'
     $Zip = Join-Path $Temp $Asset
     if ($env:TEHOM_ARCHIVE) {
         Copy-Item $env:TEHOM_ARCHIVE $Zip
@@ -46,19 +46,19 @@ try {
             Invoke-WebRequest "$Base/$Asset" -OutFile $Zip -UseBasicParsing
             Invoke-WebRequest "$Base/$Asset.sha256" -OutFile "$Zip.sha256" -UseBasicParsing
         } catch {
-            Fail "$Asset indirilemedi. Henüz yayımlanmış bir sürüm olmayabilir: https://github.com/$Repo/releases"
+            Fail "Could not download $Asset. There may be no release yet: https://github.com/$Repo/releases"
         }
     }
     $Expected = ((Get-Content "$Zip.sha256" -Raw).Trim() -split '\s+')[0].ToLower()
     $Actual = (Get-FileHash $Zip -Algorithm SHA256).Hash.ToLower()
     if (-not $Expected -or $Expected -ne $Actual) {
-        Fail 'SHA-256 tutmuyor; dosya bozuk ya da değiştirilmiş, hiçbir şey kurulmadı.'
+        Fail 'SHA-256 mismatch; the download is damaged or altered. Nothing was installed.'
     }
 
     Expand-Archive $Zip -DestinationPath $Temp -Force
     $Package = Join-Path $Temp 'tehom'
     foreach ($Binary in 'tehom.exe', 'tehom-desktop.exe') {
-        if (-not (Test-Path (Join-Path $Package $Binary))) { Fail "arşivde $Binary yok" }
+        if (-not (Test-Path (Join-Path $Package $Binary))) { Fail "$Binary is missing from the archive" }
     }
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     foreach ($Binary in 'tehom.exe', 'tehom-desktop.exe') {
@@ -93,17 +93,17 @@ try {
 
     if ($Missing.Count -gt 0) {
         Write-Host ''
-        Write-Host ('Eksik araçlar: ' + ($Missing -join ', '))
-        $Plan = 'winget ile FFmpeg ve yt-dlp, gstreamer.freedesktop.org üzerinden GStreamer (yalnız bu kullanıcı için)'
+        Write-Host ('Missing tools: ' + ($Missing -join ', '))
+        $Plan = 'FFmpeg and yt-dlp with winget, GStreamer from gstreamer.freedesktop.org (this user only)'
         $Answer = 'h'
         if ($env:TEHOM_NO_DEPS) {
-            Write-Host "Kurmak için: $Plan"
+            Write-Host "To install them: $Plan"
         } elseif ($env:TEHOM_YES) {
-            $Answer = 'e'
+            $Answer = 'y'
         } else {
-            Write-Host "Kurulacak: $Plan"
-            $Answer = Read-Host 'Şimdi kurayım mı? [E/h]'
-            if (-not $Answer) { $Answer = 'e' }
+            Write-Host "Will install: $Plan"
+            $Answer = Read-Host 'Install them now? [Y/n]'
+            if (-not $Answer) { $Answer = 'y' }
         }
         if ($Answer -match '^[EeYy]') {
             if (($Missing -contains 'ffmpeg') -or ($Missing -contains 'ffprobe')) {
@@ -116,16 +116,16 @@ try {
                 $Installer = Join-Path $Temp 'gstreamer.exe'
                 Invoke-WebRequest "https://gstreamer.freedesktop.org/data/pkg/windows/$GstVersion/msvc/gstreamer-1.0-msvc-x86_64-$GstVersion.exe" -OutFile $Installer -UseBasicParsing
                 $Process = Start-Process $Installer -ArgumentList @('/VERYSILENT', '/NORESTART', '/CURRENTUSER', "/DIR=$GstRoot") -PassThru -Wait
-                if ($Process.ExitCode -ne 0) { Write-Host "GStreamer kurulamadı (kod $($Process.ExitCode))." }
+                if ($Process.ExitCode -ne 0) { Write-Host "GStreamer could not be installed (code $($Process.ExitCode))." }
             }
         }
     }
     if (Test-Path (Join-Path $GstRoot 'bin')) { Add-UserPath (Join-Path $GstRoot 'bin') }
 
     Write-Host ''
-    Write-Host ("Kuruldu: " + (& (Join-Path $InstallDir 'tehom.exe') --version) + " → $InstallDir")
-    Write-Host 'Başlat menüsünde "Tehom"; yeni bir terminalde: tehom --help'
-    Write-Host 'Yerel bir AI modeli gerekir (ör. Ollama): https://ollama.com'
+    Write-Host ("Installed " + (& (Join-Path $InstallDir 'tehom.exe') --version) + " in $InstallDir")
+    Write-Host 'Open "Tehom" from the Start menu, or run tehom --help in a new terminal'
+    Write-Host 'For AI clips, add your own API key in Settings, or run a local model such as Ollama.'
 } finally {
     Remove-Item $Temp -Recurse -Force -ErrorAction SilentlyContinue
 }

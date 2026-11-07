@@ -84,4 +84,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "Tehom $GITHUB_REF_NAME" --notes "Install: see README. Archives are SHA-256 checked by the installers but not code-signed or notarised."
+          # A release created by hand for this tag is reused; archives are (re)attached.
+          if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "Tehom $GITHUB_REF_NAME" --notes "Install: see README. Archives are SHA-256 checked by the installers but not code-signed or notarised."
+          fi
+          gh release upload "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --clobber

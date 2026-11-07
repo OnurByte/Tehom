@@ -22,7 +22,7 @@ GST_VERSION="1.28.8"
 
 say() { printf '%s\n' "$*"; }
 fail() {
-    printf 'Tehom kurulumu durdu: %s\n' "$*" >&2
+    printf 'Tehom install stopped: %s\n' "$*" >&2
     exit 1
 }
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -30,12 +30,12 @@ have() { command -v "$1" >/dev/null 2>&1; }
 case "$(uname -s)" in
     Linux) os=linux ;;
     Darwin) os=macos ;;
-    *) fail "bu sistem desteklenmiyor ($(uname -s)). Windows için PowerShell'de: irm https://raw.githubusercontent.com/$REPO/main/install.ps1 | iex" ;;
+    *) fail "this system is not supported ($(uname -s)). On Windows, in PowerShell: irm https://raw.githubusercontent.com/$REPO/main/install.ps1 | iex" ;;
 esac
 case "$(uname -m)" in
     x86_64 | amd64) arch=x86_64 ;;
     arm64 | aarch64) arch=aarch64 ;;
-    *) fail "işlemci mimarisi desteklenmiyor: $(uname -m)" ;;
+    *) fail "unsupported processor architecture: $(uname -m)" ;;
 esac
 
 asset="tehom-$os-$arch.tar.gz"
@@ -54,18 +54,18 @@ fetch() {
     elif have wget; then
         wget -q "$1" -O "$2"
     else
-        fail "curl veya wget gerekli"
+        fail "curl or wget is required"
     fi
 }
 
-say "Tehom indiriliyor ($os, $arch)…"
+say "Downloading Tehom ($os, $arch)…"
 if [ -n "${TEHOM_ARCHIVE:-}" ]; then
     cp "$TEHOM_ARCHIVE" "$tmp/$asset"
     cp "$TEHOM_ARCHIVE.sha256" "$tmp/$asset.sha256"
 else
     fetch "$base/$asset" "$tmp/$asset" ||
-        fail "$asset indirilemedi. Bu platform için henüz yayımlanmış bir sürüm olmayabilir: https://github.com/$REPO/releases"
-    fetch "$base/$asset.sha256" "$tmp/$asset.sha256" || fail "sağlama dosyası indirilemedi"
+        fail "could not download $asset. There may be no release for this platform yet: https://github.com/$REPO/releases"
+    fetch "$base/$asset.sha256" "$tmp/$asset.sha256" || fail "could not download the checksum file"
 fi
 
 expected="$(cut -d ' ' -f 1 <"$tmp/$asset.sha256")"
@@ -75,12 +75,12 @@ else
     actual="$(shasum -a 256 "$tmp/$asset" | cut -d ' ' -f 1)"
 fi
 [ -n "$expected" ] && [ "$expected" = "$actual" ] ||
-    fail "SHA-256 tutmuyor; dosya bozuk ya da değiştirilmiş, hiçbir şey kurulmadı"
+    fail "SHA-256 mismatch; the download is damaged or altered. Nothing was installed"
 
 tar -xzf "$tmp/$asset" -C "$tmp"
 package="$tmp/tehom"
 for binary in tehom tehom-desktop; do
-    [ -f "$package/$binary" ] || fail "arşivde $binary yok"
+    [ -f "$package/$binary" ] || fail "$binary is missing from the archive"
 done
 
 mkdir -p "$BIN_DIR"
@@ -99,7 +99,7 @@ if [ "$os" = linux ]; then
 [Desktop Entry]
 Type=Application
 Name=Tehom
-Comment=Videolardan ve kanallardan klip oluştur
+Comment=Make clips from videos and channels
 Exec="$BIN_DIR/tehom-desktop"
 Icon=org.tehom.Tehom
 Terminal=false
@@ -138,7 +138,7 @@ fi
 command=""
 if [ -n "$missing" ]; then
     if [ "$os" = macos ]; then
-        have brew || fail "Homebrew gerekli: https://brew.sh — sonra bu komutu yeniden çalıştır"
+        have brew || fail "Homebrew is required: https://brew.sh, then run this command again"
         pkg="gstreamer-1.0-$GST_VERSION-universal.pkg"
         command="brew install ffmpeg yt-dlp && curl -fL https://gstreamer.freedesktop.org/data/pkg/osx/$GST_VERSION/$pkg -o /tmp/$pkg && sudo installer -pkg /tmp/$pkg -target /"
     elif have apt-get; then
@@ -151,38 +151,38 @@ if [ -n "$missing" ]; then
         command="sudo zypper install -y ffmpeg yt-dlp gstreamer-plugins-base gstreamer-plugins-good gstreamer-plugins-libav"
     fi
     say ""
-    say "Eksik araçlar:$missing"
+    say "Missing tools:$missing"
     if [ -z "$command" ]; then
-        say "Paket yöneticin tanınmadı; FFmpeg, yt-dlp ve GStreamer (base, good, libav) kurmalısın."
+        say "Package manager not recognised; install FFmpeg, yt-dlp and GStreamer (base, good, libav)."
     elif [ -n "${TEHOM_NO_DEPS:-}" ]; then
-        say "Kurmak için: $command"
+        say "To install them: $command"
     else
         answer=n
         if [ -n "${TEHOM_YES:-}" ]; then
-            answer=e
+            answer=y
         elif [ -r /dev/tty ]; then
-            say "Şu komutla kurulacak:"
+            say "They will be installed with:"
             say "  $command"
-            printf 'Şimdi kurayım mı? [E/h] '
+            printf 'Install them now? [Y/n] '
             read -r answer </dev/tty || answer=n
-            [ -z "$answer" ] && answer=e
+            [ -z "$answer" ] && answer=y
         fi
         case "$answer" in
-            [EeYy]*) sh -c "$command" || say "Araçlar kurulamadı; komutu kendin çalıştırabilirsin." ;;
-            *) say "Sonra kurmak için: $command" ;;
+            [YyEe]*) sh -c "$command" || say "The tools could not be installed; you can run the command yourself." ;;
+            *) say "To install them later: $command" ;;
         esac
     fi
 fi
 
 say ""
-say "Kuruldu: $("$BIN_DIR/tehom" --version) → $BIN_DIR"
+say "Installed $("$BIN_DIR/tehom" --version) in $BIN_DIR"
 case ":$PATH:" in
     *":$BIN_DIR:"*) ;;
-    *) say "Not: $BIN_DIR PATH içinde değil. Kabuk ayarına ekle: export PATH=\"$BIN_DIR:\$PATH\"" ;;
+    *) say "Note: $BIN_DIR is not on your PATH. Add this to your shell profile: export PATH=\"$BIN_DIR:\$PATH\"" ;;
 esac
 if [ "$os" = linux ]; then
-    say "Uygulama menüsünde \"Tehom\" olarak görünür; terminalden: tehom-desktop"
+    say "Open \"Tehom\" from your app menu, or run tehom-desktop"
 else
-    say "Uygulamalar klasöründe ~/Applications/Tehom.app; terminalden: tehom-desktop"
+    say "Open ~/Applications/Tehom.app, or run tehom-desktop"
 fi
-say "Yerel bir AI modeli gerekir (ör. Ollama): https://ollama.com"
+say "For AI clips, add your own API key in Settings, or run a local model such as Ollama."

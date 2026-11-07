@@ -208,6 +208,7 @@ async fn local_provider_request_and_response_are_real_http() {
                 &AiConfig {
                     endpoint,
                     model: "test".into(),
+                    ..Default::default()
                 },
                 "[0-30000] hello",
             )
@@ -229,7 +230,8 @@ fn local_ai_rejects_external_credentials_and_accepts_loopback() {
         assert!(
             ai_endpoint(&AiConfig {
                 endpoint: endpoint.into(),
-                model: "test".into()
+                model: "test".into(),
+                ..Default::default()
             })
             .is_err()
         );
@@ -242,7 +244,8 @@ fn local_ai_rejects_external_credentials_and_accepts_loopback() {
         assert!(
             ai_endpoint(&AiConfig {
                 endpoint: endpoint.into(),
-                model: "test".into()
+                model: "test".into(),
+                ..Default::default()
             })
             .is_ok()
         );
@@ -258,6 +261,7 @@ async fn media_without_subtitles_stops_for_input_without_ai_or_asr() {
         .set_ai(AiConfig {
             endpoint: "http://127.0.0.1:1".into(),
             model: "selected-model".into(),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -362,6 +366,7 @@ async fn synthetic_media_and_local_http_model_export_a_valid_mp4() {
         .set_ai(AiConfig {
             endpoint,
             model: "fixture".into(),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -533,6 +538,7 @@ async fn failed_first_export_keeps_all_drafts_and_retries_without_model() {
         .set_ai(AiConfig {
             endpoint,
             model: "fixture".into(),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -659,6 +665,7 @@ async fn saved_draft_fixture() -> (tempfile::TempDir, Automation, PathBuf) {
         .set_ai(AiConfig {
             endpoint: "http://127.0.0.1:1".into(),
             model: "fixture".into(),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -772,6 +779,7 @@ async fn retry_fetches_later_platform_captions_without_redownloading_media() {
         .set_ai(AiConfig {
             endpoint,
             model: "fixture".into(),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -1056,6 +1064,7 @@ async fn imports_local_video_without_copying_or_downloading() {
             .set_ai(AiConfig {
                 endpoint,
                 model: "fixture".into(),
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -1411,6 +1420,7 @@ async fn export_progress_is_visible_while_running_and_cleared_after() {
         .set_ai(AiConfig {
             endpoint: "http://127.0.0.1:1".into(),
             model: "fixture".into(),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -1695,4 +1705,344 @@ async fn uploaded_subtitle_language_falls_back_to_the_file_name() {
     // An explicit tag wins over the file name.
     engine.import_transcript(1, file, Some("tr")).await.unwrap();
     assert_eq!(language(&engine).await.as_deref(), Some("tr"));
+}
+
+/// Serves one HTTP response and returns the raw request it received.
+fn provider_fixture(status: &str, body: String) -> (String, std::thread::JoinHandle<String>) {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let status = status.to_owned();
+    let handle = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut head = String::new();
+        let mut length = 0;
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                length = value.trim().parse().unwrap();
+            }
+            head.push_str(&line);
+            if line == "\r\n" {
+                break;
+            }
+        }
+        let mut request_body = vec![0; length];
+        reader.read_exact(&mut request_body).unwrap();
+        let mut stream = reader.into_inner();
+        write!(
+            stream,
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+        head + &String::from_utf8(request_body).unwrap()
+    });
+    (base, handle)
+}
+
+#[tokio::test]
+async fn byok_providers_send_their_own_request_shape_and_parse_clips() {
+    let clips =
+        r#"{"clips":[{"start_ms":0,"end_ms":30000,"title":"Opening","reason":"Self-contained"}]}"#;
+    let quoted = serde_json::to_string(clips).unwrap();
+    let cases = [
+        (
+            AiProvider::Openai,
+            "/v1/chat/completions",
+            "authorization: bearer sk-test-123456",
+            format!(r#"{{"choices":[{{"message":{{"content":{quoted}}}}}]}}"#),
+            "json_schema",
+        ),
+        (
+            AiProvider::Openrouter,
+            "/api/v1/chat/completions",
+            "authorization: bearer sk-test-123456",
+            format!(r#"{{"choices":[{{"message":{{"content":{quoted}}}}}]}}"#),
+            "json_schema",
+        ),
+        (
+            AiProvider::Anthropic,
+            "/v1/messages",
+            "x-api-key: sk-test-123456",
+            format!(
+                r#"{{"content":[{{"type":"text","text":"ok"}},{{"type":"tool_use","name":"clip_candidates","input":{clips}}}]}}"#
+            ),
+            "tool_choice",
+        ),
+        (
+            AiProvider::Gemini,
+            "/v1beta/models/gemini-2.5-flash:generateContent",
+            "x-goog-api-key: sk-test-123456",
+            format!(r#"{{"candidates":[{{"content":{{"parts":[{{"text":{quoted}}}]}}}}]}}"#),
+            "responseJsonSchema",
+        ),
+    ];
+    for (provider, path, auth, response, schema_key) in cases {
+        let (base, server) = provider_fixture("200 OK", response);
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = Automation::open(dir.path().into()).await.unwrap();
+        engine.remote_base = Some(base);
+        engine.test_key = Some("sk-test-123456".into());
+        let model = if provider == AiProvider::Gemini {
+            "gemini-2.5-flash"
+        } else {
+            "test-model"
+        };
+        let ai = AiConfig {
+            model: model.into(),
+            provider,
+            remote_consent: true,
+            ..Default::default()
+        };
+        engine.set_ai(ai.clone()).await.unwrap();
+        let found = engine.analyze(&ai, "[0-30000] Hello\n").await.unwrap();
+        let request = server.join().unwrap();
+        let lower = request.to_ascii_lowercase();
+        assert!(
+            request.starts_with(&format!("POST {path} ")),
+            "{provider:?}: {request}"
+        );
+        assert!(lower.contains(auth), "{provider:?} auth header");
+        assert!(
+            request.contains(schema_key),
+            "{provider:?} structured output"
+        );
+        assert!(
+            request.contains("untrusted transcript"),
+            "{provider:?} instructions"
+        );
+        assert_eq!(found.len(), 1, "{provider:?}");
+        assert_eq!((found[0].start_ms, found[0].end_ms), (0, 30000));
+    }
+}
+
+#[tokio::test]
+async fn byok_requires_consent_and_a_key_and_never_leaks_the_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut engine = Automation::open(dir.path().into()).await.unwrap();
+    // Choosing a remote provider without consent is refused outright.
+    let mut ai = AiConfig {
+        model: "gpt-4o-mini".into(),
+        provider: AiProvider::Openai,
+        ..Default::default()
+    };
+    assert!(engine.set_ai(ai.clone()).await.is_err());
+    assert!(engine.analyze(&ai, "[0-30000] Hi\n").await.is_err());
+    // With consent but no key, nothing is sent and the job asks for the key.
+    ai.remote_consent = true;
+    engine.set_ai(ai.clone()).await.unwrap();
+    engine.remote_base = Some("http://127.0.0.1:9".into());
+    let missing = engine.ai_ready(&ai).unwrap_err().to_string();
+    assert!(
+        missing.starts_with("Needs input:") && missing.contains("API key"),
+        "{missing}"
+    );
+    assert!(engine.analyze(&ai, "[0-30000] Hi\n").await.is_err());
+    assert!(
+        engine.requests.lock().unwrap().is_empty(),
+        "no request without a key"
+    );
+    // A rejected key becomes a clear "Needs input" error without echoing it.
+    let (base, server) = provider_fixture(
+        "401 Unauthorized",
+        r#"{"error":{"message":"Incorrect API key provided: sk-secr****"}}"#.into(),
+    );
+    engine.remote_base = Some(base);
+    engine.test_key = Some("sk-secret-value-123".into());
+    let error = engine
+        .analyze(&ai, "[0-30000] Hi\n")
+        .await
+        .unwrap_err()
+        .to_string();
+    server.join().unwrap();
+    assert!(
+        error.starts_with("Needs input:") && error.contains("rejected"),
+        "{error}"
+    );
+    assert!(!error.contains("sk-secret-value-123"));
+    // The stored configuration never contains a key.
+    let stored: String = sqlx::query_scalar("SELECT value FROM settings WHERE key='ai'")
+        .fetch_one(&engine.pool)
+        .await
+        .unwrap();
+    assert!(!stored.contains("sk-"), "{stored}");
+}
+
+#[test]
+fn byok_requests_may_only_reach_their_own_provider() {
+    assert!(
+        outbound_ai(
+            "https://api.openai.com/v1/chat/completions",
+            AiProvider::Openai
+        )
+        .is_ok()
+    );
+    assert!(
+        outbound_ai(
+            "https://api.anthropic.com/v1/messages",
+            AiProvider::Anthropic
+        )
+        .is_ok()
+    );
+    assert!(
+        outbound_ai(
+            "https://generativelanguage.googleapis.com/v1beta/models/m:generateContent",
+            AiProvider::Gemini
+        )
+        .is_ok()
+    );
+    assert!(
+        outbound_ai(
+            "https://openrouter.ai/api/v1/chat/completions",
+            AiProvider::Openrouter
+        )
+        .is_ok()
+    );
+    for (url, provider) in [
+        ("https://api.anthropic.com/v1/messages", AiProvider::Openai),
+        (
+            "http://api.openai.com/v1/chat/completions",
+            AiProvider::Openai,
+        ),
+        (
+            "https://api.openai.com:8443/v1/chat/completions",
+            AiProvider::Openai,
+        ),
+        ("https://user:pw@api.openai.com/v1", AiProvider::Openai),
+        ("https://api.openai.com.evil.example/v1", AiProvider::Openai),
+        (
+            "https://www.googleapis.com/upload/youtube/v3/videos",
+            AiProvider::Gemini,
+        ),
+        ("https://www.youtube.com/feeds", AiProvider::Openai),
+        ("http://127.0.0.1:11434/api/chat", AiProvider::Local),
+    ] {
+        assert!(outbound_ai(url, provider).is_err(), "{url}");
+    }
+    // The general allowlist still refuses every provider host.
+    assert!(outbound("https://api.openai.com/v1/chat/completions").is_err());
+    for bad in ["../../v1/files", "/v1/files", ".hidden", "a//b", "", "a b"] {
+        assert!(!model_name(bad), "{bad}");
+    }
+    assert!(model_name("openai/gpt-4o-mini") && model_name("claude-haiku-5-5"));
+}
+
+#[cfg(unix)]
+fn cli_fixture(directory: &std::path::Path, script: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = directory.join("agent-cli");
+    std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    path
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn agent_clis_run_without_tools_and_return_structured_clips() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("args");
+    let stdin = dir.path().join("stdin");
+    let clips = r#"{"clips":[{"start_ms":0,"end_ms":25000,"title":"A","reason":"B"}]}"#;
+    // Claude Code prints one JSON result with structured_output.
+    let claude = cli_fixture(
+        dir.path(),
+        &format!(
+            "for a in \"$@\"; do printf '%s\\n' \"$a\" >> '{}'; done\ncat > '{}'\nprintf '%s' '{{\"type\":\"result\",\"is_error\":false,\"structured_output\":{clips}}}'",
+            log.display(),
+            stdin.display()
+        ),
+    );
+    let mut engine = Automation::open(dir.path().join("data")).await.unwrap();
+    engine.cli_program = Some(claude);
+    let ai = AiConfig {
+        model: "haiku".into(),
+        provider: AiProvider::ClaudeCode,
+        remote_consent: true,
+        ..Default::default()
+    };
+    engine.set_ai(ai.clone()).await.unwrap();
+    engine.ai_ready(&ai).unwrap();
+    let found = engine.analyze(&ai, "[0-25000] Hello\n").await.unwrap();
+    assert_eq!((found[0].start_ms, found[0].end_ms), (0, 25000));
+    let args = std::fs::read_to_string(&log).unwrap();
+    let args: Vec<&str> = args.lines().collect();
+    let tools = args.iter().position(|a| *a == "--tools").unwrap();
+    assert_eq!(args[tools + 1], "", "Claude Code must run with no tools");
+    for flag in [
+        "-p",
+        "--no-session-persistence",
+        "--strict-mcp-config",
+        "--json-schema",
+    ] {
+        assert!(args.contains(&flag), "{flag}");
+    }
+    assert_eq!(
+        std::fs::read_to_string(&stdin).unwrap(),
+        "[0-25000] Hello\n"
+    );
+
+    // Codex writes its last message to the requested file.
+    std::fs::remove_file(&log).unwrap();
+    let codex = cli_fixture(
+        &dir.path().join("data"),
+        &format!(
+            "out=\nwhile [ \"$#\" -gt 0 ]; do printf '%s\\n' \"$1\" >> '{}'; [ \"$1\" = --output-last-message ] && {{ shift; printf '%s\\n' \"$1\" >> '{}'; out=\"$1\"; }}; shift; done\ncat > /dev/null\nprintf '%s' '{clips}' > \"$out\"",
+            log.display(),
+            log.display()
+        ),
+    );
+    engine.cli_program = Some(codex);
+    let ai = AiConfig {
+        model: String::new(),
+        provider: AiProvider::Codex,
+        remote_consent: true,
+        ..Default::default()
+    };
+    engine.set_ai(ai.clone()).await.unwrap();
+    let found = engine.analyze(&ai, "[0-25000] Hello\n").await.unwrap();
+    assert_eq!(found.len(), 1);
+    let args = std::fs::read_to_string(&log).unwrap();
+    assert!(
+        args.contains("exec\n")
+            && args.contains("--sandbox\nread-only\n")
+            && args.contains("--ephemeral\n")
+    );
+    assert!(
+        !args.contains("\n-m\n"),
+        "an empty model uses the user's Codex default"
+    );
+
+    // A signed-out CLI is a clear "Needs input", and consent stays required.
+    let signed_out = cli_fixture(
+        &dir.path().join("data"),
+        "cat > /dev/null\nprintf '%s' '{\"type\":\"result\",\"is_error\":true,\"result\":\"Not logged in\"}'",
+    );
+    engine.cli_program = Some(signed_out);
+    let ai = AiConfig {
+        model: "haiku".into(),
+        provider: AiProvider::ClaudeCode,
+        remote_consent: true,
+        ..Default::default()
+    };
+    let error = engine
+        .analyze(&ai, "[0-25000] Hello\n")
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.starts_with("Needs input:") && error.contains("Not logged in"),
+        "{error}"
+    );
+    let no_consent = AiConfig {
+        remote_consent: false,
+        ..ai
+    };
+    assert!(engine.set_ai(no_consent).await.is_err());
 }
