@@ -7,4 +7,5 @@ license.workspace = true
 [dependencies]
 gpui-kit = "=0.8.1"
 
+tehom-media = { path = "../../crates/tehom-media", features = ["preview"] }
 tehom-ui = { path = "../../crates/tehom-ui" }

@@ -34,6 +34,54 @@ sed 's/currentColor/#be95ff/g' assets/brand/icon.svg >"$stage/org.tehom.Tehom.sv
     exit 1
 }
 
+# Windows has no system GStreamer, so the zip carries the part Tehom uses.
+# Plug-ins are listed by hand: the full runtime is 500 MB and includes GPL ones.
+gst_plugins=(
+    app audioconvert audioparsers audioresample autodetect coreelements d3d11
+    deinterlace directsound id3demux isomp4 libav matroska opus opusparse pbtypes
+    playback typefindfunctions videoconvertscale videoparsersbad volume vorbis vpx
+    wasapi wasapi2
+)
+bundle_imports() {
+    local name imports
+    imports="$(llvm-readobj --coff-imports "$1" | tr -d '\r')"
+    for name in $(sed -n 's/^ *Name: \(.*\.dll\)$/\1/Ip' <<<"$imports"); do
+        if [[ -f "$gst/bin/$name" && ! -e "$stage/$name" ]]; then
+            cp "$gst/bin/$name" "$stage/"
+            bundle_imports "$stage/$name"
+        fi
+    done
+}
+if [[ "$os" == windows ]]; then
+    gst="$(cygpath -u "${GSTREAMER_1_0_ROOT_MSVC_X86_64:?GStreamer is required to pack for Windows}")"
+    mkdir "$stage/gstreamer-plugins"
+    cp "$gst/libexec/gstreamer-1.0/gst-plugin-scanner.exe" "$stage/"
+    bundle_imports "$stage/gst-plugin-scanner.exe"
+    bundle_imports "$stage/tehom-desktop.exe"
+    for plugin in "${gst_plugins[@]}"; do
+        cp "$gst/lib/gstreamer-1.0/gst$plugin.dll" "$stage/gstreamer-plugins/"
+        bundle_imports "$stage/gstreamer-plugins/gst$plugin.dll"
+    done
+    # AV1 comes from the Rust plug-ins, which not every GStreamer build includes.
+    if [[ -f "$gst/lib/gstreamer-1.0/gstdav1d.dll" ]]; then
+        cp "$gst/lib/gstreamer-1.0/gstdav1d.dll" "$stage/gstreamer-plugins/"
+        bundle_imports "$stage/gstreamer-plugins/gstdav1d.dll"
+    fi
+    # Rust and GStreamer need these; a clean Windows does not always have them.
+    for runtime in vcruntime140 vcruntime140_1 msvcp140; do
+        cp "$(cygpath -u "$SYSTEMROOT")/System32/$runtime.dll" "$stage/"
+    done
+    cat >"$stage/THIRD-PARTY-NOTICES.txt" <<'EOF'
+This package includes unmodified binaries of GStreamer 1.28.8 and the libraries
+it needs (GLib, FFmpeg through gst-libav and others), under the GNU LGPL 2.1 or
+later or more permissive licences. Their source code and licence texts are at
+https://gstreamer.freedesktop.org/src/ and in the Cerbero recipes at
+https://gitlab.freedesktop.org/gstreamer/cerbero. The DLLs can be replaced with
+compatible builds. It also includes the Microsoft Visual C++ Runtime, which
+Microsoft permits to be redistributed with applications.
+EOF
+fi
+
 name="tehom-$os-$arch"
 cd target/dist
 if [[ "$os" == windows ]]; then

@@ -32,10 +32,16 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           brew install ffmpeg
-          curl -fL --http1.1 --retry 5 --retry-all-errors --retry-delay 5 https://gstreamer.freedesktop.org/data/pkg/osx/1.28.8/gstreamer-1.0-1.28.8-universal.pkg -o "$RUNNER_TEMP/gstreamer.pkg"
-          curl -fL --http1.1 --retry 5 --retry-all-errors --retry-delay 5 https://gstreamer.freedesktop.org/data/pkg/osx/1.28.8/gstreamer-1.0-devel-1.28.8-universal.pkg -o "$RUNNER_TEMP/gstreamer-devel.pkg"
-          sudo installer -pkg "$RUNNER_TEMP/gstreamer.pkg" -target /
-          sudo installer -pkg "$RUNNER_TEMP/gstreamer-devel.pkg" -target /
+          for package in gstreamer-1.0-1.28.8-universal gstreamer-1.0-devel-1.28.8-universal; do
+            # The server often cuts these large downloads, so resume until whole.
+            for try in {1..40}; do
+              curl -fsSL --http1.1 -C - -o "$RUNNER_TEMP/$package.pkg" "https://gstreamer.freedesktop.org/data/pkg/osx/1.28.8/$package.pkg" && break
+              [[ $try -lt 40 ]] || exit 1
+              sleep 10
+            done
+          done
+          sudo installer -pkg "$RUNNER_TEMP/gstreamer-1.0-1.28.8-universal.pkg" -target /
+          sudo installer -pkg "$RUNNER_TEMP/gstreamer-1.0-devel-1.28.8-universal.pkg" -target /
           echo '/Library/Frameworks/GStreamer.framework/Versions/1.0/bin' >> "$GITHUB_PATH"
           echo 'PKG_CONFIG_PATH=/Library/Frameworks/GStreamer.framework/Versions/1.0/lib/pkgconfig' >> "$GITHUB_ENV"
           echo 'RUSTFLAGS=-C link-arg=-Wl,-rpath,/Library/Frameworks/GStreamer.framework/Versions/1.0/lib' >> "$GITHUB_ENV"
@@ -53,10 +59,16 @@ jobs:
             Start-Sleep -Seconds 10
           }
           $installer = "$env:RUNNER_TEMP/gstreamer.exe"
-          for ($try = 1; $try -le 5; $try++) {
-            try { Invoke-WebRequest 'https://gstreamer.freedesktop.org/data/pkg/windows/1.28.8/msvc/gstreamer-1.0-msvc-x86_64-1.28.8.exe' -OutFile $installer; break }
-            catch { if ($try -eq 5) { throw }; Start-Sleep -Seconds (5 * $try) }
+          $url = 'https://gstreamer.freedesktop.org/data/pkg/windows/1.28.8/msvc/gstreamer-1.0-msvc-x86_64-1.28.8.exe'
+          # The server often cuts this 540 MB download, so resume until it is whole.
+          for ($try = 1; $try -le 40; $try++) {
+            curl.exe -fsSL --http1.1 -C - -o $installer $url
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($try -eq 40) { throw 'GStreamer download failed' }
+            Start-Sleep -Seconds 10
           }
+          $expected = ((curl.exe -fsSL --http1.1 --retry 5 --retry-all-errors "$url.sha256sum") -split '\s+')[0]
+          if ((Get-FileHash $installer -Algorithm SHA256).Hash -ne $expected) { throw 'GStreamer download is damaged' }
           $root = "$env:RUNNER_TEMP/gstreamer"
           $process = Start-Process $installer -ArgumentList @('/VERYSILENT', '/NORESTART', '/CURRENTUSER', '/TYPE=devel', "/DIR=$root") -PassThru -Wait
           if ($process.ExitCode -ne 0) { throw "GStreamer installation failed: $($process.ExitCode)" }

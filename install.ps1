@@ -4,8 +4,9 @@
 #
 # Installs tehom.exe and tehom-desktop.exe for the current user only into
 # %LOCALAPPDATA%\Programs\Tehom after checking the release archive's SHA-256,
-# adds it to the user PATH and creates a Start menu shortcut. Missing FFmpeg,
-# yt-dlp or GStreamer are listed and installed only if you answer yes.
+# adds it to the user PATH and creates a Start menu shortcut. GStreamer comes
+# with the archive. Missing FFmpeg or yt-dlp are listed and installed only if
+# you answer yes.
 #
 # Options (environment variables): TEHOM_VERSION, TEHOM_YES=1, TEHOM_NO_DEPS=1,
 # TEHOM_ARCHIVE=C:\path\tehom-windows-x86_64.zip (with .sha256 beside it).
@@ -14,7 +15,6 @@ $ProgressPreference = 'SilentlyContinue'
 
 $Repo = if ($env:TEHOM_REPO) { $env:TEHOM_REPO } else { 'OnurByte/Tehom' }
 $Version = if ($env:TEHOM_VERSION) { $env:TEHOM_VERSION } else { 'latest' }
-$GstVersion = '1.28.8'
 $InstallDir = if ($env:TEHOM_BIN_DIR) { $env:TEHOM_BIN_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\Tehom' }
 
 function Fail($Message) {
@@ -61,6 +61,27 @@ try {
         if (-not (Test-Path (Join-Path $Package $Binary))) { Fail "$Binary is missing from the archive" }
     }
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+
+    # Bundled GStreamer, installed before the programs that need it. A DLL in
+    # use cannot be overwritten but can be moved aside; .tehom-old is emptied
+    # by the next install.
+    $Old = Join-Path $InstallDir '.tehom-old'
+    Remove-Item $Old -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force -Path $Old | Out-Null
+    foreach ($Folder in '.', 'gstreamer-plugins') {
+        $Destination = Join-Path $InstallDir $Folder
+        New-Item -ItemType Directory -Force -Path $Destination | Out-Null
+        Get-ChildItem (Join-Path $Package $Folder) -File |
+            Where-Object { $_.Extension -eq '.dll' -or $_.Name -in 'gst-plugin-scanner.exe', 'THIRD-PARTY-NOTICES.txt' } |
+            ForEach-Object {
+                $Target = Join-Path $Destination $_.Name
+                if (Test-Path -LiteralPath $Target) {
+                    Move-Item -LiteralPath $Target (Join-Path $Old ([Guid]::NewGuid()))
+                }
+                Copy-Item -LiteralPath $_.FullName $Target
+            }
+    }
+
     $Previous = Join-Path $InstallDir '.tehom-previous'
     foreach ($Binary in 'tehom.exe', 'tehom-desktop.exe') {
         $Target = Join-Path $InstallDir $Binary
@@ -93,19 +114,16 @@ try {
     $Shortcut.WorkingDirectory = $InstallDir
     $Shortcut.Save()
 
-    # --- Tools Tehom runs: FFmpeg, yt-dlp, GStreamer -----------------------
-    $GstRoot = Join-Path $env:LOCALAPPDATA 'Programs\GStreamer'
+    # --- Tools Tehom runs: FFmpeg, yt-dlp -----------------------------------
     $Missing = @()
     foreach ($Tool in 'ffmpeg', 'ffprobe', 'yt-dlp') {
         if (-not (Get-Command $Tool -ErrorAction SilentlyContinue)) { $Missing += $Tool }
     }
-    $HasGst = (Get-Command 'gst-inspect-1.0' -ErrorAction SilentlyContinue) -or (Test-Path (Join-Path $GstRoot 'bin'))
-    if (-not $HasGst) { $Missing += 'gstreamer' }
 
     if ($Missing.Count -gt 0) {
         Write-Host ''
         Write-Host ('Missing tools: ' + ($Missing -join ', '))
-        $Plan = 'FFmpeg and yt-dlp with winget, GStreamer from gstreamer.freedesktop.org (this user only)'
+        $Plan = 'FFmpeg and yt-dlp with winget (this user only)'
         $Answer = 'h'
         if ($env:TEHOM_NO_DEPS) {
             Write-Host "To install them: $Plan"
@@ -123,23 +141,8 @@ try {
             if ($Missing -contains 'yt-dlp') {
                 winget install --id yt-dlp.yt-dlp -e --scope user --accept-package-agreements --accept-source-agreements
             }
-            if ($Missing -contains 'gstreamer') {
-                $Installer = Join-Path $Temp 'gstreamer.exe'
-                for ($Try = 1; $Try -le 5; $Try++) {
-                    try {
-                        Invoke-WebRequest "https://gstreamer.freedesktop.org/data/pkg/windows/$GstVersion/msvc/gstreamer-1.0-msvc-x86_64-$GstVersion.exe" -OutFile $Installer -UseBasicParsing
-                        break
-                    } catch {
-                        if ($Try -eq 5) { throw }
-                        Start-Sleep -Seconds (5 * $Try)
-                    }
-                }
-                $Process = Start-Process $Installer -ArgumentList @('/VERYSILENT', '/NORESTART', '/CURRENTUSER', "/DIR=$GstRoot") -PassThru -Wait
-                if ($Process.ExitCode -ne 0) { Write-Host "GStreamer could not be installed (code $($Process.ExitCode))." }
-            }
         }
     }
-    if (Test-Path (Join-Path $GstRoot 'bin')) { Add-UserPath (Join-Path $GstRoot 'bin') }
 
     Write-Host ''
     Write-Host ("Installed " + (& (Join-Path $InstallDir 'tehom.exe') --version) + " in $InstallDir")
