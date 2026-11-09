@@ -145,10 +145,10 @@ for theme in THEMES:
     c.card(0, 0, WIDTH, 236)
     c.text(32, 52, "How it works", size=18)
     steps = [
-        ("link", "Add a link", ["A YouTube channel, one", "video or a local file."]),
-        ("spark", "Let it choose", ["Your AI reads the", "captions and picks."]),
-        ("review", "Review", ["Watch each draft and", "adjust start or end."]),
-        ("save", "Save", ["MP4 files land in your", "folder, by hand or auto."]),
+        ("link", "Add a link", ["A channel, a video, an RSS", "feed or a local file."]),
+        ("spark", "Let it choose", ["Speech is written here, your", "AI picks the best moments."]),
+        ("review", "Edit", ["Fix the captions, colours", "and timing in Studio."]),
+        ("save", "Save or post", ["MP4 files, or Reels on", "Instagram, by hand or auto."]),
     ]
     column = (WIDTH - 64 - 3 * 32) / 4
     for i, (icon, title, lines) in enumerate(steps):
@@ -157,17 +157,17 @@ for theme in THEMES:
         c.text(x + column - 8, 104, f"0{i + 1}", size=14, muted=True, mono=True, anchor="end")
         c.text(x, 152, title, size=16, weight=500)
         wrap(c, x, 180, lines)
-    c.save("steps", theme, 236, "How it works: add a link, let it choose, review, save")
+    c.save("steps", theme, 236, "How it works: add a link, let it choose, edit, save or post")
 
     # Features: section heading, 2 × 3 grid of bordered items with plain status.
     c = Canvas(theme)
     features = [
         ("shape", "Vertical, horizontal or original", ["1080 × 1920 for Shorts and Reels,", "1920 × 1080 or the source size."], "Works"),
-        ("watch", "Watches channels", ["New videos on a channel become", "drafts or MP4 files on their own."], "Works"),
+        ("watch", "Watches sources", ["Channels and RSS feeds turn new", "videos into clips on their own."], "Works"),
         ("spark", "Your AI, your choice", ["OpenAI, Anthropic, Gemini, OpenRouter,", "Codex, Claude Code or a local model."], "Works"),
-        ("captions", "Uses captions", ["Platform captions, or SRT and VTT", "files you add or correct."], "Works"),
+        ("captions", "Captions you can edit", ["Written on this computer, burned in,", "with colour, size and sound."], "Works"),
         ("local", "Private by default", ["Videos stay here; only captions go to", "the AI you allow. You choose what posts."], "Works"),
-        ("lab", "Kick videos", ["Paste a kick.com video link.", "Downloading is still being tested."], "Experimental"),
+        ("lab", "Instagram Reels", ["Post clips from the app. Uses the", "unofficial mobile protocol."], "Experimental"),
     ]
     c.text(0, 26, "What it does", size=18)
     item_w, item_h, gap = (WIDTH - 2 * 24) / 3, 152, 24
@@ -178,7 +178,7 @@ for theme in THEMES:
         c.pill(x + item_w - 20, y + 24, status)
         c.text(x + 20, y + 76, title, size=16, weight=500)
         wrap(c, x + 20, y + 104, lines)
-    planned = "Also ⁜ Ctrl+K command palette ⁜ never overwrites files ⁜ Planned ⁜ speech to text ⁜ captions on clips"
+    planned = "Also ⁜ Light and dark mode ⁜ Ctrl+K command palette ⁜ never overwrites files ⁜ Soon ⁜ YouTube Shorts ⁜ TikTok"
     c.text(0, 48 + 2 * item_h + gap + 40, planned, size=14, muted=True)
     height = 48 + 2 * item_h + gap + 56
     c.save("features", theme, height, "What it does")

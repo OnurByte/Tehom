@@ -49,9 +49,16 @@ Then open **Tehom** from your apps. A short guide helps you choose an AI the fir
 | Subscription | Codex or Claude Code, signed in |
 | This computer | Ollama, LM Studio, llama.cpp or vLLM |
 
-Only captions go to the AI you choose. Your videos and clips stay on your computer.
+Tehom lists the models your choice offers, with a plain note on how capable each one is. Only captions go to the AI you choose. Your videos and clips stay on your computer.
 
-Press **Ctrl+K** (**Cmd+K** on Mac) to find any action.
+## Good to know
+
+- **No captions?** Tehom writes them on this computer. The speech tool comes with the app; one click in Settings downloads the speech model (about 150 MB).
+- **Edit in Studio.** Change caption text, colour, size, position and the intro sound, then make the video again.
+- **Sources.** YouTube channels and videos, Kick videos, any RSS or Atom feed with video, or a file from your computer.
+- **Autonomous.** Settings has the details: how often to check, clips per video, clip length, and what to do without captions.
+- **Instagram.** Connect an account in Settings and post a clip as a Reel, or let auto-export post for you. This uses Instagram's unofficial mobile protocol, so Instagram may ask you to confirm a login or restrict the account. Use one you can afford to lose access to. YouTube Shorts and TikTok are not available yet.
+- **Light and dark.** Follows your system, or pick one. Press **Ctrl+K** (**Cmd+K** on Mac) to find any action.
 
 ---
 
@@ -77,7 +84,7 @@ Run `tehom --help` for every command. Settings file: [`config/tehom.example.toml
 <details>
 <summary><b>Privacy and safety</b></summary>
 
-- Tehom posts nothing unless you connect an Instagram account and choose to publish. Otherwise it only talks to the video site and the AI you allow.
+- Tehom posts nothing unless you connect an Instagram account and choose to publish or turn on automatic posting. Otherwise it only talks to the video site, RSS feeds you add, and the AI you allow.
 - Instagram publishing uses Instagram's private mobile protocol, not an official API. Instagram may change it or restrict accounts that use it; use an account you can afford to lose access to.
 - Speech is transcribed on this computer with whisper.cpp when a video has no captions.
 - API keys live in your system keyring, never in Tehom's files.
