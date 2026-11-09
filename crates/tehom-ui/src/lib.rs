@@ -1,12 +1,16 @@
 mod about;
 mod automation_ui;
+mod models_ui;
+mod prefs;
+mod publish;
 mod shell;
+mod studio;
 pub mod theme;
 use automation_ui::{Backend, Page};
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
     AnyElement, AssetSource, Entity, KeyDownEvent, ObjectFit, PathPromptOptions, RenderImage,
-    Result, Role, SharedString, Subscription, Task, Window, assets,
+    Result, Role, ScrollHandle, SharedString, Subscription, Task, Window, assets,
     component::{
         Disableable,
         button::{Button, ButtonVariants},
@@ -50,12 +54,40 @@ pub struct Tehom {
     /// Result of the last action taken inside the guide.
     guide_note: Option<String>,
     update: about::UpdateState,
-    update_checked: bool,
+    /// When the last automatic update check started.
+    update_checked_at: Option<std::time::Instant>,
+    automation: prefs::AutomationForm,
+    /// Dragged or saved sidebar width; `None` until the saved one is known.
+    sidebar_width: Option<f32>,
+    sidebar_focus: gpui_kit::FocusHandle,
+    /// The appearance last applied from the saved settings or a choice.
+    appearance: Option<tehom_core::Appearance>,
     source_mode: AutomationMode,
     source_busy: bool,
     backend: Option<Arc<Backend>>,
     engine_snapshot: Option<EngineSnapshot>,
-    available_models: Vec<String>,
+    /// Models the chosen provider offers, strongest first.
+    available_models: Vec<tehom_core::ModelInfo>,
+    /// Which provider `available_models` belongs to and how loading went.
+    model_list: Option<(tehom_core::AiProvider, models_ui::ModelList)>,
+    model_query: Entity<InputState>,
+    /// The "Other…" free-text model field is open.
+    model_other: bool,
+    /// Caption edits for the clip open in the Studio; kept across snapshot
+    /// refreshes and re-seeded only when another clip is opened.
+    studio: Option<studio::Studio>,
+    /// Unsaved "Caption look for new clips" draft.
+    default_look: Option<tehom_core::CaptionStyle>,
+    speech: Option<tehom_core::SpeechStatus>,
+    speech_checking: bool,
+    speech_downloading: bool,
+    settings_scroll: ScrollHandle,
+    /// The clip whose "Post to Instagram" form is open.
+    publish_open: Option<i64>,
+    publish_caption: Entity<InputState>,
+    publish_account: Option<i64>,
+    instagram: publish::InstagramForm,
+    _input_watch: Vec<Subscription>,
     engine_stop: Arc<AtomicBool>,
     _engine_task: Option<Task<()>>,
     _snapshot_task: Option<Task<()>>,
@@ -88,7 +120,8 @@ impl Tehom {
     }
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let source_url = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("youtube.com/@channel or a video link")
+            InputState::new(window, cx)
+                .placeholder("youtube.com/@channel, a video link or an RSS feed link")
         });
         let ai_endpoint =
             cx.new(|cx| InputState::new(window, cx).default_value("http://127.0.0.1:11434"));
@@ -98,6 +131,16 @@ impl Tehom {
                 .masked(true)
                 .placeholder("Paste your API key")
         });
+        let model_query = cx.new(|cx| InputState::new(window, cx).placeholder("Search all models"));
+        let publish_caption =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Write a caption"));
+        // These fields change what the view shows (filtered list, counter).
+        let input_watch = vec![
+            cx.observe(&model_query, |_, _, cx| cx.notify()),
+            cx.observe(&publish_caption, |_, _, cx| cx.notify()),
+        ];
+        let instagram = publish::InstagramForm::new(window, cx);
+        let automation = prefs::AutomationForm::new(window, cx);
         let engine_stop = Arc::new(AtomicBool::new(false));
         let start = cx.new(|cx| InputState::new(window, cx).default_value("0"));
         let end = cx.new(|cx| InputState::new(window, cx).default_value("0"));
@@ -175,12 +218,30 @@ impl Tehom {
             onboarding_checked: false,
             guide_note: None,
             update: about::UpdateState::Idle,
-            update_checked: false,
+            update_checked_at: None,
+            automation,
+            sidebar_width: None,
+            sidebar_focus: cx.focus_handle().tab_stop(true),
+            appearance: None,
             source_mode: AutomationMode::AutoDraft,
             source_busy: false,
             backend: None,
             engine_snapshot: None,
             available_models: Vec::new(),
+            model_list: None,
+            model_query,
+            model_other: false,
+            studio: None,
+            default_look: None,
+            speech: None,
+            speech_checking: false,
+            speech_downloading: false,
+            settings_scroll: ScrollHandle::new(),
+            publish_open: None,
+            publish_caption,
+            publish_account: None,
+            instagram,
+            _input_watch: input_watch,
             engine_stop,
             _engine_task: None,
             _snapshot_task: None,
@@ -436,8 +497,12 @@ impl Tehom {
             .unwrap_or_default();
         let ready = self.preview.is_some();
         let position = snapshot.position.as_secs_f64();
-        div()
-            .size_full()
+        let overlay = self.caption_overlay(position, cx);
+        let panel = self.studio_panel(cx);
+        let editor = div()
+            .flex_1()
+            .min_w_0()
+            .h_full()
             .flex()
             .flex_col()
             .gap_4()
@@ -463,8 +528,12 @@ impl Tehom {
                     .flex_col()
                     .flex_1()
                     .min_h(px(200.))
-                    .bg(p.background).border_1().border_color(p.border)
+                    // The video stage stays black in both themes so caption
+                    // colours preview as they will look in the clip.
+                    .bg(crate::theme::DARK.background).text_color(crate::theme::DARK.edge)
+                    .border_1().border_color(p.border)
                     .rounded(px(12.))
+                    .relative()
                     .items_center()
                     .justify_center()
                     .overflow_hidden()
@@ -473,7 +542,8 @@ impl Tehom {
                     })
                     .when(self.image.is_none(), |element| {
                         element.child("Video preview")
-                    }),
+                    })
+                    .children(overlay),
             )
             .child(
                 div()
@@ -685,7 +755,14 @@ impl Tehom {
                 element.when_some(self.details.clone(), |element, details| {
                     element.child(div().text_sm().child(details))
                 })
-            })
+            });
+        div()
+            .size_full()
+            .flex()
+            .bg(p.background)
+            .text_color(p.text)
+            .child(editor)
+            .children(panel)
             .into_any_element()
     }
 }
@@ -701,21 +778,43 @@ impl Drop for Tehom {
 
 pub struct Assets;
 
+/// Files embedded in the binary: the brand mark and the Simple Icons (CC0)
+/// platform glyphs, see assets/README.md.
+const OWN_ASSETS: [(&str, &[u8]); 4] = [
+    (
+        "brand/icon.svg",
+        include_bytes!("../../../assets/brand/icon.svg"),
+    ),
+    (
+        "icons/instagram.svg",
+        include_bytes!("../../../assets/icons/instagram.svg"),
+    ),
+    (
+        "icons/youtubeshorts.svg",
+        include_bytes!("../../../assets/icons/youtubeshorts.svg"),
+    ),
+    (
+        "icons/tiktok.svg",
+        include_bytes!("../../../assets/icons/tiktok.svg"),
+    ),
+];
+
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<std::borrow::Cow<'static, [u8]>>> {
-        if path == "brand/icon.svg" {
-            return Ok(Some(std::borrow::Cow::Borrowed(include_bytes!(
-                "../../../assets/brand/icon.svg"
-            ))));
+        if let Some((_, bytes)) = OWN_ASSETS.iter().find(|(name, _)| *name == path) {
+            return Ok(Some(std::borrow::Cow::Borrowed(bytes)));
         }
         assets::AllAssets.load(path)
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
         let mut paths = assets::AllAssets.list(path)?;
-        if "brand/icon.svg".starts_with(path) {
-            paths.push("brand/icon.svg".into());
-        }
+        paths.extend(
+            OWN_ASSETS
+                .iter()
+                .filter(|(name, _)| name.starts_with(path))
+                .map(|(name, _)| SharedString::from(*name)),
+        );
         Ok(paths)
     }
 }
@@ -739,9 +838,9 @@ mod tests {
             window.render_frame(cx);
             assert_eq!(
                 window
-                    .find_by_label("YouTube channel or video address")
+                    .find_by_label("Channel, video or RSS feed address")
                     .label(),
-                Some("YouTube channel or video address")
+                Some("Channel, video or RSS feed address")
             );
             assert_eq!(window.find("add-channel").disabled(), Some(true));
             assert_eq!(window.find("import-local-video").disabled(), Some(true));
@@ -896,6 +995,9 @@ mod tests {
                 end_ms: 20_000,
                 output_path: Some(export),
                 output_available: files_present,
+                captions: Vec::new(),
+                caption_style: Default::default(),
+                sound_effect: Default::default(),
             }],
             ai: Default::default(),
             export_directory: directory.to_path_buf(),
@@ -903,6 +1005,13 @@ mod tests {
             events: Vec::new(),
             onboarded: true,
             check_updates: false,
+            caption_style: Default::default(),
+            accounts: Vec::new(),
+            publications: Vec::new(),
+            auto_publish_account: None,
+            automation: Default::default(),
+            appearance: Default::default(),
+            sidebar_width: tehom_core::SIDEBAR_WIDTH,
         }
     }
 
@@ -988,6 +1097,17 @@ mod tests {
             .collect();
         assert_eq!(titles, ["Go to Clips"]);
         assert!(shell::Command::matching("publish to tiktok").is_empty());
+        for (query, title) in [
+            ("instagram", "Connect Instagram"),
+            ("caption look", "Caption look for new clips"),
+            ("speech model", "Speech model for videos without captions"),
+        ] {
+            let titles: Vec<_> = shell::Command::matching(query)
+                .into_iter()
+                .map(|(_, t)| t)
+                .collect();
+            assert_eq!(titles, [title], "{query}");
+        }
     }
 
     fn open_view(
@@ -1071,6 +1191,11 @@ mod tests {
             assert!(window.try_find_by_label("Continue without AI").is_some());
             window.click("onboarding-next", cx);
             window.render_frame(cx);
+            // The optional captions step can be skipped.
+            assert_eq!(view.read(cx).onboarding, Some(2));
+            assert!(window.try_find_by_label("Skip for now").is_some());
+            window.click("onboarding-next", cx);
+            window.render_frame(cx);
             assert!(window.try_find_by_label("Finish").is_some());
             assert!(window.try_find_by_label("Back").is_some());
         })
@@ -1110,7 +1235,7 @@ mod tests {
         let (handle, view) = open_view(cx, snapshot(dir.path(), true));
         cx.update_window(handle, |_, window, cx| {
             view.update(cx, |view, cx| {
-                view.page = Page::Settings;
+                view.page = Page::About;
                 view.update = about::UpdateState::Ready(tehom_automation::update::UpdateStatus {
                     current: tehom_automation::update::CURRENT_VERSION.into(),
                     available: true,
@@ -1136,5 +1261,450 @@ mod tests {
             }
         })
         .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn publish_row_offers_instagram_and_marks_the_others_soon(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let dir = tempfile::tempdir().unwrap();
+        render_page(cx, Page::Clips, snapshot(dir.path(), true), |window| {
+            assert_ne!(window.find_by_label("Instagram").disabled(), Some(true));
+            for label in ["YouTube Shorts, coming soon", "TikTok, coming soon"] {
+                assert_eq!(
+                    window.find_by_label(label).disabled(),
+                    Some(true),
+                    "{label}"
+                );
+            }
+        });
+        // A clip without its MP4 file has nothing to post.
+        let missing = tempfile::tempdir().unwrap();
+        render_page(cx, Page::Clips, snapshot(missing.path(), false), |window| {
+            assert!(window.try_find_by_label("Instagram").is_none());
+        });
+    }
+
+    #[gpui_kit::test]
+    fn model_list_shows_strength_words_only_for_remote_providers(cx: &mut TestAppContext) {
+        use tehom_core::{AiProvider, ModelInfo, Strength};
+        cx.update(gpui_kit::init);
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, view) = open_view(cx, snapshot(dir.path(), true));
+        let model = |id: &str, strength: Option<Strength>| ModelInfo {
+            id: id.into(),
+            label: id.into(),
+            strength,
+            note: strength.map(|_| "A plain sentence.".into()),
+        };
+        cx.update_window(handle, |_, window, cx| {
+            view.update(cx, |view, cx| {
+                view.page = Page::Settings;
+                view.ai_provider = Some(AiProvider::Openai);
+                view.ai_key_saved.set(Some((AiProvider::Openai, true)));
+                view.model_list = Some((AiProvider::Openai, models_ui::ModelList::Ready));
+                view.available_models = vec![
+                    model("big", Some(Strength::Strongest)),
+                    model("middle", Some(Strength::Balanced)),
+                    model("small", Some(Strength::Fast)),
+                ];
+                cx.notify();
+            });
+            window.render_frame(cx);
+            for label in ["big, Most capable", "middle, Balanced", "small, Fast"] {
+                assert!(window.try_find_by_label(label).is_some(), "{label}");
+            }
+            view.update(cx, |view, cx| {
+                view.ai_provider = Some(AiProvider::Local);
+                view.model_list = Some((AiProvider::Local, models_ui::ModelList::Ready));
+                view.available_models = vec![model("llama3", None)];
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert!(window.try_find_by_label("llama3").is_some());
+            for word in ["Fast", "Balanced", "Most capable"] {
+                assert!(
+                    window
+                        .try_find_by_label(&format!("llama3, {word}"))
+                        .is_none(),
+                    "{word}"
+                );
+            }
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn model_list_searches_long_lists_instead_of_showing_every_row(cx: &mut TestAppContext) {
+        use tehom_core::{AiProvider, ModelInfo, Strength};
+        cx.update(gpui_kit::init);
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, view) = open_view(cx, snapshot(dir.path(), true));
+        cx.update_window(handle, |_, window, cx| {
+            view.update(cx, |view, cx| {
+                view.page = Page::Settings;
+                view.ai_provider = Some(AiProvider::Openrouter);
+                view.ai_key_saved.set(Some((AiProvider::Openrouter, true)));
+                view.model_list = Some((AiProvider::Openrouter, models_ui::ModelList::Ready));
+                view.available_models = (0..300)
+                    .map(|index| ModelInfo {
+                        id: format!("model-{index}"),
+                        label: format!("model-{index}"),
+                        strength: Some(Strength::Balanced),
+                        note: None,
+                    })
+                    .collect();
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert!(window.try_find_by_label("Search models").is_some());
+            assert!(window.try_find_by_label("model-0, Balanced").is_some());
+            assert!(window.try_find_by_label("model-299, Balanced").is_none());
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn captions_panel_lists_the_clip_lines_and_its_look(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let dir = tempfile::tempdir().unwrap();
+        let mut fixture = snapshot(dir.path(), true);
+        fixture.clips[0].captions = vec![
+            tehom_core::Cue {
+                start_ms: 0,
+                end_ms: 2_000,
+                text: "Hello there".into(),
+            },
+            tehom_core::Cue {
+                start_ms: 3_400,
+                end_ms: 5_000,
+                text: "Second line".into(),
+            },
+        ];
+        fixture.clips[0].caption_style.enabled = false;
+        let source = dir.path().join("source.mp4");
+        let (handle, view) = open_view(cx, fixture);
+        cx.update_window(handle, |_, window, cx| {
+            view.update(cx, |view, cx| {
+                view.page = Page::Clips;
+                view.source = Some(source);
+                view.editing_clip = Some(1);
+                cx.notify();
+            });
+            window.render_frame(cx);
+            window.render_frame(cx);
+            assert!(view.read(cx).studio.is_some());
+            assert!(window.try_find_by_label("Caption at 0:00").is_some());
+            assert!(window.try_find_by_label("Caption at 0:03").is_some());
+            assert!(window.try_find_by_label("Play from 0:03").is_some());
+            assert_eq!(window.find_by_label("Show captions").checked(), Some(false));
+            assert!(window.try_find_by_label("Text colour: White").is_some());
+            assert!(
+                window
+                    .try_find_by_label("Sound at the start: Whoosh")
+                    .is_some()
+            );
+            assert!(window.try_find_by_label("Make the video again").is_some());
+        })
+        .unwrap();
+        // A snapshot refresh keeps unsaved edits for the open clip.
+        cx.update_window(handle, |_, window, cx| {
+            view.update(cx, |view, cx| {
+                view.studio.as_mut().unwrap().lines.remove(0);
+                let fresh = view.engine_snapshot.clone();
+                view.engine_snapshot = fresh;
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert_eq!(view.read(cx).studio.as_ref().unwrap().lines.len(), 1);
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn two_factor_code_field_appears_after_instagram_asks_for_it(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, view) = open_view(cx, snapshot(dir.path(), true));
+        cx.update_window(handle, |_, window, cx| {
+            view.update(cx, |view, cx| {
+                view.page = Page::Settings;
+                view.instagram.open = true;
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert_eq!(
+                window.find_by_label("Instagram password").value(),
+                None,
+                "the password field must not expose its value"
+            );
+            assert!(window.try_find_by_label("Sign-in code").is_none());
+            view.update(cx, |view, cx| {
+                view.instagram.two_factor = Some((None, true));
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert!(window.try_find_by_label("Sign-in code").is_some());
+            assert!(
+                window
+                    .try_find_by_label("Enter the 6-digit code from your authenticator app")
+                    .is_some()
+            );
+            assert!(window.try_find_by_label("Instagram password").is_none());
+            view.update(cx, |view, cx| {
+                view.instagram.two_factor = Some((Some("+90 *** ** 12".into()), false));
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert!(
+                window
+                    .try_find_by_label("Enter the code Instagram sent by SMS to +90 *** ** 12")
+                    .is_some()
+            );
+        })
+        .unwrap();
+    }
+
+    /// A real engine in a temporary folder, so dispatched actions run.
+    fn backend(directory: &std::path::Path) -> Arc<Backend> {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let engine = runtime
+            .block_on(tehom_automation::Automation::open(directory.join("data")))
+            .unwrap();
+        Arc::new(Backend { runtime, engine })
+    }
+
+    #[gpui_kit::test]
+    fn automation_card_shows_saved_values_and_refuses_out_of_range_numbers(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let dir = tempfile::tempdir().unwrap();
+        let mut fixture = snapshot(dir.path(), true);
+        fixture.automation = tehom_core::AutomationSettings {
+            check_minutes: 15,
+            max_clips: 3,
+            min_clip_seconds: 12,
+            max_clip_seconds: 45,
+            new_source_mode: AutomationMode::Manual,
+            ..Default::default()
+        };
+        let (handle, view) = open_view(cx, fixture);
+        let engine = backend(dir.path());
+        cx.update_window(handle, |_, window, cx| {
+            view.update(cx, |view, cx| {
+                view.page = Page::Settings;
+                view.backend = Some(engine.clone());
+                cx.notify();
+            });
+            window.render_frame(cx);
+            for (label, value) in [
+                ("Check for new videos every", "15"),
+                ("Clips per video, at most", "3"),
+                ("Shortest clip", "12"),
+                ("Longest clip", "45"),
+            ] {
+                assert_eq!(window.find_by_label(label).value(), Some(value), "{label}");
+            }
+            assert!(
+                window
+                    .try_find_by_label("New links: Only list them")
+                    .is_some()
+            );
+            // New links start in the saved mode.
+            assert_eq!(view.read(cx).source_mode, AutomationMode::Manual);
+            view.update(cx, |view, cx| {
+                view.automation
+                    .minutes
+                    .update(cx, |state, cx| state.set_value("0", window, cx));
+            });
+            view.update(cx, |view, cx| view.save_automation(window, cx));
+            window.render_frame(cx);
+            assert!(
+                window
+                    .try_find_by_label("Check for new videos every 1 to 1440 minutes.")
+                    .is_some()
+            );
+            assert!(!view.read(cx).source_busy, "nothing may be saved");
+            view.update(cx, |view, cx| {
+                view.automation
+                    .minutes
+                    .update(cx, |state, cx| state.set_value("20", window, cx));
+            });
+            view.update(cx, |view, cx| view.save_automation(window, cx));
+            assert!(view.read(cx).source_busy, "valid settings are saved");
+        })
+        .unwrap();
+        cx.run_until_parked();
+        let saved = engine.runtime.block_on(engine.engine.automation()).unwrap();
+        assert_eq!(saved.check_minutes, 20);
+        assert_eq!(saved.new_source_mode, AutomationMode::Manual);
+    }
+
+    #[gpui_kit::test]
+    fn appearance_choice_applies_at_once_and_is_saved(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, view) = open_view(cx, snapshot(dir.path(), true));
+        let engine = backend(dir.path());
+        for (label, dark) in [("Appearance: Dark", true), ("Appearance: Light", false)] {
+            cx.update_window(handle, |_, window, cx| {
+                view.update(cx, |view, cx| {
+                    view.page = Page::Settings;
+                    view.backend = Some(engine.clone());
+                    view.source_busy = false;
+                    cx.notify();
+                });
+                window.render_frame(cx);
+                assert!(window.try_find_by_label(label).is_some(), "{label}");
+                let choice = if dark {
+                    tehom_core::Appearance::Dark
+                } else {
+                    tehom_core::Appearance::Light
+                };
+                view.update(cx, |view, cx| view.choose_appearance(choice, window, cx));
+                assert_eq!(gpui_kit::component::Theme::global(cx).mode.is_dark(), dark);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            let saved = engine.runtime.block_on(engine.engine.snapshot()).unwrap();
+            assert_eq!(
+                saved.appearance,
+                if dark {
+                    tehom_core::Appearance::Dark
+                } else {
+                    tehom_core::Appearance::Light
+                }
+            );
+        }
+    }
+
+    #[gpui_kit::test]
+    fn sidebar_width_is_bounded_and_saved(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let dir = tempfile::tempdir().unwrap();
+        let mut fixture = snapshot(dir.path(), true);
+        fixture.sidebar_width = 320;
+        let (handle, view) = open_view(cx, fixture);
+        let engine = backend(dir.path());
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(view.read(cx).sidebar_px(), 320.);
+            view.update(cx, |view, cx| {
+                view.backend = Some(engine.clone());
+                view.resize_sidebar(9999., false, cx);
+                assert_eq!(view.sidebar_px(), 480.);
+                view.resize_sidebar(360., true, cx);
+            });
+        })
+        .unwrap();
+        cx.run_until_parked();
+        let saved = engine.runtime.block_on(engine.engine.snapshot()).unwrap();
+        assert_eq!(saved.sidebar_width, 360);
+    }
+
+    #[gpui_kit::test]
+    fn about_page_lists_every_author_link_and_the_project_links(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let dir = tempfile::tempdir().unwrap();
+        render_page(cx, Page::About, snapshot(dir.path(), true), |window| {
+            for (label, _) in about::AUTHOR_LINKS {
+                assert!(window.try_find_by_label(label).is_some(), "{label}");
+            }
+            for label in [
+                "Source code",
+                "Report a problem",
+                "All releases",
+                about::AUTHOR,
+            ] {
+                assert!(window.try_find_by_label(label).is_some(), "{label}");
+            }
+        });
+    }
+
+    #[gpui_kit::test]
+    fn speech_setup_is_one_button_with_a_busy_state(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, view) = open_view(cx, snapshot(dir.path(), true));
+        let status = |program: bool, model: bool| tehom_core::SpeechStatus {
+            program: program.then(|| PathBuf::from("speech")),
+            model: model.then(|| PathBuf::from("model")),
+        };
+        cx.update_window(handle, |_, window, cx| {
+            view.update(cx, |view, cx| {
+                view.page = Page::Settings;
+                view.speech = Some(status(true, false));
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert!(
+                window
+                    .try_find_by_label("Set up captions on this computer")
+                    .is_some()
+            );
+            view.update(cx, |view, cx| {
+                view.speech_downloading = true;
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert_eq!(
+                window
+                    .find_by_label("Setting up captions… (downloading about 150 MB)")
+                    .disabled(),
+                Some(true)
+            );
+            view.update(cx, |view, cx| {
+                view.speech_downloading = false;
+                view.speech = Some(status(true, true));
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert!(
+                window
+                    .try_find_by_label("Ready. Videos without captions get captions made here.")
+                    .is_some()
+            );
+            assert!(
+                window
+                    .try_find_by_label("Set up captions on this computer")
+                    .is_none()
+            );
+            view.update(cx, |view, cx| {
+                view.speech = Some(status(false, false));
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert!(
+                window
+                    .try_find_by_label("Set up captions on this computer")
+                    .is_none()
+            );
+            assert!(
+                window
+                    .try_find_by_label("The speech tool is missing from this copy of Tehom.")
+                    .is_some()
+            );
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn new_palette_entries_are_found() {
+        for (query, title) in [
+            ("automation", "Automation settings"),
+            ("about", "About Tehom"),
+            ("dark", "Appearance: dark"),
+            ("wider", "Make the sidebar wider"),
+        ] {
+            let titles: Vec<_> = shell::Command::matching(query)
+                .into_iter()
+                .map(|(_, t)| t)
+                .collect();
+            assert_eq!(titles, [title], "{query}");
+        }
     }
 }

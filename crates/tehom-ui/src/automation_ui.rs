@@ -2,7 +2,10 @@ use super::*;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::sidebar::{Sidebar, SidebarMenu, SidebarMenuItem};
 use tehom_automation::Automation;
-use tehom_core::{AiConfig, AiProvider};
+use tehom_core::{
+    AccountLogin, AiConfig, AiProvider, Appearance, AutomationSettings, CaptionStyle, Cue,
+    SoundEffect,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Page {
@@ -10,6 +13,7 @@ pub(crate) enum Page {
     Sources,
     Clips,
     Settings,
+    About,
 }
 
 pub(crate) struct Backend {
@@ -26,7 +30,6 @@ pub(crate) enum Action {
     Ai(AiConfig),
     /// Remote provider with explicit consent, plus a key to store if given.
     Byok(AiConfig, String),
-    Models,
     SaveRevision(i64, u64, u64),
     Retry(i64),
     Import(i64, PathBuf),
@@ -37,7 +40,36 @@ pub(crate) enum Action {
     ExportProfile(tehom_core::ExportProfile),
     Onboarded,
     CheckUpdates(bool),
+    SaveCaptions(i64, Vec<Cue>, CaptionStyle, SoundEffect),
+    /// Saves the captions, then makes the clip's video again.
+    RenderClip(i64, Vec<Cue>, CaptionStyle, SoundEffect),
+    DefaultCaptionStyle(CaptionStyle),
+    DownloadSpeechModel,
+    /// Username and password; the password lives only in this action.
+    InstagramLogin(String, String),
+    InstagramTwoFactor(String),
+    RemoveAccount(i64),
+    /// Clip, account, caption.
+    Publish(i64, i64, String),
+    AutoPublish(Option<i64>),
+    Automation(AutomationSettings),
+    Appearance(Appearance),
 }
+
+/// What the view does after an action, besides showing its message.
+enum Followup {
+    TwoFactor(Option<String>, bool),
+    SignedIn,
+    /// A key was saved: list that provider's models again.
+    Models,
+}
+
+/// Settings cards in order, for jumping to one.
+pub(crate) const CARD_AI: usize = 1;
+pub(crate) const CARD_LOOK: usize = 2;
+pub(crate) const CARD_SPEECH: usize = 3;
+pub(crate) const CARD_INSTAGRAM: usize = 4;
+pub(crate) const CARD_AUTOMATION: usize = 5;
 
 impl Tehom {
     pub fn start_automation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -109,34 +141,44 @@ impl Tehom {
                             state.set_value(snapshot.ai.model.clone(), window, cx)
                         });
                         view.engine_snapshot = Some(snapshot);
+                        view.sync_prefs(window, cx);
                     }
-                    view.status = "Add a channel to start.".into();
+                    view.status = "Add a channel or feed to start.".into();
                     cx.notify();
                 })
                 .is_err()
             {
                 return;
             }
-            let mut last_check = std::time::Instant::now() - Duration::from_secs(1801);
+            let mut last_check: Option<std::time::Instant> = None;
             while !stop.load(Ordering::Acquire) {
-                let check = last_check.elapsed() >= Duration::from_secs(1800);
-                if check {
-                    last_check = std::time::Instant::now();
-                }
                 let worker = backend.clone();
-                let result = cx
+                // The interval is read each round so a saved change applies at once.
+                let (checked, result) = cx
                     .background_spawn(async move {
-                        worker
-                            .runtime
-                            .block_on(async {
+                        worker.runtime.block_on(async {
+                            let minutes = worker
+                                .engine
+                                .automation()
+                                .await
+                                .map_or(30, |settings| settings.check_minutes);
+                            let check = last_check.is_none_or(|at| {
+                                at.elapsed() >= Duration::from_secs(u64::from(minutes) * 60)
+                            });
+                            let result = async {
                                 if check {
                                     worker.engine.check_now().await?;
                                 }
                                 worker.engine.process_next().await
-                            })
-                            .map_err(|e| e.to_string())
+                            }
+                            .await;
+                            (check, result.map_err(|e| e.to_string()))
+                        })
                     })
                     .await;
+                if checked {
+                    last_check = Some(std::time::Instant::now());
+                }
                 if let Err(error) = result {
                     eprintln!("Tehom automation: {error}");
                 }
@@ -192,11 +234,31 @@ impl Tehom {
         self.details = None;
         self.status = "Working…".into();
         cx.notify();
+        // Newer actions report the engine's own plain-language reason.
+        let own_words = matches!(
+            action,
+            Action::SaveCaptions(..)
+                | Action::RenderClip(..)
+                | Action::DefaultCaptionStyle(_)
+                | Action::DownloadSpeechModel
+                | Action::InstagramLogin(..)
+                | Action::InstagramTwoFactor(_)
+                | Action::RemoveAccount(_)
+                | Action::Publish(..)
+                | Action::AutoPublish(_)
+                | Action::Automation(_)
+                | Action::Appearance(_)
+        );
+        let signing_in = matches!(
+            action,
+            Action::InstagramLogin(..) | Action::InstagramTwoFactor(_)
+        );
+        let speech = matches!(action, Action::DownloadSpeechModel);
         let task = cx.background_spawn(async move {
             backend
                 .runtime
                 .block_on(async {
-                    let mut models = None;
+                    let mut followup = None;
                     let message = match action {
                         Action::Add(url, mode) => {
                             let source=backend.engine.add_source(&url,mode).await?;
@@ -204,6 +266,8 @@ impl Tehom {
                                 "Video added. Follow its progress below.".into()
                             } else if source.error.is_some() {
                                 "Channel saved. Its feed is not reachable yet; Tehom will retry.".into()
+                            } else if source.channel_id.starts_with("feed:") {
+                                format!("Feed \"{}\" added. Tehom watches it for new videos.", source.title)
                             } else {"Channel added. The latest video and every new one will be processed.".into()}
                         }
                         Action::File(path, mode) => {
@@ -241,15 +305,12 @@ impl Tehom {
                                 provider.label()
                             );
                             backend.engine.set_ai(ai).await?;
+                            followup = Some(Followup::Models);
                             format!("{} is ready. Captions will be sent there for analysis.", provider.label())
                         }
                         Action::SaveRevision(id, start, end) => {
                             backend.engine.save_clip_revision(id, start, end).await?;
                             "New draft saved. Earlier drafts and files are kept.".into()
-                        }
-                        Action::Models => {
-                            models = Some(backend.engine.local_models().await?);
-                            "Local models checked.".into()
                         }
                         Action::Import(id,path)=>{backend.engine.import_transcript(id,path,None).await?;"Captions saved. Choose Retry to make the clips.".into()}
                         Action::Retry(id) => {
@@ -295,33 +356,121 @@ impl Tehom {
                             backend.engine.set_export_directory(path).await?;
                             "Clip folder changed.".into()
                         }
+                        Action::SaveCaptions(id, cues, style, sound) => {
+                            backend.engine.save_clip_captions(id, cues, style, sound).await?;
+                            "Captions saved. Choose \"Make the video again\" to put them in the MP4.".into()
+                        }
+                        Action::RenderClip(id, cues, style, sound) => {
+                            backend.engine.save_clip_captions(id, cues, style, sound).await?;
+                            let path = backend.engine.render_clip(id).await?;
+                            format!("Video made again: {}", path.display())
+                        }
+                        Action::DefaultCaptionStyle(style) => {
+                            backend.engine.set_default_caption_style(style).await?;
+                            "Caption look saved for new clips.".into()
+                        }
+                        Action::DownloadSpeechModel => {
+                            backend.engine.download_speech_model().await?;
+                            "Captions on this computer are ready. Videos without captions can now be used.".into()
+                        }
+                        Action::InstagramLogin(username, password) => {
+                            match backend.engine.instagram_login(&username, &password).await? {
+                                AccountLogin::Done(account) => {
+                                    followup = Some(Followup::SignedIn);
+                                    format!("Instagram connected as @{}.", account.username)
+                                }
+                                AccountLogin::TwoFactor { hint, app } => {
+                                    followup = Some(Followup::TwoFactor(hint, app));
+                                    "Instagram asked for a sign-in code.".into()
+                                }
+                            }
+                        }
+                        Action::InstagramTwoFactor(code) => {
+                            let account = backend.engine.instagram_two_factor(&code).await?;
+                            followup = Some(Followup::SignedIn);
+                            format!("Instagram connected as @{}.", account.username)
+                        }
+                        Action::RemoveAccount(id) => {
+                            backend.engine.remove_account(id).await?;
+                            "Account removed from Tehom.".into()
+                        }
+                        Action::Publish(clip, account, caption) => {
+                            let publication = backend.engine.publish_clip(clip, account, &caption).await?;
+                            match publication.state.as_str() {
+                                "published" => "Posted to Instagram.".into(),
+                                "failed" => format!(
+                                    "Could not post: {}",
+                                    publication.error.unwrap_or_default()
+                                ),
+                                _ => "Instagram is still processing the post.".into(),
+                            }
+                        }
+                        Action::Automation(settings) => {
+                            backend.engine.set_automation(settings).await?;
+                            "Automation settings saved.".into()
+                        }
+                        Action::Appearance(appearance) => {
+                            backend.engine.set_appearance(appearance).await?;
+                            "Appearance saved.".into()
+                        }
+                        Action::AutoPublish(account) => {
+                            backend.engine.set_auto_publish(account).await?;
+                            if account.is_some() {
+                                "New clips from MP4 sources will be posted automatically.".into()
+                            } else {
+                                "Automatic posting is off.".into()
+                            }
+                        }
                     };
-                    Ok::<_, anyhow::Error>((backend.engine.snapshot().await?, message, models))
+                    Ok::<_, anyhow::Error>((backend.engine.snapshot().await?, message, followup))
                 })
                 .map_err(|e| e.to_string())
         });
         cx.spawn_in(window, async move |view, cx| {
             let result = task.await;
-            let _ = view.update(cx, |view, cx| {
+            let _ = view.update_in(cx, |view, window, cx| {
                 view.source_busy = false;
+                if speech {
+                    view.speech_downloading = false;
+                    view.speech = None;
+                }
                 match result {
-                    Ok((snapshot, message, models)) => {
+                    Ok((snapshot, message, followup)) => {
                         view.engine_snapshot = Some(snapshot);
                         if view.onboarding.is_some() {
                             view.guide_note = Some(message.clone());
                         }
                         view.status = message;
-                        if let Some(models) = models {
-                            view.available_models = models;
+                        match followup {
+                            Some(Followup::TwoFactor(hint, app)) => {
+                                view.instagram.two_factor = Some((hint, app));
+                            }
+                            Some(Followup::SignedIn) => {
+                                view.instagram.two_factor = None;
+                                view.instagram.open = false;
+                                view.instagram.note = None;
+                                view.instagram
+                                    .username
+                                    .update(cx, |state, cx| state.set_value("", window, cx));
+                            }
+                            Some(Followup::Models) => view.model_list = None,
+                            None => {}
                         }
                     }
                     Err(error) => {
                         if view.onboarding.is_some() {
                             view.guide_note = Some(error.clone());
                         }
-                        view.status =
-                            "That did not finish. Check the link and your settings.".into();
-                        view.details = Some(error);
+                        if signing_in {
+                            view.instagram.note = Some(error.clone());
+                        }
+                        if own_words {
+                            view.status = error;
+                        } else {
+                            view.status =
+                                "That did not finish. Check the link and your settings.".into();
+                            view.details = Some(error);
+                        }
                     }
                 }
                 cx.notify();
@@ -439,14 +588,15 @@ impl Tehom {
         let p = crate::theme::palette(cx);
         let unavailable = self.backend.is_none() || self.source_busy;
         div().flex().flex_col().gap_4().p(px(24.)).bg(p.background).border_1().border_color(p.border).rounded(px(12.))
-            .child(div().text_lg().child("Add a YouTube channel or video"))
-            .child(Input::new(&self.source_url).h(px(44.)).id("channel-url").aria_label("YouTube channel or video address").disabled(unavailable))
+            .child(div().text_lg().child("Add a channel, video or RSS feed"))
+            .child(Input::new(&self.source_url).h(px(44.)).id("channel-url").aria_label("Channel, video or RSS feed address").disabled(unavailable))
+            .child(div().text_sm().text_color(p.muted).child("A YouTube channel or video, a Kick video, or the link of any RSS or Atom feed with videos."))
             .child(div().flex().gap_2()
                 .child(Button::new("mode-draft").h(px(44.)).label("Drafts").when(self.source_mode==AutomationMode::AutoDraft,|b|b.primary())
                     .on_click(cx.listener(|view,_,_,cx|{view.source_mode=AutomationMode::AutoDraft;cx.notify();})))
                 .child(Button::new("mode-export").h(px(44.)).label("MP4 files").when(self.source_mode==AutomationMode::AutoExport,|b|b.primary())
                     .on_click(cx.listener(|view,_,_,cx|{view.source_mode=AutomationMode::AutoExport;cx.notify();}))))
-            .child(div().text_sm().text_color(p.muted).child(match self.source_mode {AutomationMode::AutoExport=>"Clips are saved to your folder automatically. Channels are watched for new videos.",_=>"Tehom prepares drafts for you to review. Channels are watched for new videos."}))
+            .child(div().text_sm().text_color(p.muted).child(match self.source_mode {AutomationMode::AutoExport=>"Clips are saved to your folder automatically. Channels and feeds are watched for new videos.",AutomationMode::Manual=>"New videos are listed; you choose which ones to make clips from.",_=>"Tehom prepares drafts for you to review. Channels and feeds are watched for new videos."}))
             .child(Button::new("add-channel").h(px(44.)).primary().label(if self.source_busy {"Adding…"} else {"Add link"}).disabled(unavailable)
                 .on_click(cx.listener(|view,_,window,cx|view.act(Action::Add(view.source_url.read(cx).value().to_string(),view.source_mode),window,cx))))
             .child(Button::new("import-local-video").h(px(44.)).label("Make clips from a file").disabled(unavailable)
@@ -485,6 +635,8 @@ impl Tehom {
                             "Local file"
                         } else if source.channel_id.starts_with("video:") {
                             "Single video"
+                        } else if source.channel_id.starts_with("feed:") {
+                            "RSS feed, watching for new videos"
                         } else {
                             "Channel, watching for new videos"
                         },
@@ -563,6 +715,12 @@ impl Tehom {
             })
             .children(videos.into_iter().take(20).map(|video| {
                 let id = video.id;
+                let local_captions_missing = video.state == "needs_input"
+                    && video.error.as_deref().is_some_and(|error| {
+                        error.contains("local transcription")
+                            || error.contains("whisper")
+                            || error.contains("speech model")
+                    });
                 div()
                     .p_4()
                     .bg(p.background)
@@ -612,6 +770,18 @@ impl Tehom {
                             )
                         },
                     )
+                    .when(local_captions_missing, |v| {
+                        v.child(
+                            Button::new(("setup-speech", id as usize))
+                                .h(px(44.))
+                                .primary()
+                                .label(self.speech_setup_label())
+                                .disabled(self.speech_downloading || self.source_busy)
+                                .on_click(cx.listener(|view, _, window, cx| {
+                                    view.set_up_speech(window, cx)
+                                })),
+                        )
+                    })
                     .child(
                         div()
                             .flex()
@@ -720,6 +890,8 @@ impl Tehom {
                                 .on_click(cx.listener(move |view, _, window, cx| {
                                     view.ai_provider = Some(option);
                                     view.ai_key_saved.set(None);
+                                    view.model_query
+                                        .update(cx, |state, cx| state.set_value("", window, cx));
                                     view.ai_model.update(cx, |state, cx| {
                                         state.set_value(option.default_model(), window, cx)
                                     });
@@ -737,12 +909,7 @@ impl Tehom {
                                 .aria_label("Local model server")
                                 .disabled(unavailable),
                         )
-                        .child(
-                            Input::new(&self.ai_model)
-                                .h(px(44.))
-                                .aria_label("AI model")
-                                .disabled(unavailable),
-                        )
+                        .child(self.model_picker(provider, unavailable, cx))
                         .child(
                             div()
                                 .flex()
@@ -768,15 +935,6 @@ impl Tehom {
                                                 cx,
                                             )
                                         })),
-                                )
-                                .child(
-                                    Button::new("find-models")
-                                        .h(px(44.))
-                                        .label("Find local models")
-                                        .disabled(unavailable)
-                                        .on_click(cx.listener(|view, _, window, cx| {
-                                            view.act(Action::Models, window, cx)
-                                        })),
                                 ),
                         )
                     })
@@ -792,12 +950,7 @@ impl Tehom {
                         )))
                     })
                     .when(provider.is_remote(), |card| {
-                        card.child(
-                            Input::new(&self.ai_model)
-                                .h(px(44.))
-                                .aria_label("AI model")
-                                .disabled(unavailable),
-                        )
+                        card.child(self.model_picker(provider, unavailable, cx))
                         .when(provider.uses_api_key(), |card| {
                             card.child(
                                 Input::new(&self.ai_key)
@@ -841,92 +994,73 @@ impl Tehom {
                                 })),
                         )
                     })
-                    .children(
-                        self.available_models
-                            .iter()
-                            .enumerate()
-                            .map(|(index, model)| {
-                                let value = model.clone();
-                                Button::new(("model", index))
-                                    .h(px(44.))
-                                    .label(model.clone())
-                                    .on_click(cx.listener(move |view, _, window, cx| {
-                                        view.ai_model.update(cx, |state, cx| {
-                                            state.set_value(value.clone(), window, cx)
-                                        });
-                                    }))
-                            }),
-                    )
             .into_any_element()
     }
 
-    fn settings(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// The Settings page's children; their order matches the `CARD_*` indexes.
+    fn settings(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let p = crate::theme::palette(cx);
         let unavailable = self.backend.is_none() || self.source_busy;
-        div()
-            .flex()
-            .flex_col()
-            .gap_4()
-            .child(div().text_3xl().child("Settings"))
-            .child(self.ai_card(cx))
-            .child(
-                div()
-                    .p_5()
-                    .bg(p.background)
-                    .border_1()
-                    .border_color(p.border)
-                    .rounded(px(12.))
-                    .flex()
-                    .flex_col()
-                    .gap_3()
-                    .child(div().text_lg().child("Clip folder"))
-                    .when_some(
-                        self.engine_snapshot
-                            .as_ref()
-                            .map(|s| s.export_directory.display().to_string()),
-                        |v, path| v.child(div().text_sm().child(path)),
-                    )
-                    .child(
-                        Button::new("choose-export")
-                            .h(px(44.))
-                            .label("Choose folder")
-                            .disabled(unavailable)
-                            .on_click(cx.listener(|view, _, window, cx| {
-                                view.choose_export_directory(window, cx)
-                            })),
-                    )
-                    .child(div().text_lg().child("Clip shape"))
-                    .child(div().flex().gap_2().children(
-                        tehom_core::ExportProfile::ALL.into_iter().enumerate().map(
-                            |(index, profile)| {
-                                let selected = self
-                                    .engine_snapshot
-                                    .as_ref()
-                                    .is_some_and(|s| s.export_profile == profile);
-                                Button::new(("export-profile", index))
-                                    .h(px(44.))
-                                    .label(match profile {
-                                        tehom_core::ExportProfile::Vertical => {
-                                            "Vertical 1080 × 1920"
-                                        }
-                                        tehom_core::ExportProfile::Horizontal => {
-                                            "Horizontal 1920 × 1080"
-                                        }
-                                        tehom_core::ExportProfile::Original => "Original size",
-                                    })
-                                    .disabled(unavailable)
-                                    .when(selected, |button| {
-                                        button.bg(p.surface).text_color(p.text)
-                                    })
-                                    .on_click(cx.listener(move |view, _, window, cx| {
-                                        view.act(Action::ExportProfile(profile), window, cx)
-                                    }))
-                            },
-                        ),
-                    )),
-            )
-            .child(self.about_card(cx))
-            .into_any_element()
+        vec![
+            div().text_3xl().child("Settings").into_any_element(),
+            self.ai_card(cx),
+            self.default_look_card(cx),
+            self.speech_card(cx),
+            self.instagram_card(cx),
+            self.automation_card(cx),
+            div()
+                .p_5()
+                .bg(p.background)
+                .border_1()
+                .border_color(p.border)
+                .rounded(px(12.))
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(div().text_lg().child("Clip folder"))
+                .when_some(
+                    self.engine_snapshot
+                        .as_ref()
+                        .map(|s| s.export_directory.display().to_string()),
+                    |v, path| v.child(div().text_sm().child(path)),
+                )
+                .child(
+                    Button::new("choose-export")
+                        .h(px(44.))
+                        .label("Choose folder")
+                        .disabled(unavailable)
+                        .on_click(cx.listener(|view, _, window, cx| {
+                            view.choose_export_directory(window, cx)
+                        })),
+                )
+                .child(div().text_lg().child("Clip shape"))
+                .child(div().flex().gap_2().children(
+                    tehom_core::ExportProfile::ALL.into_iter().enumerate().map(
+                        |(index, profile)| {
+                            let selected = self
+                                .engine_snapshot
+                                .as_ref()
+                                .is_some_and(|s| s.export_profile == profile);
+                            Button::new(("export-profile", index))
+                                .h(px(44.))
+                                .label(match profile {
+                                    tehom_core::ExportProfile::Vertical => "Vertical 1080 × 1920",
+                                    tehom_core::ExportProfile::Horizontal => {
+                                        "Horizontal 1920 × 1080"
+                                    }
+                                    tehom_core::ExportProfile::Original => "Original size",
+                                })
+                                .disabled(unavailable)
+                                .when(selected, |button| button.bg(p.surface).text_color(p.text))
+                                .on_click(cx.listener(move |view, _, window, cx| {
+                                    view.act(Action::ExportProfile(profile), window, cx)
+                                }))
+                        },
+                    ),
+                ))
+                .into_any_element(),
+            self.appearance_card(cx),
+        ]
     }
 }
 
@@ -934,6 +1068,10 @@ impl Render for Tehom {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.check_onboarding();
         self.maybe_check_updates(window, cx);
+        self.maybe_list_models(window, cx);
+        self.maybe_check_speech(window, cx);
+        self.sync_studio(window, cx);
+        self.sync_prefs(window, cx);
         let update_tag = self
             .available_update()
             .map(|status| status.latest.tag.clone());
@@ -944,10 +1082,13 @@ impl Render for Tehom {
                 (Page::Sources, "Sources", IconName::Rss),
                 (Page::Clips, "Clips", IconName::Scissors),
                 (Page::Settings, "Settings", IconName::Settings),
+                (Page::About, "About Tehom", IconName::Info),
             ]
             .into_iter()
             .map(|(page, label, icon)| {
                 SidebarMenuItem::new(label)
+                    .h(px(48.))
+                    .text_lg()
                     .accessibility_label(label)
                     .icon(icon)
                     .active(self.page == page)
@@ -956,7 +1097,7 @@ impl Render for Tehom {
         );
         let sidebar = Sidebar::<SidebarMenu>::new("sidebar")
             .collapsible(false)
-            .w(px(220.))
+            .w(px(self.sidebar_px()))
             .bg(p.background)
             .header(
                 div().p_4().flex().flex_col().gap_6().child(
@@ -987,7 +1128,7 @@ impl Render for Tehom {
                                 .primary()
                                 .label(format!("Update to {tag}"))
                                 .on_click(
-                                    cx.listener(|view, _, _, cx| view.navigate(Page::Settings, cx)),
+                                    cx.listener(|view, _, _, cx| view.navigate(Page::About, cx)),
                                 ),
                         )
                     })
@@ -1013,9 +1154,27 @@ impl Render for Tehom {
                 .min_w_0()
                 .h_full()
                 .overflow_y_scroll()
+                .track_scroll(&self.settings_scroll)
                 .px(px(40.))
                 .py(px(32.))
-                .child(self.settings(cx))
+                .flex()
+                .flex_col()
+                .gap_4()
+                .children(self.settings(cx))
+                .into_any_element(),
+            Page::About => div()
+                .id("about-scroll")
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .overflow_y_scroll()
+                .px(px(40.))
+                .py(px(32.))
+                .flex()
+                .flex_col()
+                .gap_4()
+                .child(div().text_3xl().child("About Tehom"))
+                .child(self.about_card(cx))
                 .into_any_element(),
             Page::Home | Page::Sources => div()
                 .id("sources-scroll")
@@ -1051,7 +1210,7 @@ impl Render for Tehom {
                 .child(
                     div()
                         .text_color(p.muted)
-                        .child("Add a channel once and Tehom follows its new videos."),
+                        .child("Add a channel or RSS feed once and Tehom follows its new videos."),
                 )
                 .child(self.source_form(cx))
                 .child(self.source_list(cx))
@@ -1095,6 +1254,7 @@ impl Render for Tehom {
                             .filter(|video| video.local_available)
                             .and_then(|video| video.local_path.clone());
                         let range = (clip.start_ms, clip.end_ms);
+                        let publish = clip.clone();
                         div()
                             .p_4()
                             .rounded(px(12.))
@@ -1139,6 +1299,7 @@ impl Render for Tehom {
                                             view.load(path.clone(), window, cx)
                                         })),
                                 )
+                                .child(self.publish_row(&publish, cx))
                             })
                     }))
                     .child(self.job_list(cx))
@@ -1153,10 +1314,21 @@ impl Render for Tehom {
             .key_context("Tehom")
             .on_action(cx.listener(Self::toggle_palette))
             .on_action(cx.listener(Self::close_palette))
+            .on_drag_move(cx.listener(Self::on_sidebar_drag))
+            .on_drop(cx.listener(|view, _: &crate::prefs::ResizeSidebar, _, cx| {
+                view.resize_sidebar(view.sidebar_px(), true, cx)
+            }))
             .flex()
             .bg(p.background)
             .text_color(p.text)
-            .child(sidebar)
+            .child(
+                div()
+                    .relative()
+                    .h_full()
+                    .flex_none()
+                    .child(sidebar)
+                    .child(self.sidebar_edge(cx)),
+            )
             .child(
                 div()
                     .flex_1()

@@ -16,6 +16,15 @@ SaaS: Yok
 Zorunlu kullanıcı hesabı: Yok
 Kodlama ajanı için talimat: Bu doküman Tehom'un güncel ana şartnamesidir. Önceki planlardaki Tauri, Svelte, TypeScript, sosyal medya OAuth bağlantıları, Shorts/TikTok/Reels yayınlama, paylaşım takvimi ve platform kotaları geçersizdir. Var olan bir kod tabanı bulunursa önce incele; çalışan parçaları gereksiz yere yeniden yazma. Her aşama gerçek test ve çalışır çıktı ile doğrulanmalıdır.
 
+0. Güncelleme (2026-11-09) — bu bölüm aşağıdaki çelişen maddelerin yerine geçer
+Tek cümle: "Tehom: link ver, dikey klip al." Uzun video girer, yerelde transkript çıkar, öne çıkan anlar altyazılı dikey klip olarak düşer. Bulut yok, abonelik yok.
+- Altyazılar klibe otomatik gömülür; metin, renk, boyut, konum ve giriş ses efekti Studio'da düzenlenebilir.
+- Platform altyazısı yoksa whisper.cpp yerelde otomatik çalışır. Model dosyası yalnızca kullanıcı açıkça isterse indirilir; program veya model eksikse video "İnceleme gerekiyor" durumuna geçer.
+- Instagram Reels'e yükleme kapsam içindedir: crates/tehom-instagram, Instagram özel mobil API'sinin native Rust portudur (aiograpi, MIT). Python, Node.js, Docker veya ayrı daemon yok. Oturum belirteci OS anahtarlığında saklanır. Otomatik modda yükleme yalnızca kullanıcı bir hesabı otomatik yayın için seçtiyse yapılır.
+- YouTube Shorts ve TikTok arayüzde ikon olarak görünür ama devre dışıdır; çalıştığı iddia edilmez.
+- Özel API resmî değildir: Instagram protokolü değiştirebilir veya hesabı kısıtlayabilir. Gerçek hesapla uçtan uca yükleme doğrulanmadan "çalışıyor" denmez.
+- Model seçimi: sağlayıcının sunduğu modeller listelenir ve seçilir; uzak modellerde sade bir güç açıklaması gösterilir, yerel modellerde gösterilmez.
+
 1. Ürün tanımı ve kapsam
 Tehom'un amacı, bir yayıncının uzun videolarından kullanışlı kısa klipler üretmek için gereken teknik işleri otomatikleştirmek.
 

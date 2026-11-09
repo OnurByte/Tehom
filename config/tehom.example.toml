@@ -6,7 +6,11 @@ directory = "../data"
 # false keeps `tehom daemon` and `tehom service install` from running.
 enabled = true
 # Mode for `add`/`import-video` without --mode: manual, auto_draft, auto_export, paused.
+# Without it, the desktop app's "What happens to new videos" setting is used.
+# `tehom add` takes YouTube channels and videos, Kick VODs and any RSS/Atom feed link.
 default_mode = "auto_draft"
+# Without it, the app's "Check for new videos every" setting is used (1–1440).
+# Clips per video, clip length and transcription are set in the app's Settings.
 check_interval_minutes = 30
 # Upper bounds; the engine currently runs one download/render at a time.
 max_concurrent_downloads = 2

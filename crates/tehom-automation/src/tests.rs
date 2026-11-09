@@ -49,7 +49,10 @@ fn untrusted_candidates_are_validated_and_deduplicated() {
             reason: "useful".into(),
         },
     ];
-    assert_eq!(validate_candidates(input, 100_000).len(), 1);
+    assert_eq!(
+        validate_candidates(input, 100_000, &Default::default()).len(),
+        1
+    );
 }
 #[tokio::test]
 async fn store_deduplicates_recovers_and_respects_pause() {
@@ -214,7 +217,10 @@ async fn local_provider_request_and_response_are_real_http() {
             )
             .await
             .unwrap();
-        assert_eq!(validate_candidates(candidates, 30_000).len(), 1);
+        assert_eq!(
+            validate_candidates(candidates, 30_000, &Default::default()).len(),
+            1
+        );
         server.join().unwrap();
     }
 }
@@ -2045,4 +2051,1291 @@ async fn agent_clis_run_without_tools_and_return_structured_clips() {
         ..ai
     };
     assert!(engine.set_ai(no_consent).await.is_err());
+}
+
+fn cue(start_ms: u64, end_ms: u64, text: &str) -> Cue {
+    Cue {
+        start_ms,
+        end_ms,
+        text: text.into(),
+    }
+}
+
+fn candidate(start_ms: u64, end_ms: u64) -> Candidate {
+    Candidate {
+        start_ms,
+        end_ms,
+        title: "T".into(),
+        reason: String::new(),
+    }
+}
+
+#[test]
+fn clip_edges_snap_to_nearby_caption_edges_within_limits() {
+    let cues = [
+        cue(0, 2_500, "a"),
+        cue(2_500, 5_000, "b"),
+        cue(20_000, 22_500, "c"),
+        cue(22_500, 60_000, "long"),
+    ];
+    let snapped = snap_candidates(
+        vec![
+            candidate(1_000, 22_000),
+            candidate(3_000, 23_000),
+            candidate(30_000, 55_000),
+        ],
+        &cues,
+        100_000,
+        &Default::default(),
+    );
+    let ranges: Vec<_> = snapped.iter().map(|c| (c.start_ms, c.end_ms)).collect();
+    // Edges more than SNAP_MS from a caption edge stay where the model put them.
+    assert_eq!(ranges, [(0, 22_500), (2_500, 22_500), (30_000, 55_000)]);
+    // A snap that would break the 20–90 s rule or pass the end is skipped.
+    let cues = [cue(0, 2_000, "a"), cue(21_000, 24_000, "b")];
+    let snapped = snap_candidates(
+        vec![candidate(1_500, 21_500)],
+        &cues,
+        100_000,
+        &Default::default(),
+    );
+    assert_eq!((snapped[0].start_ms, snapped[0].end_ms), (2_000, 24_000));
+    let snapped = snap_candidates(
+        vec![candidate(1_500, 21_500)],
+        &cues,
+        23_000,
+        &Default::default(),
+    );
+    assert_eq!((snapped[0].start_ms, snapped[0].end_ms), (0, 21_000));
+}
+
+#[test]
+fn transcript_slices_are_clip_relative_clamped_and_never_stacked() {
+    let cues = transcript_cues("[0-3000] a\n[2000-5000] b\n[6000-9000]  \n[8000-12000] c\n");
+    assert_eq!(cues.len(), 4);
+    assert_eq!(
+        slice_cues(&cues, 1_000, 10_000),
+        [
+            cue(0, 1_000, "a"),
+            cue(1_000, 4_000, "b"),
+            cue(7_000, 9_000, "c")
+        ]
+    );
+    assert!(slice_cues(&cues, 20_000, 30_000).is_empty());
+}
+
+#[test]
+fn model_names_map_to_plain_strength_tiers() {
+    for (id, strength) in [
+        ("gpt-4o-mini", Strength::Fast),
+        ("o3-mini", Strength::Fast),
+        ("gemini-2.5-flash-lite", Strength::Fast),
+        ("claude-haiku-5-5", Strength::Fast),
+        ("mistralai/mistral-small", Strength::Fast),
+        ("claude-opus-5", Strength::Strongest),
+        ("gemini-2.5-pro", Strength::Strongest),
+        ("openai/o3", Strength::Strongest),
+        ("o1-preview", Strength::Strongest),
+        ("gpt-5", Strength::Strongest),
+        ("gpt-5-mini", Strength::Fast),
+        ("gpt-4o", Strength::Balanced),
+        ("claude-sonnet-4-5", Strength::Balanced),
+    ] {
+        assert_eq!(model_strength(id), strength, "{id}");
+    }
+    assert!(chat_model("gpt-4o") && !chat_model("text-embedding-3-small"));
+    assert!(!chat_model("gpt-4o-realtime-preview") && !chat_model("tts-1"));
+}
+
+#[tokio::test]
+async fn model_lists_are_fetched_per_provider_filtered_and_strongest_first() {
+    let cases = [
+        (
+            AiProvider::Openai,
+            "GET /v1/models ",
+            "authorization: bearer sk-test-123456",
+            r#"{"data":[{"id":"gpt-4o-mini"},{"id":"text-embedding-3-small"},{"id":"gpt-5"},{"id":"whisper-1"},{"id":"gpt-4o"}]}"#,
+            vec!["gpt-5", "gpt-4o", "gpt-4o-mini"],
+            "gpt-5",
+        ),
+        (
+            AiProvider::Anthropic,
+            "GET /v1/models?limit=1000 ",
+            "x-api-key: sk-test-123456",
+            r#"{"data":[{"id":"claude-haiku-5-5","display_name":"Claude Haiku 5.5"},{"id":"claude-opus-5","display_name":"Claude Opus 5"}],"has_more":false}"#,
+            vec!["claude-opus-5", "claude-haiku-5-5"],
+            "Claude Opus 5",
+        ),
+        (
+            AiProvider::Gemini,
+            "GET /v1beta/models?pageSize=1000 ",
+            "x-goog-api-key: sk-test-123456",
+            r#"{"models":[{"name":"models/gemini-2.5-flash","displayName":"Gemini 2.5 Flash","supportedGenerationMethods":["generateContent","countTokens"]},{"name":"models/text-embedding-004","displayName":"Embedding","supportedGenerationMethods":["embedContent"]},{"name":"models/gemini-2.5-pro","displayName":"Gemini 2.5 Pro","supportedGenerationMethods":["generateContent"]}]}"#,
+            vec!["gemini-2.5-pro", "gemini-2.5-flash"],
+            "Gemini 2.5 Pro",
+        ),
+        (
+            AiProvider::Openrouter,
+            "GET /api/v1/models ",
+            "authorization: bearer sk-test-123456",
+            r#"{"data":[{"id":"anthropic/claude-sonnet-4.5","name":"Anthropic: Claude Sonnet 4.5","architecture":{"output_modalities":["text"]}},{"id":"vendor/picture-maker","name":"Pictures","architecture":{"output_modalities":["image"]}}]}"#,
+            vec!["anthropic/claude-sonnet-4.5"],
+            "Anthropic: Claude Sonnet 4.5",
+        ),
+    ];
+    for (provider, request_line, auth, body, ids, first_label) in cases {
+        let (base, server) = provider_fixture("200 OK", body.into());
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = Automation::open(dir.path().into()).await.unwrap();
+        engine.remote_base = Some(base);
+        engine.test_key = Some("sk-test-123456".into());
+        let config = AiConfig {
+            provider,
+            ..Default::default()
+        };
+        let models = engine.models(&config).await.unwrap();
+        let request = server.join().unwrap();
+        assert!(request.starts_with(request_line), "{provider:?}: {request}");
+        assert!(request.to_ascii_lowercase().contains(auth), "{provider:?}");
+        if provider == AiProvider::Anthropic {
+            assert!(request.contains("anthropic-version: 2023-06-01"));
+        }
+        let found: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(found, ids, "{provider:?}");
+        assert_eq!(models[0].label, first_label);
+        assert!(
+            models
+                .iter()
+                .all(|m| m.strength.is_some() && m.note.is_some())
+        );
+    }
+    // A rejected key is "Needs input"; no key sends nothing.
+    let (base, server) = provider_fixture("401 Unauthorized", "{}".into());
+    let dir = tempfile::tempdir().unwrap();
+    let mut engine = Automation::open(dir.path().into()).await.unwrap();
+    engine.remote_base = Some(base);
+    engine.test_key = Some("sk-test-123456".into());
+    let openai = AiConfig {
+        provider: AiProvider::Openai,
+        ..Default::default()
+    };
+    let error = engine.models(&openai).await.unwrap_err().to_string();
+    server.join().unwrap();
+    assert!(
+        error.starts_with("Needs input:") && error.contains("rejected"),
+        "{error}"
+    );
+    engine.test_key = None;
+    engine.remote_base = None;
+    // Subscription CLIs: a fixed list for Claude Code, none for Codex.
+    let claude = engine
+        .models(&AiConfig {
+            provider: AiProvider::ClaudeCode,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let ids: Vec<&str> = claude.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(ids, ["opus", "sonnet", "haiku"]);
+    assert_eq!(claude[0].strength, Some(Strength::Strongest));
+    assert!(
+        engine
+            .models(&AiConfig {
+                provider: AiProvider::Codex,
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    // Local servers are listed without a rating.
+    let (endpoint, server) = provider_fixture(
+        "200 OK",
+        r#"{"models":[{"name":"qwen3:8b"},{"name":"llama3.2"}]}"#.into(),
+    );
+    let local = engine
+        .models(&AiConfig {
+            endpoint,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(server.join().unwrap().starts_with("GET /api/tags "));
+    assert_eq!(local.len(), 2);
+    assert!(
+        local
+            .iter()
+            .all(|m| m.strength.is_none() && m.note.is_none())
+    );
+}
+
+#[test]
+fn speech_model_hosts_are_allowed_only_over_https() {
+    for allowed in [
+        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
+        "https://us.aws.cdn.hf.co/xet-bridge-us/abc?x=1",
+    ] {
+        assert!(outbound(allowed).is_ok(), "{allowed}");
+    }
+    for refused in [
+        "http://huggingface.co/model.bin",
+        "https://huggingface.co:8443/model.bin",
+        "https://huggingface.co.evil.example/model.bin",
+        "https://evilhf.co/model.bin",
+        "https://user:pw@huggingface.co/model.bin",
+    ] {
+        assert!(outbound(refused).is_err(), "{refused}");
+    }
+}
+
+#[tokio::test]
+async fn speech_model_download_is_validated_and_published_atomically() {
+    let model = format!("lmgg{}", "x".repeat(1024 * 1024));
+    let (base, server) = provider_fixture("200 OK", model.clone());
+    let dir = tempfile::tempdir().unwrap();
+    let mut engine = Automation::open(dir.path().into()).await.unwrap();
+    assert_eq!(engine.speech_status().await.model, None);
+    engine.remote_base = Some(base);
+    let path = engine.download_speech_model().await.unwrap();
+    assert!(server.join().unwrap().starts_with("GET /ggml-base.bin "));
+    assert_eq!(std::fs::read(&path).unwrap(), model.as_bytes());
+    assert_eq!(engine.speech_status().await.model, Some(path.clone()));
+    // Present already: no second download.
+    engine.remote_base = Some("http://127.0.0.1:9".into());
+    assert_eq!(engine.download_speech_model().await.unwrap(), path);
+    // Something that is not a model is refused and leaves nothing behind.
+    let (base, server) = provider_fixture("200 OK", "<html>not a model</html>".into());
+    let other = tempfile::tempdir().unwrap();
+    let mut engine = Automation::open(other.path().into()).await.unwrap();
+    engine.remote_base = Some(base);
+    assert!(engine.download_speech_model().await.is_err());
+    server.join().unwrap();
+    assert_eq!(
+        std::fs::read_dir(other.path().join("models"))
+            .unwrap()
+            .count(),
+        0
+    );
+}
+
+#[cfg(unix)]
+fn whisper_fixture(directory: &std::path::Path, log: &std::path::Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = directory.join("whisper-cli");
+    let script = format!(
+        r#"#!/bin/sh
+printf '%s\n' "$@" > '{}'
+out=
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = '-of' ]; then shift; out="$1"; fi
+    shift
+done
+echo 'whisper_full_with_state: auto-detected language: de (p = 0.97)' >&2
+cat > "$out.srt" <<'SRT'
+1
+00:00:00,000 --> 00:00:02,500
+Did you know this?
+
+2
+00:00:02,500 --> 00:00:20,000
+Middle part of the story
+
+3
+00:00:20,000 --> 00:00:22,500
+And that is the end.
+
+4
+00:00:22,500 --> 00:00:25,000
+Outro
+SRT
+"#,
+        log.display()
+    );
+    std::fs::write(&path, script).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    path
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn videos_without_captions_are_transcribed_locally_and_get_editable_captions() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut engine = Automation::open(dir.path().join("data")).await.unwrap();
+    let data = dir.path().join("data").canonicalize().unwrap();
+    engine.downloader = fixture_downloader(dir.path(), false);
+    let args = dir.path().join("whisper-args");
+    engine.speech_program = Some(whisper_fixture(dir.path(), &args));
+    let (endpoint, model_server) = model_fixture(
+        r#"[{"start_ms":1000,"end_ms":22000,"title":"Hook","reason":"Stands alone"}]"#,
+    );
+    engine
+        .set_ai(AiConfig {
+            endpoint,
+            model: "fixture".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let style = CaptionStyle {
+        color: "#FFCC00".into(),
+        ..Default::default()
+    };
+    engine
+        .set_default_caption_style(style.clone())
+        .await
+        .unwrap();
+    assert!(
+        engine
+            .set_default_caption_style(CaptionStyle {
+                color: "yellow".into(),
+                ..Default::default()
+            })
+            .await
+            .is_err()
+    );
+    sqlx::query("INSERT INTO sources(url,channel_id,title,mode) VALUES ('u','UC1234567890123456789012','Channel','auto_export')").execute(&engine.pool).await.unwrap();
+    engine
+        .save_entries(
+            1,
+            &[Entry {
+                id: "abcdefghijk".into(),
+                title: "Talk".into(),
+            }],
+            false,
+        )
+        .await
+        .unwrap();
+    let folder = data.join("videos/1");
+    std::fs::create_dir_all(&folder).unwrap();
+    assert!(
+        std::process::Command::new("ffmpeg")
+            .args([
+                "-nostdin",
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:s=160x90:r=2",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=f=300:r=48000",
+                "-t",
+                "25",
+                "-c:v",
+                "libx264",
+                "-c:a",
+                "aac"
+            ])
+            .arg(folder.join("source.mp4"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    // Without a model the video waits for the user, naming what is missing.
+    assert!(engine.process_next().await.unwrap());
+    let parked = engine.snapshot().await.unwrap();
+    assert_eq!(parked.videos[0].state, "needs_input");
+    let error = parked.videos[0].error.clone().unwrap();
+    assert!(error.contains("download a speech model"), "{error}");
+    assert!(!error.contains("install whisper"), "{error}");
+    std::fs::create_dir_all(data.join("models")).unwrap();
+    std::fs::write(data.join("models/ggml-tiny.bin"), b"fixture").unwrap();
+    let status = engine.speech_status().await;
+    assert!(status.program.is_some());
+    assert_eq!(status.model, Some(data.join("models/ggml-tiny.bin")));
+
+    engine.retry_video(1).await.unwrap();
+    assert!(engine.process_next().await.unwrap());
+    model_server.join().unwrap();
+    let snapshot = engine.snapshot().await.unwrap();
+    assert_eq!(
+        snapshot.videos[0].state, "complete",
+        "{:?}",
+        snapshot.videos[0].error
+    );
+    assert_eq!(
+        snapshot.videos[0].transcript_language.as_deref(),
+        Some("de")
+    );
+    assert!(
+        snapshot
+            .events
+            .iter()
+            .any(|event| event.state == "transcribing")
+    );
+    let whisper = std::fs::read_to_string(&args).unwrap();
+    for expected in [
+        "-l\nauto\n",
+        "-osrt\n",
+        "--max-len\n32\n",
+        "--split-on-word\n",
+    ] {
+        assert!(whisper.contains(expected), "{expected}: {whisper}");
+    }
+    // No audio extraction or whisper output is left in the video folder.
+    let leftovers: Vec<_> = std::fs::read_dir(&folder)
+        .unwrap()
+        .filter_map(|entry| entry.unwrap().file_name().into_string().ok())
+        .filter(|name| name.starts_with(".tehom") || name.ends_with(".srt"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+    // The model's 1.0–22.0 s pick snapped to whole captions.
+    let clip = snapshot.clips[0].clone();
+    assert_eq!((clip.start_ms, clip.end_ms), (0, 22_500));
+    assert_eq!(
+        clip.captions,
+        [
+            cue(0, 2_500, "Did you know this?"),
+            cue(2_500, 20_000, "Middle part of the story"),
+            cue(20_000, 22_500, "And that is the end.")
+        ]
+    );
+    assert_eq!(clip.caption_style, style);
+    let output = clip.output_path.clone().unwrap();
+    let info = tehom_media::inspect(&output).unwrap();
+    assert_eq!((info.width, info.height), (1080, 1920));
+    assert!((info.duration - 22.5).abs() < 0.25);
+
+    // An untouched draft follows the transcript when its range changes.
+    let moved = engine
+        .save_clip_revision(clip.id, 2_500, 25_000)
+        .await
+        .unwrap();
+    let find = |snapshot: &EngineSnapshot, id: i64| {
+        snapshot.clips.iter().find(|c| c.id == id).unwrap().clone()
+    };
+    let revision = find(&engine.snapshot().await.unwrap(), moved);
+    assert_eq!(
+        revision.captions[0],
+        cue(0, 17_500, "Middle part of the story")
+    );
+    assert_eq!(revision.captions[2], cue(20_000, 22_500, "Outro"));
+
+    // Edits are validated, kept, and shifted rather than replaced.
+    for bad in [
+        vec![cue(0, 30_000, "too long")],
+        vec![cue(2_000, 3_000, "b"), cue(1_000, 2_000, "a")],
+        vec![cue(0, 1_000, " ")],
+    ] {
+        assert!(
+            engine
+                .save_clip_captions(clip.id, bad, CaptionStyle::default(), SoundEffect::None)
+                .await
+                .is_err()
+        );
+    }
+    let edited = CaptionStyle {
+        uppercase: true,
+        position: tehom_core::CaptionPosition::Top,
+        ..Default::default()
+    };
+    engine
+        .save_clip_captions(
+            clip.id,
+            vec![cue(0, 2_000, "EDITED {hook}"), cue(5_000, 8_000, "second")],
+            edited.clone(),
+            SoundEffect::Pop,
+        )
+        .await
+        .unwrap();
+    let shifted = engine
+        .save_clip_revision(clip.id, 1_000, 22_500)
+        .await
+        .unwrap();
+    let revision = find(&engine.snapshot().await.unwrap(), shifted);
+    assert_eq!(
+        revision.captions,
+        [cue(0, 1_000, "EDITED {hook}"), cue(4_000, 7_000, "second")]
+    );
+    assert_eq!(revision.caption_style, edited);
+    assert_eq!(revision.sound_effect, SoundEffect::Pop);
+
+    // Re-rendering replaces the clip's own export in place after validation.
+    let before: String = sqlx::query_scalar("SELECT export_identity FROM clips WHERE id=?")
+        .bind(clip.id)
+        .fetch_one(&engine.pool)
+        .await
+        .unwrap();
+    let rendered = engine.render_clip(clip.id).await.unwrap();
+    assert_eq!(rendered, output);
+    let after = tehom_media::export_identity(&output).unwrap().unwrap();
+    assert_ne!(after, before);
+    assert!(tehom_media::has_audio(&output).unwrap());
+    // A clip never exported gets its automatic export path.
+    let fresh = engine.render_clip(shifted).await.unwrap();
+    assert_eq!(
+        fresh.file_name().unwrap().to_str().unwrap(),
+        format!("tehom-1-{shifted}.mp4")
+    );
+    assert!(find(&engine.snapshot().await.unwrap(), shifted).output_available);
+    // A user file at the export path is never overwritten.
+    std::fs::write(&output, b"user file").unwrap();
+    let error = engine.render_clip(clip.id).await.unwrap_err().to_string();
+    assert!(error.starts_with("Needs input:"), "{error}");
+    assert_eq!(std::fs::read(&output).unwrap(), b"user file");
+}
+
+// Instagram publishing against a loopback mock; real Instagram is never contacted.
+mod instagram {
+    use super::*;
+    use wiremock::matchers::{method, path, path_regex};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// `Bearer IGT:2:` + base64 of {"ds_user_id":"4242","sessionid":"4242%3Aabc%3A1"}.
+    const AUTH: &str =
+        "Bearer IGT:2:eyJkc191c2VyX2lkIjoiNDI0MiIsInNlc3Npb25pZCI6IjQyNDIlM0FhYmMlM0ExIn0=";
+    /// Base64 of a throwaway RSA-1024 public key PEM for password encryption.
+    const PUBLIC_KEY: &str = "LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUlHZk1BMEdDU3FHU0liM0RRRUJBUVVBQTRHTkFEQ0JpUUtCZ1FDcWErTkRjSWdpK2RrWlE5aUI4KzZxTy9FZwpWazRuUm92UVRSNmx4ODBiR09zaWordng5Q1NwdUI4dFZuNThDcWltcS9vYUVVcitiRkdZdHpCcm8yQ3l6cnhiCnRyUW1mVnQ1ZktXQ0ZFcVRiS0o3aXVBME9hZ0pvbjEwdUE2ZVZJOWk4empIQ1BIamZrZkQycXBFN1RMTkdHNk0KSjZNL0Z5V2Y4VE9obmowcXNRSURBUUFCCi0tLS0tRU5EIFBVQkxJQyBLRVktLS0tLQo=";
+    const USER: &str = r#"{"pk":4242,"username":"tehom","full_name":"Tehom Test"}"#;
+
+    async fn server(login_status: u16, login_body: &str) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/launcher/sync/"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("ig-set-password-encryption-key-id", "201")
+                    .insert_header("ig-set-password-encryption-pub-key", PUBLIC_KEY)
+                    .set_body_string(r#"{"status":"ok"}"#),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/accounts/login/"))
+            .respond_with(
+                ResponseTemplate::new(login_status)
+                    .insert_header("ig-set-authorization", AUTH)
+                    .set_body_string(login_body),
+            )
+            .mount(&server)
+            .await;
+        server
+    }
+    fn logged_in() -> String {
+        format!(r#"{{"logged_in_user":{USER},"status":"ok"}}"#)
+    }
+    /// Upload endpoints; `configure` answers the final Reel configure call.
+    async fn mount_upload(server: &MockServer, status: u16, configure: &str) {
+        Mock::given(path_regex(
+            "^/(upload_settings|rupload_igvideo|rupload_igphoto)/",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"status":"ok"}"#))
+        .mount(server)
+        .await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/media/configure_to_clips/"))
+            .respond_with(ResponseTemplate::new(status).set_body_string(configure))
+            .mount(server)
+            .await;
+    }
+    const PUBLISHED: &str =
+        r#"{"media":{"pk":3300000000000000001,"code":"DAbc123"},"status":"ok"}"#;
+    async fn engine(dir: &std::path::Path, server: &MockServer) -> Automation {
+        let mut engine = Automation::open(dir.into()).await.unwrap();
+        engine.instagram_base = Some(server.uri());
+        engine.auto_publish_spacing = Duration::ZERO;
+        engine
+    }
+    fn mp4(path: &std::path::Path, size: &str) {
+        assert!(
+            std::process::Command::new("ffmpeg")
+                .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i"])
+                .arg(format!("color=c=blue:s={size}:r=10"))
+                .args(["-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p"])
+                .arg(path)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    /// An exported clip of `size`; returns its id.
+    async fn exported_clip(engine: &Automation, dir: &std::path::Path, size: &str) -> i64 {
+        sqlx::query("INSERT OR IGNORE INTO sources(id,url,channel_id,title,mode) VALUES (1,'u','UC1234567890123456789012','Channel','manual')").execute(&engine.pool).await.unwrap();
+        sqlx::query("INSERT OR IGNORE INTO videos(id,source_id,external_id,title,url,state) VALUES (1,1,'abcdefghijk','Video','u','complete')").execute(&engine.pool).await.unwrap();
+        let file = dir.join(format!("clip-{size}.mp4"));
+        mp4(&file, size);
+        sqlx::query_scalar("INSERT INTO clips(video_id,title,start_ms,end_ms,output_path,export_identity) VALUES (1,'Clip',0,20000+(SELECT COUNT(*) FROM clips),?,?) RETURNING id")
+            .bind(file.to_str().unwrap())
+            .bind(format!("rev-{size}"))
+            .fetch_one(&engine.pool)
+            .await
+            .unwrap()
+    }
+    async fn login(engine: &Automation) -> Account {
+        match engine
+            .instagram_login(" tehom ", "s3cret pass")
+            .await
+            .unwrap()
+        {
+            AccountLogin::Done(account) => account,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn login_publish_duplicate_and_remove() {
+        let server = server(200, &logged_in()).await;
+        mount_upload(&server, 200, PUBLISHED).await;
+        let dir = tempfile::tempdir().unwrap();
+        let engine = engine(dir.path(), &server).await;
+        let account = login(&engine).await;
+        assert_eq!(
+            (account.username.as_str(), account.full_name.as_str()),
+            ("tehom", "Tehom Test")
+        );
+        assert!(!account.needs_login);
+        // Signing in again updates the same account.
+        assert_eq!(login(&engine).await.id, account.id);
+        let snapshot = engine.snapshot().await.unwrap();
+        assert_eq!(snapshot.accounts.len(), 1);
+        assert_eq!(snapshot.accounts[0].platform, Platform::Instagram);
+        assert_eq!(
+            engine
+                .secrets
+                .lock()
+                .unwrap()
+                .get("instagram:4242")
+                .map(String::as_str),
+            Some(AUTH)
+        );
+        let stored: String = sqlx::query_scalar("SELECT session FROM accounts")
+            .fetch_one(&engine.pool)
+            .await
+            .unwrap();
+        assert!(
+            !stored.contains("IGT:2") && !stored.contains("s3cret"),
+            "{stored}"
+        );
+
+        let clip = exported_clip(&engine, dir.path(), "90x160").await;
+        let long = "x".repeat(2201);
+        assert!(engine.publish_clip(clip, account.id, &long).await.is_err());
+        let publication = engine
+            .publish_clip(clip, account.id, "  Hello #tehom  ")
+            .await
+            .unwrap();
+        assert_eq!(publication.state, "published");
+        assert_eq!(
+            publication.url.as_deref(),
+            Some("https://www.instagram.com/reel/DAbc123/")
+        );
+        let requests = server.received_requests().await.unwrap();
+        let cover = requests
+            .iter()
+            .find(|r| r.url.path().starts_with("/rupload_igphoto/"))
+            .unwrap();
+        assert!(cover.body.starts_with(&[0xff, 0xd8]), "cover is a JPEG");
+        let configure = requests
+            .iter()
+            .rfind(|r| r.url.path() == "/api/v1/media/configure_to_clips/")
+            .unwrap();
+        assert!(String::from_utf8_lossy(&configure.body).contains("Hello+%23tehom%22"));
+
+        let duplicate = engine
+            .publish_clip(clip, account.id, "again")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(duplicate.contains("already published"), "{duplicate}");
+
+        let landscape = exported_clip(&engine, dir.path(), "160x90").await;
+        let error = engine
+            .publish_clip(landscape, account.id, "")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("vertical video"), "{error}");
+        let unexported: i64 = sqlx::query_scalar("INSERT INTO clips(video_id,title,start_ms,end_ms) VALUES (1,'Draft',0,30000) RETURNING id").fetch_one(&engine.pool).await.unwrap();
+        let error = engine
+            .publish_clip(unexported, account.id, "")
+            .await
+            .unwrap_err();
+        assert_eq!(error.to_string(), "Needs input: export this clip first");
+
+        let snapshot = engine.snapshot().await.unwrap();
+        let states: Vec<_> = snapshot
+            .publications
+            .iter()
+            .map(|p| p.state.as_str())
+            .collect();
+        assert_eq!(states, ["failed", "published"]);
+
+        engine.set_auto_publish(Some(account.id)).await.unwrap();
+        assert_eq!(
+            engine.snapshot().await.unwrap().auto_publish_account,
+            Some(account.id)
+        );
+        engine.remove_account(account.id).await.unwrap();
+        let snapshot = engine.snapshot().await.unwrap();
+        assert!(snapshot.accounts.is_empty());
+        assert_eq!(snapshot.auto_publish_account, None);
+        assert!(engine.secrets.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn two_factor_sign_in() {
+        let server = server(400, r#"{"message":"","two_factor_required":true,"two_factor_info":{"username":"tehom","two_factor_identifier":"TFID","sms_two_factor_on":true,"totp_two_factor_on":false,"obfuscated_phone_number":"12"},"error_type":"two_factor_required","status":"fail"}"#).await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/accounts/two_factor_login/"))
+            .respond_with(
+                ResponseTemplate::new(400)
+                    .set_body_string(r#"{"message":"This code isn't valid","status":"fail"}"#),
+            )
+            .up_to_n_times(1)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/accounts/two_factor_login/"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("ig-set-authorization", AUTH)
+                    .set_body_string(logged_in()),
+            )
+            .with_priority(2)
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let engine = engine(dir.path(), &server).await;
+        assert!(engine.instagram_two_factor("123456").await.is_err());
+        let login = engine.instagram_login("tehom", "pw").await.unwrap();
+        assert!(
+            matches!(&login, AccountLogin::TwoFactor { hint: Some(hint), app: false } if hint == "12"),
+            "{login:?}"
+        );
+        let error = engine.instagram_two_factor("000000").await.unwrap_err();
+        assert!(
+            error.to_string().contains("code was not accepted"),
+            "{error}"
+        );
+        // A rejected code keeps the sign-in pending.
+        let account = engine.instagram_two_factor(" 123456 ").await.unwrap();
+        assert_eq!(account.username, "tehom");
+        assert!(
+            engine
+                .secrets
+                .lock()
+                .unwrap()
+                .contains_key("instagram:4242")
+        );
+        assert!(engine.instagram_two_factor("123456").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn expired_session_marks_account() {
+        let server = server(200, &logged_in()).await;
+        Mock::given(path_regex("^/upload_settings/"))
+            .respond_with(
+                ResponseTemplate::new(403)
+                    .set_body_string(r#"{"message":"login_required","status":"fail"}"#),
+            )
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let engine = engine(dir.path(), &server).await;
+        let account = login(&engine).await;
+        let clip = exported_clip(&engine, dir.path(), "90x160").await;
+        let error = engine.publish_clip(clip, account.id, "").await.unwrap_err();
+        assert_eq!(error.to_string(), "Needs input: sign in to Instagram again");
+        let snapshot = engine.snapshot().await.unwrap();
+        assert!(snapshot.accounts[0].needs_login);
+        assert_eq!(snapshot.publications[0].state, "failed");
+        // A failed attempt does not block a later one; a missing secret also asks to sign in.
+        engine.secrets.lock().unwrap().clear();
+        sqlx::query("UPDATE accounts SET needs_login=0")
+            .execute(&engine.pool)
+            .await
+            .unwrap();
+        let error = engine.publish_clip(clip, account.id, "").await.unwrap_err();
+        assert_eq!(error.to_string(), "Needs input: sign in to Instagram again");
+        assert!(engine.snapshot().await.unwrap().accounts[0].needs_login);
+    }
+
+    #[tokio::test]
+    async fn interrupted_upload_is_failed_on_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = Automation::open(dir.path().into()).await.unwrap();
+        sqlx::query("INSERT INTO publications(clip_id,account_id,revision,state) VALUES (1,1,'r','uploading')").execute(&engine.pool).await.unwrap();
+        engine.pool.close().await;
+        drop(engine);
+        let engine = Automation::open(dir.path().into()).await.unwrap();
+        let publication = &engine.snapshot().await.unwrap().publications[0];
+        assert_eq!(publication.state, "failed");
+        assert!(
+            publication
+                .error
+                .as_deref()
+                .unwrap()
+                .starts_with("Interrupted")
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_publish_failure_keeps_the_export() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let model = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let _ = stream.read(&mut [0; 8192]).unwrap();
+            let body = r#"{"message":{"content":"[{\"start_ms\":0,\"end_ms\":20000,\"title\":\"Fixture clip\",\"reason\":\"Test fixture\"}]"}}"#;
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+        });
+        let server = server(200, &logged_in()).await;
+        mount_upload(
+            &server,
+            400,
+            r#"{"message":"feedback_required","feedback_message":"Blocked","status":"fail"}"#,
+        )
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        let engine = engine(dir.path(), &server).await;
+        let account = login(&engine).await;
+        engine.set_auto_publish(Some(account.id)).await.unwrap();
+        engine
+            .set_ai(AiConfig {
+                endpoint,
+                model: "fixture".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO sources(url,channel_id,title,mode) VALUES ('u','UC1234567890123456789012','Channel','auto_export')").execute(&engine.pool).await.unwrap();
+        engine
+            .save_entries(
+                1,
+                &[Entry {
+                    id: "abcdefghijk".into(),
+                    title: "Fixture".into(),
+                }],
+                false,
+            )
+            .await
+            .unwrap();
+        let folder = dir.path().join("videos/1");
+        std::fs::create_dir_all(&folder).unwrap();
+        assert!(
+            std::process::Command::new("ffmpeg")
+                .args([
+                    "-nostdin",
+                    "-v",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "color=c=black:s=160x90:r=1",
+                    "-t",
+                    "25",
+                    "-c:v",
+                    "libx264"
+                ])
+                .arg(folder.join("source.mp4"))
+                .status()
+                .unwrap()
+                .success()
+        );
+        std::fs::write(
+            folder.join("source.en.vtt"),
+            "WEBVTT\n\n00:00:00.000 --> 00:00:25.000\nSynthetic fixture transcript\n",
+        )
+        .unwrap();
+        assert!(engine.process_next().await.unwrap());
+        model.join().unwrap();
+        let snapshot = engine.snapshot().await.unwrap();
+        assert_eq!(
+            snapshot.videos[0].state, "complete",
+            "{:?}",
+            snapshot.videos[0].error
+        );
+        assert!(snapshot.clips[0].output_available);
+        let publication = &snapshot.publications[0];
+        assert_eq!(publication.state, "failed");
+        assert_eq!(
+            publication.error.as_deref(),
+            Some("Instagram refused the upload: feedback_required: Blocked")
+        );
+        assert!(
+            snapshot.events.iter().any(|e| e.state == "publish_failed"),
+            "{:?}",
+            snapshot.events
+        );
+    }
+}
+
+#[tokio::test]
+async fn generic_feeds_and_media_must_be_public_https() {
+    for allowed in [
+        "https://example.com/feed.xml",
+        "https://podcasts.example.org:443/rss",
+        "https://93.184.216.34/video.mp4",
+    ] {
+        assert!(public_url(allowed).is_ok(), "{allowed}");
+    }
+    for refused in [
+        "http://example.com/feed.xml",
+        "https://user:pass@example.com/feed.xml",
+        "https://example.com:8443/feed.xml",
+        "https://localhost/feed.xml",
+        "https://printer.local/feed.xml",
+        "https://intranet/feed.xml",
+        "https://127.0.0.1/feed.xml",
+        "https://10.1.2.3/feed.xml",
+        "https://172.16.0.1/feed.xml",
+        "https://192.168.1.1/feed.xml",
+        "https://169.254.169.254/latest",
+        "https://100.64.0.1/feed.xml",
+        "https://224.0.0.1/feed.xml",
+        "https://0.0.0.0/feed.xml",
+        "https://255.255.255.255/feed.xml",
+        "https://[::1]/feed.xml",
+        "https://[fe80::1]/feed.xml",
+        "https://[fd00::1]/feed.xml",
+        "https://[::ffff:127.0.0.1]/feed.xml",
+        "https://[64:ff9b::a00:1]/feed.xml",
+        "ftp://example.com/feed.xml",
+    ] {
+        assert!(public_url(refused).is_err(), "{refused}");
+    }
+    assert!(public_ip("2606:4700::1".parse().unwrap()));
+    use reqwest::dns::Resolve;
+    let local = PublicOnly.resolve("localhost".parse().unwrap()).await;
+    assert!(local.is_err(), "localhost must never resolve for a feed");
+}
+
+#[test]
+fn feed_entries_map_to_video_enclosures_then_links() {
+    let xml = br#"<?xml version="1.0"?><rss version="2.0"><channel><title>Fixture show</title>
+<item><guid>ep-3</guid><title>Video episode</title><pubDate>Wed, 03 Jan 2024 00:00:00 GMT</pubDate>
+<enclosure url="https://cdn.example.com/ep3.mp4" type="video/mp4" length="1"/><link>https://example.com/ep3</link></item>
+<item><guid>ep-2</guid><title>Audio episode</title><pubDate>Tue, 02 Jan 2024 00:00:00 GMT</pubDate>
+<enclosure url="https://cdn.example.com/ep2.mp3" type="audio/mpeg" length="1"/><link>https://example.com/ep2</link></item>
+<item><guid>ep-1</guid><title>Audio only</title><pubDate>Mon, 01 Jan 2024 00:00:00 GMT</pubDate>
+<enclosure url="https://cdn.example.com/ep1.mp3" type="audio/mpeg" length="1"/></item>
+<item><guid>ep-3</guid><title>Duplicate</title><link>https://example.com/dup</link></item>
+<item><title>No id</title><enclosure url="https://cdn.example.com/noid.mp4" type="video/mp4" length="1"/></item>
+</channel></rss>"#;
+    let base = reqwest::Url::parse("https://example.com/feed.xml").unwrap();
+    let (title, items) = feed_items(xml, &base).unwrap();
+    assert_eq!(title, "Fixture show");
+    let found: Vec<_> = items
+        .iter()
+        .map(|i| (i.id.as_str(), i.media.as_str()))
+        .collect();
+    assert_eq!(found[0], ("ep-3", "https://cdn.example.com/ep3.mp4"));
+    assert_eq!(found[1], ("ep-2", "https://example.com/ep2"));
+    assert!(found.iter().all(|(id, _)| *id != "ep-1"));
+    assert_eq!(found.iter().filter(|(id, _)| *id == "ep-3").count(), 1);
+    assert!(
+        found
+            .iter()
+            .any(|(_, media)| *media == "https://cdn.example.com/noid.mp4")
+    );
+    let namespaced = feed_found(7, items);
+    assert!(namespaced.iter().all(|i| i.id.starts_with("feed:7:")));
+    assert!(feed_items(b"<html><body>Hello</body></html>", &base).is_err());
+}
+
+#[tokio::test]
+async fn automation_settings_are_validated_persisted_and_shape_clip_rules() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Automation::open(dir.path().into()).await.unwrap();
+    assert_eq!(
+        engine.snapshot().await.unwrap().automation,
+        AutomationSettings::default()
+    );
+    let custom = AutomationSettings {
+        check_minutes: 5,
+        max_clips: 2,
+        min_clip_seconds: 10,
+        max_clip_seconds: 30,
+        keep_downloads: false,
+        new_source_mode: AutomationMode::Manual,
+        transcribe_locally: false,
+    };
+    engine.set_automation(custom.clone()).await.unwrap();
+    assert!(
+        engine
+            .set_automation(AutomationSettings {
+                max_clip_seconds: 200,
+                ..custom.clone()
+            })
+            .await
+            .is_err()
+    );
+    assert_eq!(engine.snapshot().await.unwrap().automation, custom);
+    assert!(!engine.keep_downloads().await.unwrap());
+    // The CLI's [storage] keep_downloads still overrides.
+    engine.set_keep_downloads(true).await.unwrap();
+    assert!(engine.automation().await.unwrap().keep_downloads);
+    let prompt = clip_instructions(&custom);
+    assert!(prompt.contains("at most 2 objects") && prompt.contains("10000–30000ms"));
+    let candidates = (0..4)
+        .map(|n| Candidate {
+            start_ms: n * 40_000,
+            end_ms: n * 40_000 + if n == 0 { 35_000 } else { 15_000 },
+            title: "T".into(),
+            reason: String::new(),
+        })
+        .collect();
+    let valid = validate_candidates(candidates, 1_000_000, &custom);
+    assert_eq!(valid.len(), 2, "35 s is too long and only two are kept");
+    assert!(valid.iter().all(|c| c.start_ms > 0));
+}
+
+/// Serves `routes` (path, status line, content type, body) on loopback for
+/// as many requests as arrive.
+#[cfg(unix)]
+fn route_fixture(routes: Vec<(String, String, String, Vec<u8>)>) -> String {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut request = Vec::new();
+            let mut buffer = [0; 4096];
+            while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                match stream.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => request.extend_from_slice(&buffer[..n]),
+                }
+            }
+            let text = String::from_utf8_lossy(&request);
+            let path = text.split_whitespace().nth(1).unwrap_or("").to_owned();
+            let (status, kind, body) = routes
+                .iter()
+                .find(|(route, ..)| *route == path)
+                .map(|(_, s, k, b)| (s.clone(), k.clone(), b.clone()))
+                .unwrap_or(("404 Not Found".into(), "text/plain".into(), Vec::new()));
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(&body);
+        }
+    });
+    base
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn generic_feed_is_watched_downloaded_directly_and_clipped() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut engine = Automation::open(dir.path().join("data")).await.unwrap();
+    let data = dir.path().join("data").canonicalize().unwrap();
+    engine.feed_loopback = true;
+    // yt-dlp must not be used for a direct enclosure.
+    engine.downloader = dir.path().join("missing-yt-dlp");
+    let args = dir.path().join("whisper-args");
+    engine.speech_program = Some(whisper_fixture(dir.path(), &args));
+    std::fs::create_dir_all(data.join("models")).unwrap();
+    std::fs::write(data.join("models/ggml-tiny.bin"), b"fixture").unwrap();
+    let video = dir.path().join("talk.mp4");
+    assert!(
+        std::process::Command::new("ffmpeg")
+            .args([
+                "-nostdin",
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:s=160x90:r=2",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=f=300:r=48000",
+                "-t",
+                "25",
+                "-c:v",
+                "libx264",
+                "-c:a",
+                "aac",
+            ])
+            .arg(&video)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let feed = |base: &str| {
+        format!(
+            r#"<?xml version="1.0"?><rss version="2.0"><channel><title>Fixture show</title>
+<item><guid>new</guid><title>Newest talk</title><pubDate>Tue, 02 Jan 2024 00:00:00 GMT</pubDate><enclosure url="{base}/talk.mp4" type="video/mp4" length="1"/></item>
+<item><guid>old</guid><title>Older talk</title><pubDate>Mon, 01 Jan 2024 00:00:00 GMT</pubDate><enclosure url="{base}/old.mp4" type="video/mp4" length="1"/></item>
+<item><guid>audio</guid><title>Audio only</title><enclosure url="{base}/audio.mp3" type="audio/mpeg" length="1"/></item>
+</channel></rss>"#
+        )
+    };
+    // Routes are fixed before the port is known, so the feed is served from
+    // a second fixture that points at the first.
+    let media = route_fixture(vec![(
+        "/talk.mp4".into(),
+        "200 OK".into(),
+        "video/mp4".into(),
+        std::fs::read(&video).unwrap(),
+    )]);
+    let server = route_fixture(vec![
+        (
+            "/feed.xml".into(),
+            "200 OK".into(),
+            "application/rss+xml".into(),
+            feed(&media).into_bytes(),
+        ),
+        (
+            "/moved".into(),
+            "302 Found\r\nLocation: /feed.xml".into(),
+            "text/plain".into(),
+            Vec::new(),
+        ),
+        (
+            "/evil".into(),
+            "302 Found\r\nLocation: https://10.0.0.1/feed.xml".into(),
+            "text/plain".into(),
+            Vec::new(),
+        ),
+        (
+            "/page".into(),
+            "200 OK".into(),
+            "text/html".into(),
+            b"<html><body>Hi</body></html>".to_vec(),
+        ),
+    ]);
+    // A redirect to a private address and a plain web page are refused.
+    assert!(
+        engine
+            .add_source(&format!("{server}/evil"), AutomationMode::AutoDraft)
+            .await
+            .is_err()
+    );
+    assert!(
+        engine
+            .add_source(&format!("{server}/page"), AutomationMode::AutoDraft)
+            .await
+            .is_err()
+    );
+    assert!(engine.snapshot().await.unwrap().sources.is_empty());
+    let (endpoint, model_server) = model_fixture(
+        r#"[{"start_ms":1000,"end_ms":22000,"title":"Hook","reason":"Stands alone"}]"#,
+    );
+    engine
+        .set_ai(AiConfig {
+            endpoint,
+            model: "fixture".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    engine
+        .set_automation(AutomationSettings {
+            transcribe_locally: false,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let source = engine
+        .add_source(&format!("{server}/moved"), AutomationMode::AutoDraft)
+        .await
+        .unwrap();
+    assert_eq!(source.title, "Fixture show");
+    assert!(source.channel_id.starts_with("feed:"));
+    let snapshot = engine.snapshot().await.unwrap();
+    let states: Vec<_> = snapshot
+        .videos
+        .iter()
+        .map(|v| (v.title.as_str(), v.state.as_str()))
+        .collect();
+    assert_eq!(
+        states.len(),
+        2,
+        "the audio-only episode is skipped: {states:?}"
+    );
+    assert!(states.contains(&("Newest talk", "queued")));
+    assert!(states.contains(&("Older talk", "discovered")));
+    let id = snapshot
+        .videos
+        .iter()
+        .find(|v| v.title == "Newest talk")
+        .unwrap()
+        .id;
+    assert!(
+        snapshot
+            .videos
+            .iter()
+            .all(|v| v.external_id.starts_with("feed:"))
+    );
+
+    // Transcription off: the video is downloaded, then waits for captions.
+    assert!(engine.process_next().await.unwrap());
+    let parked = engine.snapshot().await.unwrap();
+    let video = parked.videos.iter().find(|v| v.id == id).unwrap();
+    assert_eq!(video.state, "needs_input", "{:?}", video.error);
+    assert!(video.error.as_ref().unwrap().contains("turned off"));
+    assert!(data.join(format!("videos/{id}/source.mp4")).is_file());
+
+    engine
+        .set_automation(AutomationSettings::default())
+        .await
+        .unwrap();
+    engine.retry_video(id).await.unwrap();
+    assert!(engine.process_next().await.unwrap());
+    model_server.join().unwrap();
+    let done = engine.snapshot().await.unwrap();
+    let video = done.videos.iter().find(|v| v.id == id).unwrap();
+    assert_eq!(video.state, "complete", "{:?}", video.error);
+    assert_eq!(done.clips.len(), 1);
+    // Later checks find nothing new and touch only loopback.
+    assert_eq!(engine.check_now().await.unwrap(), 0);
+    let requests = engine.requests.lock().unwrap().clone();
+    assert!(
+        requests.iter().all(|r| r.starts_with("http://127.0.0.1:")),
+        "{requests:?}"
+    );
+    // Production rules: a non-HTTPS feed gets today's YouTube error.
+    engine.feed_loopback = false;
+    let error = engine
+        .add_source("http://example.com/feed.xml", AutomationMode::AutoDraft)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("YouTube"), "{error}");
+    let error = engine
+        .add_source(&format!("{server}/feed.xml"), AutomationMode::AutoDraft)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert_eq!(error, "Credentials and ports are not allowed");
+}
+
+#[test]
+fn speech_program_is_found_in_the_data_folder_before_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let bin = dir.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let program = bin.join(format!("whisper-cli{}", std::env::consts::EXE_SUFFIX));
+    std::fs::write(&program, b"fixture").unwrap();
+    // Test binaries have no whisper-cli beside them.
+    assert_eq!(speech_program(dir.path()), Some(program));
+}
+
+#[tokio::test]
+async fn appearance_and_sidebar_width_persist() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Automation::open(dir.path().into()).await.unwrap();
+    let snapshot = engine.snapshot().await.unwrap();
+    assert_eq!(snapshot.appearance, Appearance::System);
+    assert_eq!(snapshot.sidebar_width, tehom_core::SIDEBAR_WIDTH);
+    engine.set_appearance(Appearance::Dark).await.unwrap();
+    engine.set_sidebar_width(360).await.unwrap();
+    assert!(engine.set_sidebar_width(1000).await.is_err());
+    engine.pool.close().await;
+    drop(engine);
+    let snapshot = Automation::read_snapshot(dir.path().into()).await.unwrap();
+    assert_eq!(snapshot.appearance, Appearance::Dark);
+    assert_eq!(snapshot.sidebar_width, 360);
 }

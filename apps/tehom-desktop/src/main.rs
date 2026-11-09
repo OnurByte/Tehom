@@ -1,4 +1,11 @@
+// A GUI program on Windows: no console window opens beside it.
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 use gpui_kit::*;
+
+/// Ties windows, taskbar button, Start-menu shortcut (install.ps1) and Linux
+/// desktop entry (org.tehom.Tehom.desktop) to one application.
+const APP_ID: &str = "org.tehom.Tehom";
 
 /// Packaged Windows builds carry GStreamer beside the executable. Pointing it
 /// there keeps plug-ins of another GStreamer on the computer from mixing in.
@@ -30,6 +37,16 @@ fn main() {
     let first = args.next();
     // The release workflow proves with this that a packed build decodes video.
     if first.as_deref() == Some(std::ffi::OsStr::new("--check-preview")) {
+        // A GUI-subsystem program has no console; borrow the caller's so the
+        // error below is visible when run from cmd or PowerShell.
+        #[cfg(windows)]
+        {
+            unsafe extern "system" {
+                fn AttachConsole(process: u32) -> i32;
+            }
+            // SAFETY: plain Win32 call; ATTACH_PARENT_PROCESS = u32::MAX.
+            unsafe { AttachConsole(u32::MAX) };
+        }
         let path = args
             .next()
             .map(std::path::PathBuf::from)
@@ -42,6 +59,8 @@ fn main() {
     }
     let initial_path = first.map(std::path::PathBuf::from);
     application().with_assets(tehom_ui::Assets).run(move |cx| {
+        // Sets the Windows AppUserModelID; must precede the first window.
+        cx.set_app_identity(APP_ID, "Tehom");
         if let Err(error) = cx.text_system().add_fonts(vec![
             std::borrow::Cow::Borrowed(include_bytes!("../../../assets/fonts/Geist-Regular.ttf")),
             std::borrow::Cow::Borrowed(include_bytes!(
@@ -68,6 +87,7 @@ fn main() {
                 size(px(1100.), px(780.)),
                 cx,
             ))),
+            app_id: Some(APP_ID.into()),
             ..Default::default()
         };
         open_window(options, cx, move |window, cx| {

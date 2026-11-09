@@ -148,7 +148,7 @@ pub fn export_cancellable(
     end: f64,
     cancelled: &AtomicBool,
 ) -> io::Result<()> {
-    render(input, output, start, end, cancelled, None, None)
+    render(input, output, start, end, cancelled, None, None, None)
 }
 
 /// Frame geometry for an automatic export.
@@ -220,6 +220,65 @@ pub fn export_framed_observed(
     framing: Framing,
     progress: Option<&dyn Fn(f64)>,
 ) -> io::Result<()> {
+    export_overlaid(
+        input,
+        output,
+        start,
+        end,
+        cancelled,
+        identity,
+        framing,
+        progress,
+        &Overlay::default(),
+    )
+}
+
+/// A short sound mixed in at the start of a clip, synthesized by FFmpeg.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Sound {
+    #[default]
+    None,
+    Whoosh,
+    Pop,
+}
+impl Sound {
+    /// The lavfi source and the shaping filters applied to it.
+    fn synth(self) -> Option<(&'static str, &'static str)> {
+        match self {
+            Self::None => None,
+            Self::Whoosh => Some((
+                "anoisesrc=d=0.6:c=pink:r=48000:a=0.5",
+                "highpass=f=400,lowpass=f=5000,afade=t=in:d=0.3:curve=exp,afade=t=out:st=0.3:d=0.3",
+            )),
+            Self::Pop => Some((
+                "sine=f=880:d=0.15:r=48000",
+                "afade=t=in:d=0.005,afade=t=out:st=0.01:d=0.14,volume=0.7",
+            )),
+        }
+    }
+}
+
+/// Extra layers for a framed export: an ASS caption script burned in after
+/// framing, and an intro sound mixed under the original audio.
+#[derive(Debug, Clone, Default)]
+pub struct Overlay {
+    pub subtitles: Option<String>,
+    pub sound: Sound,
+}
+
+/// `export_framed_observed` with burned-in captions and an intro sound.
+#[allow(clippy::too_many_arguments)]
+pub fn export_overlaid(
+    input: &Path,
+    output: &Path,
+    start: f64,
+    end: f64,
+    cancelled: &AtomicBool,
+    identity: &str,
+    framing: Framing,
+    progress: Option<&dyn Fn(f64)>,
+    overlay: &Overlay,
+) -> io::Result<()> {
     if identity.is_empty()
         || identity.len() > 128
         || !identity
@@ -239,7 +298,263 @@ pub fn export_framed_observed(
         cancelled,
         Some((identity, framing)),
         progress,
+        Some(overlay),
     )
+}
+
+/// Where captions sit on the frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Placement {
+    Top,
+    Middle,
+    #[default]
+    Bottom,
+}
+
+/// Caption appearance; colors are `#RRGGBB`.
+#[derive(Debug, Clone, Copy)]
+pub struct CaptionLook<'a> {
+    pub color: &'a str,
+    pub outline: &'a str,
+    /// Text size relative to the default (1.0).
+    pub scale: f64,
+    pub placement: Placement,
+    pub uppercase: bool,
+}
+
+/// `#RRGGBB` as an opaque ASS `&HAABBGGRR` color.
+fn ass_color(hex: &str) -> io::Result<String> {
+    let digits = hex
+        .strip_prefix('#')
+        .filter(|d| d.len() == 6 && d.bytes().all(|b| b.is_ascii_hexdigit()))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Caption color must look like #FFFFFF, not {hex:?}"),
+            )
+        })?
+        .to_ascii_uppercase();
+    Ok(format!(
+        "&H00{}{}{}",
+        &digits[4..6],
+        &digits[2..4],
+        &digits[0..2]
+    ))
+}
+
+/// Caption text with everything ASS would interpret neutralized: braces
+/// start override tags and backslashes start escapes, so neither survives.
+fn ass_text(text: &str, uppercase: bool) -> String {
+    let text = if uppercase {
+        text.to_uppercase()
+    } else {
+        text.to_owned()
+    };
+    let mut escaped = String::new();
+    for c in text.trim().chars() {
+        match c {
+            '{' => escaped.push('('),
+            '}' => escaped.push(')'),
+            '\\' => escaped.push('/'),
+            '\n' => escaped.push_str("\\N"),
+            c if c.is_control() => escaped.push(' '),
+            c => escaped.push(c),
+        }
+    }
+    escaped
+}
+
+/// Builds an ASS script for a `width`×`height` output: bold sans with a thick
+/// outline, kept clear of the areas short-video apps cover with buttons.
+pub fn ass_subtitles(
+    cues: &[(u64, u64, &str)],
+    look: &CaptionLook,
+    width: u32,
+    height: u32,
+) -> io::Result<String> {
+    let (primary, outline) = (ass_color(look.color)?, ass_color(look.outline)?);
+    let (w, h) = (f64::from(width), f64::from(height));
+    let font = (w.min(h) * 0.075 * look.scale.clamp(0.5, 2.0))
+        .round()
+        .max(8.0);
+    let border = (font * 0.09).round().max(2.0);
+    let tall = height > width;
+    let (alignment, margin) = match look.placement {
+        Placement::Top => (8, h * if tall { 0.14 } else { 0.07 }),
+        Placement::Middle => (5, 0.0),
+        Placement::Bottom => (2, h * if tall { 0.20 } else { 0.07 }),
+    };
+    let side = (w * 0.08).round();
+    let clock = |ms: u64| {
+        format!(
+            "{}:{:02}:{:02}.{:02}",
+            ms / 3_600_000,
+            ms / 60_000 % 60,
+            ms / 1000 % 60,
+            ms % 1000 / 10
+        )
+    };
+    let mut script = format!(
+        "[Script Info]\nScriptType: v4.00+\nPlayResX: {width}\nPlayResY: {height}\nWrapStyle: 0\nScaledBorderAndShadow: yes\n\n\
+         [V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n\
+         Style: Default,Arial,{font},{primary},{primary},{outline},&H80000000,-1,0,0,0,100,100,0,0,1,{border},{shadow},{alignment},{side},{side},{margin},1\n\n\
+         [Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n",
+        shadow = (border / 2.0).round(),
+        margin = margin.round(),
+    );
+    for &(start, end, text) in cues {
+        let text = ass_text(text, look.uppercase);
+        if end > start && !text.trim().is_empty() {
+            script.push_str(&format!(
+                "Dialogue: 0,{},{},Default,,0,0,0,,{text}\n",
+                clock(start),
+                clock(end)
+            ));
+        }
+    }
+    Ok(script)
+}
+
+/// Escapes a path for an FFmpeg filter option inside a filtergraph: first
+/// the option level (`\ ' :`), then the graph level (`\ ' [ ] , ;`).
+fn filter_path(path: &Path) -> String {
+    let mut path = path.to_string_lossy().into_owned();
+    if cfg!(windows) {
+        path = path.replace('\\', "/");
+    }
+    let escape = |text: &str, special: &[char]| {
+        let mut escaped = String::new();
+        for c in text.chars() {
+            if special.contains(&c) {
+                escaped.push('\\');
+            }
+            escaped.push(c);
+        }
+        escaped
+    };
+    escape(
+        &escape(&path, &['\\', '\'', ':']),
+        &['\\', '\'', '[', ']', ',', ';'],
+    )
+}
+
+/// Fails with a clear message when this FFmpeg cannot draw captions.
+fn require_libass(cancelled: &AtomicBool) -> io::Result<()> {
+    let help = run(
+        Command::new("ffmpeg").args(["-hide_banner", "-v", "error", "-h", "filter=ass"]),
+        cancelled,
+        Some(Duration::from_secs(30)),
+    )?;
+    if String::from_utf8_lossy(&help).contains("Filter ass") {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "This FFmpeg cannot draw captions because it was built without libass. Install an FFmpeg build with libass, or turn captions off.",
+        ))
+    }
+}
+
+/// Whether the file has at least one audio stream.
+pub fn has_audio(path: &Path) -> io::Result<bool> {
+    has_audio_cancellable(path, &AtomicBool::new(false))
+}
+
+fn has_audio_cancellable(path: &Path, cancelled: &AtomicBool) -> io::Result<bool> {
+    let output = run(
+        Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-protocol_whitelist",
+                "file,pipe",
+                "-select_streams",
+                "a",
+                "-show_entries",
+                "stream=index",
+                "-of",
+                "csv=p=0",
+            ])
+            .arg(path.canonicalize()?),
+        cancelled,
+        Some(Duration::from_secs(30)),
+    )?;
+    Ok(!String::from_utf8_lossy(&output).trim().is_empty())
+}
+
+/// Writes the first audio track as 16 kHz mono 16-bit WAV for speech
+/// recognition. `output` is overwritten; callers pass a private path.
+pub fn extract_speech(input: &Path, output: &Path, cancelled: &AtomicBool) -> io::Result<()> {
+    if !has_audio_cancellable(input, cancelled)? {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "This video has no sound to transcribe",
+        ));
+    }
+    run(
+        Command::new("ffmpeg")
+            .args([
+                "-nostdin",
+                "-v",
+                "error",
+                "-y",
+                "-protocol_whitelist",
+                "file,pipe",
+                "-i",
+            ])
+            .arg(input.canonicalize()?)
+            .args([
+                "-vn",
+                "-map",
+                "0:a:0",
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                "-c:a",
+                "pcm_s16le",
+            ])
+            .arg(output),
+        cancelled,
+        None,
+    )?;
+    Ok(())
+}
+
+/// Writes a JPEG cover (the frame 0.5 s in, or the first frame of clips
+/// shorter than a second) to a new temporary file, removed when dropped.
+pub fn cover_frame(input: &Path, cancelled: &AtomicBool) -> io::Result<tempfile::NamedTempFile> {
+    let info = inspect_cancellable(input, cancelled)?;
+    let at = if info.duration >= 1.0 { "0.5" } else { "0" };
+    let cover = tempfile::Builder::new()
+        .prefix("tehom-cover-")
+        .suffix(".jpg")
+        .tempfile()?;
+    run(
+        Command::new("ffmpeg")
+            .args([
+                "-nostdin",
+                "-v",
+                "error",
+                "-y",
+                "-protocol_whitelist",
+                "file,pipe",
+                "-ss",
+                at,
+                "-i",
+            ])
+            .arg(input.canonicalize()?)
+            .args(["-frames:v", "1", "-q:v", "2", "-f", "image2"])
+            .arg(cover.path()),
+        cancelled,
+        Some(Duration::from_secs(60)),
+    )?;
+    if cover.as_file().metadata()?.len() == 0 {
+        return Err(io::Error::other(
+            "No cover picture could be read from the video",
+        ));
+    }
+    Ok(cover)
 }
 
 pub fn export_identity(path: &Path) -> io::Result<Option<String>> {
@@ -273,6 +588,7 @@ pub fn export_identity(path: &Path) -> io::Result<Option<String>> {
         .map(str::to_owned))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render(
     input: &Path,
     output: &Path,
@@ -281,6 +597,7 @@ fn render(
     cancelled: &AtomicBool,
     identity: Option<(&str, Framing)>,
     progress: Option<&dyn Fn(f64)>,
+    overlay: Option<&Overlay>,
 ) -> io::Result<()> {
     let total = inspect_cancellable(input, cancelled)?.duration;
     if !start.is_finite() || !end.is_finite() || start < 0.0 || end <= start || end > total {
@@ -309,6 +626,20 @@ fn render(
     if cancelled.load(Ordering::Acquire) {
         return Err(io::Error::new(io::ErrorKind::Interrupted, "Clip cancelled"));
     }
+    let sound = overlay.map_or(Sound::None, |overlay| overlay.sound);
+    // Kept alive until FFmpeg has finished reading it.
+    let mut script = None;
+    if let Some(text) = overlay.and_then(|overlay| overlay.subtitles.as_deref()) {
+        use std::io::Write;
+        require_libass(cancelled)?;
+        let mut file = tempfile::Builder::new()
+            .prefix(".tehom-")
+            .suffix(".ass")
+            .tempfile_in(parent)?;
+        file.write_all(text.as_bytes())?;
+        file.flush()?;
+        script = Some(file);
+    }
     let mut command = Command::new("ffmpeg");
     command
         .args([
@@ -322,30 +653,61 @@ fn render(
             &start.to_string(),
             "-i",
         ])
-        .arg(input.canonicalize()?)
-        .args([
-            "-t",
-            &(end - start).to_string(),
-            "-map",
-            "0:v:0",
-            "-map",
-            "0:a?",
-            "-c:v",
-            "libx264",
-            "-pix_fmt",
-            "yuv420p",
-            "-c:a",
-            "aac",
-            "-movflags",
-            "+faststart",
-        ]);
-    if let Some((identity, framing)) = identity {
-        command.args([
-            "-vf",
-            &framing.filter(),
-            "-metadata",
-            &format!("comment=tehom:{identity}"),
-        ]);
+        .arg(input.canonicalize()?);
+    if let Some((source, _)) = sound.synth() {
+        command.args(["-f", "lavfi", "-i", source]);
+    }
+    command.args([
+        "-t",
+        &(end - start).to_string(),
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-movflags",
+        "+faststart",
+    ]);
+    let mut video = identity.map(|(_, framing)| framing.filter());
+    if let Some(script) = &script {
+        // Drawn after scaling and cropping, so captions match the output frame.
+        let captions = format!("ass=filename={}", filter_path(script.path()));
+        video = Some(match video {
+            Some(framing) => format!("{framing},{captions}"),
+            None => captions,
+        });
+    }
+    match sound.synth() {
+        None => {
+            command.args(["-map", "0:v:0", "-map", "0:a?"]);
+            if let Some(video) = video {
+                command.args(["-vf", &video]);
+            }
+        }
+        Some((_, shape)) => {
+            let stereo = "aformat=sample_rates=48000:channel_layouts=stereo";
+            let audio = if has_audio_cancellable(input, cancelled)? {
+                format!(
+                    "[0:a:0]{stereo}[main];[1:a]{shape},{stereo}[fx];[main][fx]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[a]"
+                )
+            } else {
+                // No source audio: the effect, then silence for the clip's length.
+                format!("[1:a]{shape},{stereo},apad[a]")
+            };
+            let video = video.unwrap_or_else(|| "null".into());
+            command.args([
+                "-filter_complex",
+                &format!("[0:v:0]{video}[v];{audio}"),
+                "-map",
+                "[v]",
+                "-map",
+                "[a]",
+            ]);
+        }
+    }
+    if let Some((identity, _)) = identity {
+        command.args(["-metadata", &format!("comment=tehom:{identity}")]);
     }
     match progress {
         None => {
@@ -376,6 +738,9 @@ fn render(
         }
     }
     inspect_cancellable(temporary.path(), cancelled)?;
+    if sound != Sound::None && !has_audio_cancellable(temporary.path(), cancelled)? {
+        return Err(io::Error::other("The rendered clip has no sound"));
+    }
     temporary.as_file().sync_all()?;
     if cancelled.load(Ordering::Acquire) {
         return Err(io::Error::new(io::ErrorKind::Interrupted, "Clip cancelled"));
@@ -620,6 +985,84 @@ mod missing_program_tests {
         );
         assert!(message.contains("PATH"), "{message}");
         assert!(!message.contains("program not found"), "{message}");
+    }
+}
+
+#[cfg(test)]
+mod caption_tests {
+    use super::*;
+
+    #[test]
+    fn ass_script_honours_style_and_cannot_be_injected() {
+        let look = CaptionLook {
+            color: "#ffcc00",
+            outline: "#000000",
+            scale: 1.0,
+            placement: Placement::Top,
+            uppercase: true,
+        };
+        let script = ass_subtitles(
+            &[
+                (0, 1500, "hi {\\b0\\pos(1,1)} back\\slash\nnext"),
+                (3_723_450, 3_724_000, "late"),
+                (5, 5, "empty range"),
+                (6, 9, "   "),
+            ],
+            &look,
+            1080,
+            1920,
+        )
+        .unwrap();
+        assert!(script.contains("PlayResX: 1080\nPlayResY: 1920"));
+        // #ffcc00 is BGR in ASS; top alignment is 8 with a safe top margin.
+        assert!(
+            script.contains("Style: Default,Arial,81,&H0000CCFF,&H0000CCFF,&H00000000,"),
+            "{script}"
+        );
+        assert!(script.contains(",8,86,86,269,1\n"), "{script}");
+        let lines: Vec<&str> = script
+            .lines()
+            .filter(|l| l.starts_with("Dialogue:"))
+            .collect();
+        assert_eq!(lines.len(), 2, "{script}");
+        assert_eq!(
+            lines[0],
+            "Dialogue: 0,0:00:00.00,0:00:01.50,Default,,0,0,0,,HI (/B0/POS(1,1)) BACK/SLASH\\NNEXT"
+        );
+        assert!(lines[1].starts_with("Dialogue: 0,1:02:03.45,1:02:04.00,"));
+        let text = lines[0].rsplit(",,").next().unwrap();
+        assert!(!text.contains('{') && !text.contains('}'));
+        assert_eq!(text.matches('\\').count(), 1, "only our own line break");
+        let bottom = ass_subtitles(
+            &[],
+            &CaptionLook {
+                placement: Placement::Bottom,
+                uppercase: false,
+                scale: 1.25,
+                ..look
+            },
+            1080,
+            1920,
+        )
+        .unwrap();
+        assert!(bottom.contains(",101,") && bottom.contains(",2,86,86,384,1\n"));
+        for bad in ["fff", "#12345", "#12345G", "red", "#1234567"] {
+            assert!(
+                ass_subtitles(&[], &CaptionLook { color: bad, ..look }, 10, 10).is_err(),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn filter_paths_are_escaped_for_option_and_graph_levels() {
+        assert_eq!(
+            filter_path(Path::new("/tmp/it's a:b,[c];d.ass")),
+            "/tmp/it\\\\\\'s a\\\\:b\\,\\[c\\]\\;d.ass"
+        );
+        if cfg!(windows) {
+            assert_eq!(filter_path(Path::new(r"C:\x\a.ass")), r"C\\:/x/a.ass");
+        }
     }
 }
 
