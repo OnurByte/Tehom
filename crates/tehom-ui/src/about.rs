@@ -8,7 +8,9 @@ use tehom_automation::update::{self, UpdateStatus};
 pub(crate) const AUTHOR: &str = "Onur Konuk";
 pub(crate) const AUTHOR_LINKS: &[(&str, &str)] = &[
     ("GitHub", "https://github.com/OnurByte"),
-    ("onur.af", "https://onur.af"),
+    ("Portfolio", "https://onur.af"),
+    ("X @onurstirner", "https://x.com/onurstirner"),
+    ("X @onurbinary", "https://x.com/onurbinary"),
 ];
 
 /// How often an open app looks for a new release.
