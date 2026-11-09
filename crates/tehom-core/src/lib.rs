@@ -396,6 +396,78 @@ pub enum AccountLogin {
     },
 }
 
+/// How sources are watched and clips are cut. Defaults match the behaviour
+/// before these were settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AutomationSettings {
+    /// Look for new videos this often (1–1440).
+    pub check_minutes: u32,
+    /// At most this many clips per video (1–20).
+    pub max_clips: u32,
+    /// Clip length bounds in seconds (min ≥ 5, max ≤ 180, min < max).
+    pub min_clip_seconds: u32,
+    pub max_clip_seconds: u32,
+    /// Keep a downloaded video after its clips are saved as MP4 files.
+    pub keep_downloads: bool,
+    /// Mode given to links added without choosing one.
+    pub new_source_mode: AutomationMode,
+    /// Transcribe on this computer when a video has no captions.
+    pub transcribe_locally: bool,
+}
+
+impl Default for AutomationSettings {
+    fn default() -> Self {
+        Self {
+            check_minutes: 30,
+            max_clips: 5,
+            min_clip_seconds: 20,
+            max_clip_seconds: 90,
+            keep_downloads: true,
+            new_source_mode: AutomationMode::AutoDraft,
+            transcribe_locally: true,
+        }
+    }
+}
+
+impl AutomationSettings {
+    /// A plain-language reason these settings cannot be used, if any.
+    pub fn problem(&self) -> Option<&'static str> {
+        if !(1..=1440).contains(&self.check_minutes) {
+            Some("Check for new videos every 1 to 1440 minutes.")
+        } else if !(1..=20).contains(&self.max_clips) {
+            Some("Choose 1 to 20 clips per video.")
+        } else if self.min_clip_seconds < 5 {
+            Some("The shortest clip must be at least 5 seconds.")
+        } else if self.max_clip_seconds > 180 {
+            Some("The longest clip can be at most 180 seconds.")
+        } else if self.min_clip_seconds >= self.max_clip_seconds {
+            Some("The shortest clip must be shorter than the longest clip.")
+        } else if self.new_source_mode == AutomationMode::Paused {
+            Some("New links cannot start paused.")
+        } else {
+            None
+        }
+    }
+}
+
+/// Light or dark look; `System` follows the operating system.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Appearance {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+/// Desktop sidebar width in pixels: default and bounds.
+pub const SIDEBAR_WIDTH: u32 = 280;
+pub const SIDEBAR_WIDTHS: std::ops::RangeInclusive<u32> = 200..=480;
+fn sidebar_width() -> u32 {
+    SIDEBAR_WIDTH
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EngineSnapshot {
     pub sources: Vec<Source>,
@@ -425,11 +497,57 @@ pub struct EngineSnapshot {
     /// Account that automatic exports are published to; off when `None`.
     #[serde(default)]
     pub auto_publish_account: Option<i64>,
+    #[serde(default)]
+    pub automation: AutomationSettings,
+    #[serde(default)]
+    pub appearance: Appearance,
+    #[serde(default = "sidebar_width")]
+    pub sidebar_width: u32,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn automation_settings_default_to_the_old_behaviour_and_are_bounded() {
+        let old: AutomationSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(old, AutomationSettings::default());
+        assert_eq!((old.min_clip_seconds, old.max_clip_seconds), (20, 90));
+        assert!(old.problem().is_none());
+        for bad in [
+            AutomationSettings {
+                check_minutes: 0,
+                ..old.clone()
+            },
+            AutomationSettings {
+                check_minutes: 1441,
+                ..old.clone()
+            },
+            AutomationSettings {
+                max_clips: 21,
+                ..old.clone()
+            },
+            AutomationSettings {
+                min_clip_seconds: 4,
+                ..old.clone()
+            },
+            AutomationSettings {
+                max_clip_seconds: 181,
+                ..old.clone()
+            },
+            AutomationSettings {
+                min_clip_seconds: 60,
+                max_clip_seconds: 60,
+                ..old.clone()
+            },
+            AutomationSettings {
+                new_source_mode: AutomationMode::Paused,
+                ..old.clone()
+            },
+        ] {
+            assert!(bad.problem().is_some(), "{bad:?}");
+        }
+    }
     #[test]
     fn old_clips_load_with_caption_defaults() {
         let clip: Clip = serde_json::from_str(

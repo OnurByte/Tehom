@@ -2,6 +2,7 @@
 # Packs release binaries into the archive that install.sh / install.ps1 expect:
 #   target/dist/tehom-<os>-<arch>.tar.gz (or .zip on Windows) + .sha256
 # Usage: packaging/release-archive.sh [binary-directory]   (default target/release)
+# The directory must also hold whisper-cli and whisper.cpp-LICENSE.txt.
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
@@ -22,17 +23,25 @@ esac
 stage="target/dist/stage/tehom"
 rm -rf target/dist/stage
 mkdir -p "$stage"
-for binary in tehom tehom-desktop; do
+# whisper-cli (built by the release workflow from a pinned whisper.cpp) is
+# required: an archive without it would break offline transcription.
+for binary in tehom tehom-desktop whisper-cli; do
     cp "$binaries/$binary$ext" "$stage/$binary$ext"
 done
+cp "$binaries/whisper.cpp-LICENSE.txt" "$stage/whisper.cpp-LICENSE.txt"
 cp LICENSE "$stage/LICENSE"
 cp assets/fonts/OFL.txt "$stage/fonts-OFL.txt"
-# Launcher icon: only currentColor is replaced (spec §7); geometry is checked.
-sed 's/currentColor/#be95ff/g' assets/brand/icon.svg >"$stage/org.tehom.Tehom.svg"
+# App icons from assets/brand/generate-icons.py: the unchanged mark on a tile
+# (spec §7); the path geometry is checked against the source.
+cp assets/brand/icon-tile.svg "$stage/org.tehom.Tehom.svg"
 [[ "$(grep -o ' d="[^"]*"' assets/brand/icon.svg)" == "$(grep -o ' d="[^"]*"' "$stage/org.tehom.Tehom.svg")" ]] || {
     echo "icon geometry changed" >&2
     exit 1
 }
+case "$os" in
+    linux) cp -R assets/brand/hicolor "$stage/hicolor" ;;
+    macos) cp assets/brand/icon.icns "$stage/Tehom.icns" ;;
+esac
 
 # Windows has no system GStreamer, so the zip carries the part Tehom uses.
 # Plug-ins are listed by hand: the full runtime is 500 MB and includes GPL ones.

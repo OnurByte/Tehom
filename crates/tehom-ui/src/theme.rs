@@ -4,7 +4,7 @@
 //! Neue with plain fallbacks, 12 px cards, 8 px controls at least 44 px high,
 //! filled primary and bordered secondary actions. No accent colour or glow.
 use gpui_kit::{
-    App, Hsla, Rgba,
+    App, Global, Hsla, Rgba,
     component::{Theme, ThemeMode},
     px,
 };
@@ -65,8 +65,35 @@ fn brand_font(cx: &App) -> &'static str {
         .unwrap_or("Geist")
 }
 
-/// Installs the brand theme for the given system appearance.
-pub fn apply(dark: bool, cx: &mut App) {
+/// The user's choice and the system's appearance, so either can change.
+#[derive(Default)]
+struct Look {
+    choice: tehom_core::Appearance,
+    system_dark: bool,
+}
+impl Global for Look {}
+
+/// Installs the brand theme for the given system appearance, unless the user
+/// chose Light or Dark in Settings.
+pub fn apply(system_dark: bool, cx: &mut App) {
+    cx.default_global::<Look>().system_dark = system_dark;
+    install(cx);
+}
+
+/// Applies the user's appearance choice at once.
+pub fn set_appearance(choice: tehom_core::Appearance, cx: &mut App) {
+    cx.default_global::<Look>().choice = choice;
+    install(cx);
+    cx.refresh_windows();
+}
+
+fn install(cx: &mut App) {
+    let look = cx.default_global::<Look>();
+    let dark = match look.choice {
+        tehom_core::Appearance::System => look.system_dark,
+        tehom_core::Appearance::Light => false,
+        tehom_core::Appearance::Dark => true,
+    };
     let p = if dark { DARK } else { LIGHT };
     let font = brand_font(cx);
     Theme::change(

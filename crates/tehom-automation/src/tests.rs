@@ -49,7 +49,10 @@ fn untrusted_candidates_are_validated_and_deduplicated() {
             reason: "useful".into(),
         },
     ];
-    assert_eq!(validate_candidates(input, 100_000).len(), 1);
+    assert_eq!(
+        validate_candidates(input, 100_000, &Default::default()).len(),
+        1
+    );
 }
 #[tokio::test]
 async fn store_deduplicates_recovers_and_respects_pause() {
@@ -214,7 +217,10 @@ async fn local_provider_request_and_response_are_real_http() {
             )
             .await
             .unwrap();
-        assert_eq!(validate_candidates(candidates, 30_000).len(), 1);
+        assert_eq!(
+            validate_candidates(candidates, 30_000, &Default::default()).len(),
+            1
+        );
         server.join().unwrap();
     }
 }
@@ -2080,15 +2086,26 @@ fn clip_edges_snap_to_nearby_caption_edges_within_limits() {
         ],
         &cues,
         100_000,
+        &Default::default(),
     );
     let ranges: Vec<_> = snapped.iter().map(|c| (c.start_ms, c.end_ms)).collect();
     // Edges more than SNAP_MS from a caption edge stay where the model put them.
     assert_eq!(ranges, [(0, 22_500), (2_500, 22_500), (30_000, 55_000)]);
     // A snap that would break the 20–90 s rule or pass the end is skipped.
     let cues = [cue(0, 2_000, "a"), cue(21_000, 24_000, "b")];
-    let snapped = snap_candidates(vec![candidate(1_500, 21_500)], &cues, 100_000);
+    let snapped = snap_candidates(
+        vec![candidate(1_500, 21_500)],
+        &cues,
+        100_000,
+        &Default::default(),
+    );
     assert_eq!((snapped[0].start_ms, snapped[0].end_ms), (2_000, 24_000));
-    let snapped = snap_candidates(vec![candidate(1_500, 21_500)], &cues, 23_000);
+    let snapped = snap_candidates(
+        vec![candidate(1_500, 21_500)],
+        &cues,
+        23_000,
+        &Default::default(),
+    );
     assert_eq!((snapped[0].start_ms, snapped[0].end_ms), (0, 21_000));
 }
 
@@ -2948,4 +2965,377 @@ mod instagram {
             snapshot.events
         );
     }
+}
+
+#[tokio::test]
+async fn generic_feeds_and_media_must_be_public_https() {
+    for allowed in [
+        "https://example.com/feed.xml",
+        "https://podcasts.example.org:443/rss",
+        "https://93.184.216.34/video.mp4",
+    ] {
+        assert!(public_url(allowed).is_ok(), "{allowed}");
+    }
+    for refused in [
+        "http://example.com/feed.xml",
+        "https://user:pass@example.com/feed.xml",
+        "https://example.com:8443/feed.xml",
+        "https://localhost/feed.xml",
+        "https://printer.local/feed.xml",
+        "https://intranet/feed.xml",
+        "https://127.0.0.1/feed.xml",
+        "https://10.1.2.3/feed.xml",
+        "https://172.16.0.1/feed.xml",
+        "https://192.168.1.1/feed.xml",
+        "https://169.254.169.254/latest",
+        "https://100.64.0.1/feed.xml",
+        "https://224.0.0.1/feed.xml",
+        "https://0.0.0.0/feed.xml",
+        "https://255.255.255.255/feed.xml",
+        "https://[::1]/feed.xml",
+        "https://[fe80::1]/feed.xml",
+        "https://[fd00::1]/feed.xml",
+        "https://[::ffff:127.0.0.1]/feed.xml",
+        "https://[64:ff9b::a00:1]/feed.xml",
+        "ftp://example.com/feed.xml",
+    ] {
+        assert!(public_url(refused).is_err(), "{refused}");
+    }
+    assert!(public_ip("2606:4700::1".parse().unwrap()));
+    use reqwest::dns::Resolve;
+    let local = PublicOnly.resolve("localhost".parse().unwrap()).await;
+    assert!(local.is_err(), "localhost must never resolve for a feed");
+}
+
+#[test]
+fn feed_entries_map_to_video_enclosures_then_links() {
+    let xml = br#"<?xml version="1.0"?><rss version="2.0"><channel><title>Fixture show</title>
+<item><guid>ep-3</guid><title>Video episode</title><pubDate>Wed, 03 Jan 2024 00:00:00 GMT</pubDate>
+<enclosure url="https://cdn.example.com/ep3.mp4" type="video/mp4" length="1"/><link>https://example.com/ep3</link></item>
+<item><guid>ep-2</guid><title>Audio episode</title><pubDate>Tue, 02 Jan 2024 00:00:00 GMT</pubDate>
+<enclosure url="https://cdn.example.com/ep2.mp3" type="audio/mpeg" length="1"/><link>https://example.com/ep2</link></item>
+<item><guid>ep-1</guid><title>Audio only</title><pubDate>Mon, 01 Jan 2024 00:00:00 GMT</pubDate>
+<enclosure url="https://cdn.example.com/ep1.mp3" type="audio/mpeg" length="1"/></item>
+<item><guid>ep-3</guid><title>Duplicate</title><link>https://example.com/dup</link></item>
+<item><title>No id</title><enclosure url="https://cdn.example.com/noid.mp4" type="video/mp4" length="1"/></item>
+</channel></rss>"#;
+    let base = reqwest::Url::parse("https://example.com/feed.xml").unwrap();
+    let (title, items) = feed_items(xml, &base).unwrap();
+    assert_eq!(title, "Fixture show");
+    let found: Vec<_> = items
+        .iter()
+        .map(|i| (i.id.as_str(), i.media.as_str()))
+        .collect();
+    assert_eq!(found[0], ("ep-3", "https://cdn.example.com/ep3.mp4"));
+    assert_eq!(found[1], ("ep-2", "https://example.com/ep2"));
+    assert!(found.iter().all(|(id, _)| *id != "ep-1"));
+    assert_eq!(found.iter().filter(|(id, _)| *id == "ep-3").count(), 1);
+    assert!(
+        found
+            .iter()
+            .any(|(_, media)| *media == "https://cdn.example.com/noid.mp4")
+    );
+    let namespaced = feed_found(7, items);
+    assert!(namespaced.iter().all(|i| i.id.starts_with("feed:7:")));
+    assert!(feed_items(b"<html><body>Hello</body></html>", &base).is_err());
+}
+
+#[tokio::test]
+async fn automation_settings_are_validated_persisted_and_shape_clip_rules() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Automation::open(dir.path().into()).await.unwrap();
+    assert_eq!(
+        engine.snapshot().await.unwrap().automation,
+        AutomationSettings::default()
+    );
+    let custom = AutomationSettings {
+        check_minutes: 5,
+        max_clips: 2,
+        min_clip_seconds: 10,
+        max_clip_seconds: 30,
+        keep_downloads: false,
+        new_source_mode: AutomationMode::Manual,
+        transcribe_locally: false,
+    };
+    engine.set_automation(custom.clone()).await.unwrap();
+    assert!(
+        engine
+            .set_automation(AutomationSettings {
+                max_clip_seconds: 200,
+                ..custom.clone()
+            })
+            .await
+            .is_err()
+    );
+    assert_eq!(engine.snapshot().await.unwrap().automation, custom);
+    assert!(!engine.keep_downloads().await.unwrap());
+    // The CLI's [storage] keep_downloads still overrides.
+    engine.set_keep_downloads(true).await.unwrap();
+    assert!(engine.automation().await.unwrap().keep_downloads);
+    let prompt = clip_instructions(&custom);
+    assert!(prompt.contains("at most 2 objects") && prompt.contains("10000–30000ms"));
+    let candidates = (0..4)
+        .map(|n| Candidate {
+            start_ms: n * 40_000,
+            end_ms: n * 40_000 + if n == 0 { 35_000 } else { 15_000 },
+            title: "T".into(),
+            reason: String::new(),
+        })
+        .collect();
+    let valid = validate_candidates(candidates, 1_000_000, &custom);
+    assert_eq!(valid.len(), 2, "35 s is too long and only two are kept");
+    assert!(valid.iter().all(|c| c.start_ms > 0));
+}
+
+/// Serves `routes` (path, status line, content type, body) on loopback for
+/// as many requests as arrive.
+#[cfg(unix)]
+fn route_fixture(routes: Vec<(String, String, String, Vec<u8>)>) -> String {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut request = Vec::new();
+            let mut buffer = [0; 4096];
+            while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                match stream.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => request.extend_from_slice(&buffer[..n]),
+                }
+            }
+            let text = String::from_utf8_lossy(&request);
+            let path = text.split_whitespace().nth(1).unwrap_or("").to_owned();
+            let (status, kind, body) = routes
+                .iter()
+                .find(|(route, ..)| *route == path)
+                .map(|(_, s, k, b)| (s.clone(), k.clone(), b.clone()))
+                .unwrap_or(("404 Not Found".into(), "text/plain".into(), Vec::new()));
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(&body);
+        }
+    });
+    base
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn generic_feed_is_watched_downloaded_directly_and_clipped() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut engine = Automation::open(dir.path().join("data")).await.unwrap();
+    let data = dir.path().join("data").canonicalize().unwrap();
+    engine.feed_loopback = true;
+    // yt-dlp must not be used for a direct enclosure.
+    engine.downloader = dir.path().join("missing-yt-dlp");
+    let args = dir.path().join("whisper-args");
+    engine.speech_program = Some(whisper_fixture(dir.path(), &args));
+    std::fs::create_dir_all(data.join("models")).unwrap();
+    std::fs::write(data.join("models/ggml-tiny.bin"), b"fixture").unwrap();
+    let video = dir.path().join("talk.mp4");
+    assert!(
+        std::process::Command::new("ffmpeg")
+            .args([
+                "-nostdin",
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:s=160x90:r=2",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=f=300:r=48000",
+                "-t",
+                "25",
+                "-c:v",
+                "libx264",
+                "-c:a",
+                "aac",
+            ])
+            .arg(&video)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let feed = |base: &str| {
+        format!(
+            r#"<?xml version="1.0"?><rss version="2.0"><channel><title>Fixture show</title>
+<item><guid>new</guid><title>Newest talk</title><pubDate>Tue, 02 Jan 2024 00:00:00 GMT</pubDate><enclosure url="{base}/talk.mp4" type="video/mp4" length="1"/></item>
+<item><guid>old</guid><title>Older talk</title><pubDate>Mon, 01 Jan 2024 00:00:00 GMT</pubDate><enclosure url="{base}/old.mp4" type="video/mp4" length="1"/></item>
+<item><guid>audio</guid><title>Audio only</title><enclosure url="{base}/audio.mp3" type="audio/mpeg" length="1"/></item>
+</channel></rss>"#
+        )
+    };
+    // Routes are fixed before the port is known, so the feed is served from
+    // a second fixture that points at the first.
+    let media = route_fixture(vec![(
+        "/talk.mp4".into(),
+        "200 OK".into(),
+        "video/mp4".into(),
+        std::fs::read(&video).unwrap(),
+    )]);
+    let server = route_fixture(vec![
+        (
+            "/feed.xml".into(),
+            "200 OK".into(),
+            "application/rss+xml".into(),
+            feed(&media).into_bytes(),
+        ),
+        (
+            "/moved".into(),
+            "302 Found\r\nLocation: /feed.xml".into(),
+            "text/plain".into(),
+            Vec::new(),
+        ),
+        (
+            "/evil".into(),
+            "302 Found\r\nLocation: https://10.0.0.1/feed.xml".into(),
+            "text/plain".into(),
+            Vec::new(),
+        ),
+        (
+            "/page".into(),
+            "200 OK".into(),
+            "text/html".into(),
+            b"<html><body>Hi</body></html>".to_vec(),
+        ),
+    ]);
+    // A redirect to a private address and a plain web page are refused.
+    assert!(
+        engine
+            .add_source(&format!("{server}/evil"), AutomationMode::AutoDraft)
+            .await
+            .is_err()
+    );
+    assert!(
+        engine
+            .add_source(&format!("{server}/page"), AutomationMode::AutoDraft)
+            .await
+            .is_err()
+    );
+    assert!(engine.snapshot().await.unwrap().sources.is_empty());
+    let (endpoint, model_server) = model_fixture(
+        r#"[{"start_ms":1000,"end_ms":22000,"title":"Hook","reason":"Stands alone"}]"#,
+    );
+    engine
+        .set_ai(AiConfig {
+            endpoint,
+            model: "fixture".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    engine
+        .set_automation(AutomationSettings {
+            transcribe_locally: false,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let source = engine
+        .add_source(&format!("{server}/moved"), AutomationMode::AutoDraft)
+        .await
+        .unwrap();
+    assert_eq!(source.title, "Fixture show");
+    assert!(source.channel_id.starts_with("feed:"));
+    let snapshot = engine.snapshot().await.unwrap();
+    let states: Vec<_> = snapshot
+        .videos
+        .iter()
+        .map(|v| (v.title.as_str(), v.state.as_str()))
+        .collect();
+    assert_eq!(
+        states.len(),
+        2,
+        "the audio-only episode is skipped: {states:?}"
+    );
+    assert!(states.contains(&("Newest talk", "queued")));
+    assert!(states.contains(&("Older talk", "discovered")));
+    let id = snapshot
+        .videos
+        .iter()
+        .find(|v| v.title == "Newest talk")
+        .unwrap()
+        .id;
+    assert!(
+        snapshot
+            .videos
+            .iter()
+            .all(|v| v.external_id.starts_with("feed:"))
+    );
+
+    // Transcription off: the video is downloaded, then waits for captions.
+    assert!(engine.process_next().await.unwrap());
+    let parked = engine.snapshot().await.unwrap();
+    let video = parked.videos.iter().find(|v| v.id == id).unwrap();
+    assert_eq!(video.state, "needs_input", "{:?}", video.error);
+    assert!(video.error.as_ref().unwrap().contains("turned off"));
+    assert!(data.join(format!("videos/{id}/source.mp4")).is_file());
+
+    engine
+        .set_automation(AutomationSettings::default())
+        .await
+        .unwrap();
+    engine.retry_video(id).await.unwrap();
+    assert!(engine.process_next().await.unwrap());
+    model_server.join().unwrap();
+    let done = engine.snapshot().await.unwrap();
+    let video = done.videos.iter().find(|v| v.id == id).unwrap();
+    assert_eq!(video.state, "complete", "{:?}", video.error);
+    assert_eq!(done.clips.len(), 1);
+    // Later checks find nothing new and touch only loopback.
+    assert_eq!(engine.check_now().await.unwrap(), 0);
+    let requests = engine.requests.lock().unwrap().clone();
+    assert!(
+        requests.iter().all(|r| r.starts_with("http://127.0.0.1:")),
+        "{requests:?}"
+    );
+    // Production rules: a non-HTTPS feed gets today's YouTube error.
+    engine.feed_loopback = false;
+    let error = engine
+        .add_source("http://example.com/feed.xml", AutomationMode::AutoDraft)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("YouTube"), "{error}");
+    let error = engine
+        .add_source(&format!("{server}/feed.xml"), AutomationMode::AutoDraft)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert_eq!(error, "Credentials and ports are not allowed");
+}
+
+#[test]
+fn speech_program_is_found_in_the_data_folder_before_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let bin = dir.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let program = bin.join(format!("whisper-cli{}", std::env::consts::EXE_SUFFIX));
+    std::fs::write(&program, b"fixture").unwrap();
+    // Test binaries have no whisper-cli beside them.
+    assert_eq!(speech_program(dir.path()), Some(program));
+}
+
+#[tokio::test]
+async fn appearance_and_sidebar_width_persist() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Automation::open(dir.path().into()).await.unwrap();
+    let snapshot = engine.snapshot().await.unwrap();
+    assert_eq!(snapshot.appearance, Appearance::System);
+    assert_eq!(snapshot.sidebar_width, tehom_core::SIDEBAR_WIDTH);
+    engine.set_appearance(Appearance::Dark).await.unwrap();
+    engine.set_sidebar_width(360).await.unwrap();
+    assert!(engine.set_sidebar_width(1000).await.is_err());
+    engine.pool.close().await;
+    drop(engine);
+    let snapshot = Automation::read_snapshot(dir.path().into()).await.unwrap();
+    assert_eq!(snapshot.appearance, Appearance::Dark);
+    assert_eq!(snapshot.sidebar_width, 360);
 }

@@ -166,8 +166,10 @@ impl Tehom {
                             div()
                                 .size(px(14.))
                                 .rounded_full()
+                                // Content colours: a mid-grey ring keeps black
+                                // and white swatches visible in both themes.
                                 .border_1()
-                                .border_color(p.border)
+                                .border_color(p.edge)
                                 .when_some(color(hex), |swatch, color| swatch.bg(color)),
                         )
                         .on_click(cx.listener(move |view, _, _, cx| {
@@ -557,7 +559,7 @@ impl Tehom {
 
     /// Reads the speech-to-text readiness once Settings is shown.
     pub(crate) fn maybe_check_speech(&mut self, window: &Window, cx: &mut Context<Self>) {
-        if self.page != Page::Settings || self.speech.is_some() || self.speech_checking {
+        if self.speech.is_some() || self.speech_checking {
             return;
         }
         let Some(backend) = self.backend.clone() else {
@@ -579,21 +581,42 @@ impl Tehom {
         .detach();
     }
 
+    /// One click: downloads the speech model, or, when the speech tool
+    /// itself is missing, shows where to get it.
+    pub(crate) fn set_up_speech(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if self.speech.as_ref().is_some_and(|s| s.program.is_none()) {
+            self.open_settings_at(crate::automation_ui::CARD_SPEECH, cx);
+            return;
+        }
+        self.act(Action::DownloadSpeechModel, window, cx);
+        if self.source_busy {
+            self.speech_downloading = true;
+            self.status =
+                "Setting up captions on this computer. This can take a few minutes…".into();
+        }
+    }
+
+    pub(crate) fn speech_setup_label(&self) -> &'static str {
+        if self.speech_downloading {
+            "Setting up captions… (downloading about 150 MB)"
+        } else {
+            "Set up captions on this computer"
+        }
+    }
+
     pub(crate) fn speech_card(&self, cx: &mut Context<Self>) -> AnyElement {
         let p = crate::theme::palette(cx);
         let unavailable = self.backend.is_none() || self.source_busy;
         let status = self.speech.as_ref();
         let program = status.map(|s| s.program.is_some());
         let model = status.map(|s| s.model.is_some());
-        let line = |label: &str, state: Option<bool>, ready: &str, missing: &str| {
-            div().text_sm().child(format!(
-                "{label}: {}",
-                match state {
-                    None => "checking…",
-                    Some(true) => ready,
-                    Some(false) => missing,
-                }
-            ))
+        let state = match (program, model) {
+            (None, _) | (_, None) => "Checking this computer…",
+            (Some(false), _) => "The speech tool is missing from this copy of Tehom.",
+            (Some(true), Some(true)) => "Ready. Videos without captions get captions made here.",
+            (Some(true), Some(false)) => {
+                "Not set up yet. One click downloads what is needed (about 150 MB)."
+            }
         };
         div()
             .p_5()
@@ -608,33 +631,30 @@ impl Tehom {
             .child(div().text_sm().text_color(p.muted).child(
                 "When a video has no captions of its own, Tehom writes them on this computer. The video and its sound never leave it.",
             ))
-            .child(line("Speech program", program, "found", "not installed"))
-            .child(line("Speech model", model, "ready", "not downloaded"))
-            .when(program == Some(false), |card| {
-                card.child(div().text_sm().child(
-                    "Install whisper.cpp (its program is called whisper-cli) from github.com/ggml-org/whisper.cpp, then restart Tehom.",
-                ))
+            .child(
+                div()
+                    .id("speech-state")
+                    .test_support()
+                    .aria_label(state)
+                    .text_sm()
+                    .child(state),
+            )
+            .when(program == Some(false), |card| match self.update_button(cx) {
+                Some(button) => card
+                    .child(div().text_sm().child("Update Tehom to get the built-in speech tool."))
+                    .child(button),
+                None => card.child(div().text_sm().child(
+                    "Update Tehom to get the built-in speech tool, or install whisper.cpp (its whisper-cli program) so it is on your PATH, then restart Tehom.",
+                )),
             })
-            .when(model == Some(false), |card| {
+            .when(program == Some(true) && model == Some(false), |card| {
                 card.child(
                     Button::new("download-speech-model")
                         .h(px(44.))
                         .primary()
-                        .label(if self.speech_downloading {
-                            "Downloading the speech model…"
-                        } else {
-                            "Download speech model (about 150 MB)"
-                        })
-                        .disabled(unavailable)
-                        .on_click(cx.listener(|view, _, window, cx| {
-                            view.act(Action::DownloadSpeechModel, window, cx);
-                            if view.source_busy {
-                                view.speech_downloading = true;
-                                view.status =
-                                    "Downloading the speech model. This can take a few minutes…"
-                                        .into();
-                            }
-                        })),
+                        .label(self.speech_setup_label())
+                        .disabled(unavailable || self.speech_downloading)
+                        .on_click(cx.listener(|view, _, window, cx| view.set_up_speech(window, cx))),
                 )
             })
             .into_any_element()

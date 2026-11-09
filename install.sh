@@ -3,9 +3,10 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/OnurByte/Tehom/main/install.sh | sh
 #
-# Installs `tehom` and `tehom-desktop` for the current user only (no sudo) into
-# ~/.local/bin, after checking the release archive's SHA-256. Missing FFmpeg,
-# yt-dlp or GStreamer are listed, and installed only if you answer yes.
+# Installs `tehom`, `tehom-desktop` and the bundled `whisper-cli` for the
+# current user only (no sudo) into ~/.local/bin, after checking the release
+# archive's SHA-256. Missing FFmpeg, yt-dlp or GStreamer are listed, and
+# installed only if you answer yes.
 #
 # Options (environment variables):
 #   TEHOM_VERSION=v0.1.0   install a specific release instead of the latest
@@ -95,11 +96,25 @@ for binary in tehom tehom-desktop; do
     chmod 755 "$BIN_DIR/.$binary.new"
     mv -f "$BIN_DIR/.$binary.new" "$BIN_DIR/$binary"
 done
+# Bundled speech-to-text engine, looked up beside tehom-desktop; archives
+# before it was bundled do not have it.
+if [ -f "$package/whisper-cli" ]; then
+    cp "$package/whisper-cli" "$BIN_DIR/.whisper-cli.new"
+    chmod 755 "$BIN_DIR/.whisper-cli.new"
+    mv -f "$BIN_DIR/.whisper-cli.new" "$BIN_DIR/whisper-cli"
+fi
 
 if [ "$os" = linux ]; then
     data="${XDG_DATA_HOME:-$HOME/.local/share}"
     mkdir -p "$data/applications" "$data/icons/hicolor/scalable/apps"
     cp "$package/org.tehom.Tehom.svg" "$data/icons/hicolor/scalable/apps/org.tehom.Tehom.svg"
+    # Raster sizes of the same tile; older archives do not have them.
+    for png in "$package"/hicolor/*.png; do
+        [ -f "$png" ] || continue
+        size="$(basename "$png" .png)"
+        mkdir -p "$data/icons/hicolor/${size}x$size/apps"
+        cp "$png" "$data/icons/hicolor/${size}x$size/apps/org.tehom.Tehom.png"
+    done
     cat >"$data/applications/org.tehom.Tehom.desktop" <<DESKTOP
 [Desktop Entry]
 Type=Application
@@ -109,23 +124,43 @@ Exec="$BIN_DIR/tehom-desktop"
 Icon=org.tehom.Tehom
 Terminal=false
 Categories=AudioVideo;Video;
+StartupWMClass=org.tehom.Tehom
 DESKTOP
+    if [ -f "$package/whisper.cpp-LICENSE.txt" ]; then
+        mkdir -p "$data/doc/tehom"
+        cp "$package/whisper.cpp-LICENSE.txt" "$data/doc/tehom/whisper.cpp-LICENSE.txt"
+    fi
     have update-desktop-database && update-desktop-database "$data/applications" >/dev/null 2>&1 || true
 else
     app="$HOME/Applications/Tehom.app/Contents"
-    mkdir -p "$app/MacOS"
+    mkdir -p "$app/MacOS" "$app/Resources"
     cp "$BIN_DIR/tehom-desktop" "$app/MacOS/tehom-desktop"
-    cat >"$app/Info.plist" <<'PLIST'
+    # tehom-desktop looks for whisper-cli beside itself, here inside the app.
+    if [ -f "$package/whisper-cli" ]; then
+        cp "$package/whisper-cli" "$app/MacOS/whisper-cli"
+        chmod 755 "$app/MacOS/whisper-cli"
+        cp "$package/whisper.cpp-LICENSE.txt" "$app/Resources/whisper.cpp-LICENSE.txt"
+    fi
+    # Older archives carry no icon; the app then shows the generic one.
+    [ -f "$package/Tehom.icns" ] && cp "$package/Tehom.icns" "$app/Resources/Tehom.icns"
+    version="$("$BIN_DIR/tehom" --version | sed 's/.* //')"
+    cat >"$app/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>CFBundleName</key><string>Tehom</string>
 <key>CFBundleIdentifier</key><string>org.tehom.Tehom</string>
 <key>CFBundleExecutable</key><string>tehom-desktop</string>
+<key>CFBundleIconFile</key><string>Tehom</string>
 <key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleShortVersionString</key><string>$version</string>
+<key>CFBundleVersion</key><string>$version</string>
+<key>NSHighResolutionCapable</key><true/>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 </dict></plist>
 PLIST
+    # Launch Services rereads the bundle, and with it the icon, when it changes.
+    touch "$HOME/Applications/Tehom.app"
 fi
 
 # --- Tools Tehom runs: FFmpeg, yt-dlp, GStreamer ---------------------------
