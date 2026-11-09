@@ -30,10 +30,16 @@ jobs:
       - name: macOS dependencies
         if: runner.os == 'macOS'
         run: |
-          curl -fL --http1.1 --retry 5 --retry-all-errors --retry-delay 5 https://gstreamer.freedesktop.org/data/pkg/osx/1.28.8/gstreamer-1.0-1.28.8-universal.pkg -o "$RUNNER_TEMP/gstreamer.pkg"
-          curl -fL --http1.1 --retry 5 --retry-all-errors --retry-delay 5 https://gstreamer.freedesktop.org/data/pkg/osx/1.28.8/gstreamer-1.0-devel-1.28.8-universal.pkg -o "$RUNNER_TEMP/gstreamer-devel.pkg"
-          sudo installer -pkg "$RUNNER_TEMP/gstreamer.pkg" -target /
-          sudo installer -pkg "$RUNNER_TEMP/gstreamer-devel.pkg" -target /
+          for package in gstreamer-1.0-1.28.8-universal gstreamer-1.0-devel-1.28.8-universal; do
+            # The server often cuts these large downloads, so resume until whole.
+            for try in {1..40}; do
+              curl -fsSL --http1.1 -C - -o "$RUNNER_TEMP/$package.pkg" "https://gstreamer.freedesktop.org/data/pkg/osx/1.28.8/$package.pkg" && break
+              [[ $try -lt 40 ]] || exit 1
+              sleep 10
+            done
+          done
+          sudo installer -pkg "$RUNNER_TEMP/gstreamer-1.0-1.28.8-universal.pkg" -target /
+          sudo installer -pkg "$RUNNER_TEMP/gstreamer-1.0-devel-1.28.8-universal.pkg" -target /
           echo 'PKG_CONFIG_PATH=/Library/Frameworks/GStreamer.framework/Versions/1.0/lib/pkgconfig' >> "$GITHUB_ENV"
           echo 'RUSTFLAGS=-C link-arg=-Wl,-rpath,/Library/Frameworks/GStreamer.framework/Versions/1.0/lib' >> "$GITHUB_ENV"
           echo 'MACOSX_DEPLOYMENT_TARGET=13.0' >> "$GITHUB_ENV"
