@@ -6,6 +6,7 @@ use tehom_automation::update::{self, UpdateStatus};
 
 /// The author shown under "Made by"; every link here gets a button.
 pub(crate) const AUTHOR: &str = "Onur Konuk";
+pub(crate) const THANKS_URL: &str = "https://www.youtube.com/@UrasASMR";
 pub(crate) const AUTHOR_LINKS: &[(&str, &str)] = &[
     ("GitHub", "https://github.com/OnurByte"),
     ("Portfolio", "https://onur.af"),
@@ -333,6 +334,12 @@ impl Tehom {
             .child(div().id("author").test_support().aria_label(AUTHOR).child(AUTHOR))
             .child(row().children(AUTHOR_LINKS.iter().enumerate().map(
                 |(index, (label, url))| link(("author-link", index), (*label).into(), (*url).into()),
+            )))
+            .child(heading("Special thanks"))
+            .child(row().child(link(
+                ("thanks-link", 0),
+                "Uras ASMR on YouTube".into(),
+                THANKS_URL.into(),
             )))
             .child(heading("Licence and credits"))
             .child(div().text_sm().child(
