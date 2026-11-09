@@ -44,10 +44,16 @@ jobs:
           choco install ffmpeg pkgconfiglite --no-progress -y
           if ($LASTEXITCODE -notin @(0, 3010)) { throw 'FFmpeg/pkg-config installation failed' }
           $installer = "$env:RUNNER_TEMP/gstreamer.exe"
-          for ($try = 1; $try -le 5; $try++) {
-            try { Invoke-WebRequest 'https://gstreamer.freedesktop.org/data/pkg/windows/1.28.8/msvc/gstreamer-1.0-msvc-x86_64-1.28.8.exe' -OutFile $installer; break }
-            catch { if ($try -eq 5) { throw }; Start-Sleep -Seconds (5 * $try) }
+          $url = 'https://gstreamer.freedesktop.org/data/pkg/windows/1.28.8/msvc/gstreamer-1.0-msvc-x86_64-1.28.8.exe'
+          # The server often cuts this 540 MB download, so resume until it is whole.
+          for ($try = 1; $try -le 40; $try++) {
+            curl.exe -fsSL --http1.1 -C - -o $installer $url
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($try -eq 40) { throw 'GStreamer download failed' }
+            Start-Sleep -Seconds 10
           }
+          $expected = ((curl.exe -fsSL --http1.1 --retry 5 --retry-all-errors "$url.sha256sum") -split '\s+')[0]
+          if ((Get-FileHash $installer -Algorithm SHA256).Hash -ne $expected) { throw 'GStreamer download is damaged' }
           $root = "$env:RUNNER_TEMP/gstreamer"
           $process = Start-Process $installer -ArgumentList @('/VERYSILENT', '/NORESTART', '/CURRENTUSER', '/TYPE=devel', "/DIR=$root") -PassThru -Wait
           if ($process.ExitCode -ne 0) { throw "GStreamer installation failed: $($process.ExitCode)" }
