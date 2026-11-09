@@ -1,7 +1,46 @@
 use gpui_kit::*;
 
+/// Packaged Windows builds carry GStreamer beside the executable. Pointing it
+/// there keeps plug-ins of another GStreamer on the computer from mixing in.
+#[cfg(windows)]
+fn use_bundled_gstreamer() {
+    let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.to_path_buf()))
+    else {
+        return;
+    };
+    let scanner = dir.join("gst-plugin-scanner.exe");
+    if !scanner.is_file() {
+        return; // A development build uses the installed GStreamer.
+    }
+    // SAFETY: runs first in main, before any other thread exists.
+    unsafe {
+        std::env::set_var("GST_PLUGIN_SCANNER_1_0", scanner);
+        std::env::set_var("GST_PLUGIN_SYSTEM_PATH_1_0", dir.join("gstreamer-plugins"));
+        std::env::remove_var("GST_PLUGIN_PATH_1_0");
+        std::env::remove_var("GST_PLUGIN_PATH");
+    }
+}
+
 fn main() {
-    let initial_path = std::env::args_os().nth(1).map(std::path::PathBuf::from);
+    #[cfg(windows)]
+    use_bundled_gstreamer();
+    let mut args = std::env::args_os().skip(1);
+    let first = args.next();
+    // The release workflow proves with this that a packed build decodes video.
+    if first.as_deref() == Some(std::ffi::OsStr::new("--check-preview")) {
+        let path = args
+            .next()
+            .map(std::path::PathBuf::from)
+            .unwrap_or_default();
+        if let Err(error) = tehom_media::preview::Preview::open(&path) {
+            eprintln!("Tehom preview check failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    let initial_path = first.map(std::path::PathBuf::from);
     application().with_assets(tehom_ui::Assets).run(move |cx| {
         if let Err(error) = cx.text_system().add_fonts(vec![
             std::borrow::Cow::Borrowed(include_bytes!("../../../assets/fonts/Geist-Regular.ttf")),

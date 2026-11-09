@@ -41,7 +41,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          choco install pkgconfiglite --no-progress -y
+          choco install ffmpeg pkgconfiglite --no-progress -y
+          if ($LASTEXITCODE -notin @(0, 3010)) { throw 'FFmpeg/pkg-config installation failed' }
           $installer = "$env:RUNNER_TEMP/gstreamer.exe"
           for ($try = 1; $try -le 5; $try++) {
             try { Invoke-WebRequest 'https://gstreamer.freedesktop.org/data/pkg/windows/1.28.8/msvc/gstreamer-1.0-msvc-x86_64-1.28.8.exe' -OutFile $installer; break }
@@ -59,13 +60,18 @@ jobs:
       - name: Pack archive
         shell: bash
         run: packaging/release-archive.sh target/release
-      - name: Smoke-test the packed CLI
+      - name: Smoke-test the packed binaries
         shell: bash
         run: |
           mkdir -p smoke
           if [[ -f target/dist/tehom-windows-x86_64.zip ]]; then
+            ffmpeg -nostdin -v error -y -f lavfi -i testsrc2=size=640x360:rate=30 -f lavfi -i sine=frequency=440 -t 3 -c:v libx264 -c:a aac smoke/source.mp4
             7z x -osmoke target/dist/tehom-windows-x86_64.zip >/dev/null
+            test -f smoke/tehom/vcruntime140.dll
+            # Only Windows itself on PATH: the package must carry its own GStreamer.
+            export PATH=/usr/bin:/c/Windows/System32
             smoke/tehom/tehom.exe --version
+            timeout 120 smoke/tehom/tehom-desktop.exe --check-preview "$PWD/smoke/source.mp4"
           else
             tar -xzf target/dist/tehom-*.tar.gz -C smoke
             smoke/tehom/tehom --version

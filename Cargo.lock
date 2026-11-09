@@ -7544,6 +7544,7 @@ name = "tehom-desktop"
 version = "0.3.1"
 dependencies = [
  "gpui-kit",
+ "tehom-media",
  "tehom-ui",
 ]
 
