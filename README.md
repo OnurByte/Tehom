@@ -1,6 +1,6 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/readme/hero-dark.svg">
-  <img src="assets/readme/hero-light.svg" width="100%" alt="Tehom. Paste a link. Get clips as MP4 files.">
+  <img src="assets/readme/hero-light.svg" width="100%" alt="Tehom. Paste a link. Get vertical clips.">
 </picture>
 
 <p align="center">
@@ -77,7 +77,9 @@ Run `tehom --help` for every command. Settings file: [`config/tehom.example.toml
 <details>
 <summary><b>Privacy and safety</b></summary>
 
-- Tehom never posts anything. It only talks to the video site and the AI you allow.
+- Tehom posts nothing unless you connect an Instagram account and choose to publish. Otherwise it only talks to the video site and the AI you allow.
+- Instagram publishing uses Instagram's private mobile protocol, not an official API. Instagram may change it or restrict accounts that use it; use an account you can afford to lose access to.
+- Speech is transcribed on this computer with whisper.cpp when a video has no captions.
 - API keys live in your system keyring, never in Tehom's files.
 - Existing files are never overwritten, and half-made clips never appear.
 

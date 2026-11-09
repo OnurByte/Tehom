@@ -15,7 +15,9 @@ uuid = { version = "1", features = ["v4"] }
 tempfile = "3"
 tehom-core = { path = "../tehom-core" }
 tehom-media = { path = "../tehom-media" }
+tehom-instagram = { path = "../tehom-instagram" }
 # API keys for remote AI providers live in the OS keyring, never in SQLite.
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
 [dev-dependencies]
 tempfile = "3"
+wiremock = "0.6"

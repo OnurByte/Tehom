@@ -33,10 +33,13 @@ pub(crate) enum Command {
     Shape(ExportProfile),
     Guide,
     CheckUpdates,
+    ConnectInstagram,
+    /// Settings, scrolled to a card (`automation_ui::CARD_*`).
+    Card(usize),
 }
 
 impl Command {
-    pub(crate) const ALL: [(Command, &'static str); 15] = [
+    pub(crate) const ALL: [(Command, &'static str); 18] = [
         (Command::AddLink, "Add a channel or video"),
         (Command::FromFile, "Make clips from a file"),
         (Command::OpenVideo, "Open a video to edit"),
@@ -44,7 +47,10 @@ impl Command {
         (Command::Go(Page::Home), "Go to Home"),
         (Command::Go(Page::Sources), "Go to Sources"),
         (Command::Go(Page::Clips), "Go to Clips"),
-        (Command::Go(Page::Settings), "Choose AI model or API key"),
+        (
+            Command::Card(crate::automation_ui::CARD_AI),
+            "Choose AI model or API key",
+        ),
         (Command::ChooseFolder, "Choose clip folder"),
         (
             Command::Shape(ExportProfile::Vertical),
@@ -57,6 +63,15 @@ impl Command {
         (
             Command::Shape(ExportProfile::Original),
             "Clip shape: original size",
+        ),
+        (Command::ConnectInstagram, "Connect Instagram"),
+        (
+            Command::Card(crate::automation_ui::CARD_LOOK),
+            "Caption look for new clips",
+        ),
+        (
+            Command::Card(crate::automation_ui::CARD_SPEECH),
+            "Speech model for videos without captions",
         ),
         (Command::Guide, "Show the welcome guide"),
         (Command::CheckUpdates, "Check for updates"),
@@ -155,6 +170,8 @@ impl Tehom {
             Command::ChooseFolder => self.choose_export_directory(window, cx),
             Command::Shape(profile) => self.act(Action::ExportProfile(profile), window, cx),
             Command::Guide => self.onboarding = Some(0),
+            Command::ConnectInstagram => self.connect_instagram(window, cx),
+            Command::Card(card) => self.open_settings_at(card, cx),
             Command::CheckUpdates => {
                 self.navigate(Page::Settings, cx);
                 self.check_for_updates(window, cx);

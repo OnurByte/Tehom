@@ -135,10 +135,10 @@ for theme in THEMES:
     left = (WIDTH - (mark + gap + name_width)) / 2
     c.mark(left, 44, mark)
     c.text(left + mark + gap, 80, "Tehom", size=32)
-    c.text(WIDTH / 2, 166, "Paste a link. Get clips as MP4 files.", size=36, anchor="middle")
-    c.text(WIDTH / 2, 210, "The AI you choose picks the best moments. Nothing is ever posted for you.",
+    c.text(WIDTH / 2, 166, "Paste a link. Get vertical clips.", size=36, anchor="middle")
+    c.text(WIDTH / 2, 210, "Transcribed on your computer, captioned, cut to 9:16. No cloud, no subscription.",
            size=16, muted=True, anchor="middle")
-    c.save("hero", theme, 260, "Tehom. Paste a link. Get clips as MP4 files.")
+    c.save("hero", theme, 260, "Tehom. Paste a link. Get vertical clips.")
 
     # Steps: one section, four ordered columns.
     c = Canvas(theme)
@@ -166,7 +166,7 @@ for theme in THEMES:
         ("watch", "Watches channels", ["New videos on a channel become", "drafts or MP4 files on their own."], "Works"),
         ("spark", "Your AI, your choice", ["OpenAI, Anthropic, Gemini, OpenRouter,", "Codex, Claude Code or a local model."], "Works"),
         ("captions", "Uses captions", ["Platform captions, or SRT and VTT", "files you add or correct."], "Works"),
-        ("local", "Private by default", ["Videos stay here; only captions go to", "the AI you allow. Nothing is posted."], "Works"),
+        ("local", "Private by default", ["Videos stay here; only captions go to", "the AI you allow. You choose what posts."], "Works"),
         ("lab", "Kick videos", ["Paste a kick.com video link.", "Downloading is still being tested."], "Experimental"),
     ]
     c.text(0, 26, "What it does", size=18)

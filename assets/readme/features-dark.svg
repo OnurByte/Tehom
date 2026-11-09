@@ -45,7 +45,7 @@
 <text x="583.5" y="264" font-size="13" font-weight="400" fill="#ffffff" text-anchor="middle" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">Works</text>
 <text x="348.0" y="300" font-size="16" font-weight="500" fill="#ffffff" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">Private by default</text>
 <text x="348.0" y="328" font-size="14" font-weight="400" fill="#ffffff" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">Videos stay here; only captions go to</text>
-<text x="348.0" y="350" font-size="14" font-weight="400" fill="#ffffff" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">the AI you allow. Nothing is posted.</text>
+<text x="348.0" y="350" font-size="14" font-weight="400" fill="#ffffff" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">the AI you allow. You choose what posts.</text>
 <rect x="656.5" y="224.5" width="303.0" height="151" rx="12" fill="#000000" stroke="#404040"/>
 <rect x="656.5" y="224.5" width="303.0" height="151" rx="12" fill="none" stroke="url(#tr)"/>
 <rect x="656.5" y="224.5" width="303.0" height="151" rx="12" fill="none" stroke="url(#bl)"/>

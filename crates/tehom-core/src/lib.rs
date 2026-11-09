@@ -65,6 +65,100 @@ pub struct Clip {
     /// deleted export is reported instead of shown as available.
     #[serde(default)]
     pub output_available: bool,
+    /// Burned-in captions, timed relative to the clip start.
+    #[serde(default)]
+    pub captions: Vec<Cue>,
+    #[serde(default)]
+    pub caption_style: CaptionStyle,
+    #[serde(default)]
+    pub sound_effect: SoundEffect,
+}
+
+/// One caption line; times are milliseconds from the clip start.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Cue {
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptionSize {
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptionPosition {
+    Top,
+    Middle,
+    #[default]
+    Bottom,
+}
+
+/// How burned-in captions look. Colors are `#RRGGBB`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CaptionStyle {
+    pub enabled: bool,
+    pub color: String,
+    pub outline: String,
+    pub size: CaptionSize,
+    pub position: CaptionPosition,
+    pub uppercase: bool,
+}
+impl Default for CaptionStyle {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            color: "#FFFFFF".into(),
+            outline: "#000000".into(),
+            size: CaptionSize::Medium,
+            position: CaptionPosition::Bottom,
+            uppercase: false,
+        }
+    }
+}
+
+/// A short synthesized sound at the start of a clip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SoundEffect {
+    #[default]
+    None,
+    Whoosh,
+    Pop,
+}
+
+/// A rough, name-based quality tier for an analysis model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Strength {
+    Fast,
+    Balanced,
+    Strongest,
+}
+
+/// One entry in the model picker.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelInfo {
+    pub id: String,
+    pub label: String,
+    /// `None` for local models, whose quality cannot be known.
+    pub strength: Option<Strength>,
+    /// One plain-language line for non-technical users.
+    pub note: Option<String>,
+}
+
+/// Local speech-to-text readiness: whisper.cpp program and model file.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpeechStatus {
+    pub program: Option<PathBuf>,
+    pub model: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -232,6 +326,76 @@ impl ExportProfile {
     }
 }
 
+/// Where a clip can be published. Only Instagram is implemented.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Platform {
+    Instagram,
+    YoutubeShorts,
+    Tiktok,
+}
+impl Platform {
+    pub const ALL: [Self; 3] = [Self::Instagram, Self::YoutubeShorts, Self::Tiktok];
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Instagram => "instagram",
+            Self::YoutubeShorts => "youtube_shorts",
+            Self::Tiktok => "tiktok",
+        }
+    }
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|platform| platform.name() == name)
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Instagram => "Instagram",
+            Self::YoutubeShorts => "YouTube Shorts",
+            Self::Tiktok => "TikTok",
+        }
+    }
+    /// Whether publishing to this platform is implemented.
+    pub fn available(self) -> bool {
+        self == Self::Instagram
+    }
+}
+
+/// A connected publishing account. Its session secret lives in the OS keyring.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Account {
+    pub id: i64,
+    pub platform: Platform,
+    pub username: String,
+    pub full_name: String,
+    /// The session expired or its secret is missing: sign in again.
+    pub needs_login: bool,
+}
+
+/// One attempt to publish a clip to an account.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Publication {
+    pub id: i64,
+    pub clip_id: i64,
+    pub account_id: i64,
+    /// "uploading", "published" or "failed".
+    pub state: String,
+    pub url: Option<String>,
+    pub error: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountLogin {
+    Done(Account),
+    /// `app`: the code comes from an authenticator app; otherwise by SMS.
+    TwoFactor {
+        hint: Option<String>,
+        app: bool,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EngineSnapshot {
     pub sources: Vec<Source>,
@@ -250,4 +414,34 @@ pub struct EngineSnapshot {
     /// Look for a new release when the desktop app starts.
     #[serde(default = "enabled")]
     pub check_updates: bool,
+    /// Default caption look for newly created clips.
+    #[serde(default)]
+    pub caption_style: CaptionStyle,
+    #[serde(default)]
+    pub accounts: Vec<Account>,
+    /// Newest first (at most 100).
+    #[serde(default)]
+    pub publications: Vec<Publication>,
+    /// Account that automatic exports are published to; off when `None`.
+    #[serde(default)]
+    pub auto_publish_account: Option<i64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn old_clips_load_with_caption_defaults() {
+        let clip: Clip = serde_json::from_str(
+            r#"{"id":1,"video_id":2,"title":"t","start_ms":0,"end_ms":1,"output_path":null}"#,
+        )
+        .unwrap();
+        assert!(clip.captions.is_empty());
+        assert_eq!(clip.caption_style, CaptionStyle::default());
+        assert!(clip.caption_style.enabled);
+        assert_eq!(clip.sound_effect, SoundEffect::None);
+        let style: CaptionStyle = serde_json::from_str(r#"{"size":"large"}"#).unwrap();
+        assert_eq!(style.size, CaptionSize::Large);
+        assert_eq!(style.color, "#FFFFFF");
+    }
 }
