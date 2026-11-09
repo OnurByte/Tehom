@@ -32,7 +32,7 @@ options=(
 )
 ext=""
 case "$(uname -s)" in
-    Linux) options+=(-DGGML_STATIC=ON) ;;
+    Linux) options+=(-DGGML_STATIC=ON "-DCMAKE_EXE_LINKER_FLAGS=-static") ;;
     # Static C runtime; CMP0091 because whisper.cpp declares CMake 3.5.
     MINGW* | MSYS* | CYGWIN*)
         options+=(-DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded)
@@ -52,6 +52,7 @@ bin="$src/build/bin/whisper-cli$ext"
 case "$(uname -s)" in
     Linux)
         if readelf -d "$bin" | grep -q NEEDED; then
+            readelf -d "$bin" | grep NEEDED >&2
             echo "whisper-cli is not statically linked" >&2
             exit 1
         fi
