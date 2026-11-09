@@ -49,8 +49,14 @@ fn brightest(path: &std::path::Path) -> u8 {
 #[test]
 fn captions_and_intro_sounds_render_valid_vertical_clips() {
     // Quote, colon and comma in the folder name exercise filter escaping.
+    // Windows forbids ':' in names; its drive letter (`C:`) covers the colon there.
     let root = tempfile::tempdir().unwrap();
-    let directory = root.path().join("it's a:b,c");
+    let name = if cfg!(windows) {
+        "it's a,b c"
+    } else {
+        "it's a:b,c"
+    };
+    let directory = root.path().join(name);
     std::fs::create_dir(&directory).unwrap();
     let look = CaptionLook {
         color: "#FFFFFF",
