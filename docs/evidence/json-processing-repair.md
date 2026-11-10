@@ -125,7 +125,11 @@ No private speech text is included in the warning or this report.
   two-thread run uses on-disk TMPDIR; one encoder was SIGKILLed by the host.
   It ended with 74 passed and 1 failed (the SIGKILL export-progress case).
   Kernel and systemd-oomd journal queries returned no matching evidence, so
-  the origin of SIGKILL is not established. Final workspace checks remain pending. The later Clippy process was
+  the origin of SIGKILL is not established. Final workspace checks remain pending. The Ubuntu PR CI on 81c398e reached
+  strict workspace Clippy and rejected an unchecked read byte count in the
+  disconnected-response fixture; the fixture now asserts a non-empty request.
+  The quota-injection test also restores its process limits/signal handler so
+  redirected test-runner output remains writable after the assertions. The later Clippy process was
   deliberately interrupted (exit 130) to let the pending regression compile
   before the final fix; the queued workspace test was temporarily suspended
   at its build lock. That pre-version-bump process was subsequently discarded

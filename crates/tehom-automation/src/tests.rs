@@ -3845,7 +3845,7 @@ async fn ai_retries_disconnected_response_bodies() {
                     .set_read_timeout(Some(Duration::from_secs(1)))
                     .unwrap();
                 let mut buffer = [0; 4096];
-                stream.read(&mut buffer).unwrap();
+                assert!(stream.read(&mut buffer).unwrap() > 0, "expected a request");
                 calls += 1;
                 let size = if calls == 1 { 100 } else { 2 };
                 let status = if calls == 1 { status } else { "200 OK" };
