@@ -121,7 +121,7 @@ impl Tehom {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let source_url = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("youtube.com/@channel, a video link or an RSS feed link")
+                .placeholder("YouTube or Kick channel, a video or an RSS feed link")
         });
         let ai_endpoint =
             cx.new(|cx| InputState::new(window, cx).default_value("http://127.0.0.1:11434"));
@@ -780,7 +780,15 @@ pub struct Assets;
 
 /// Files embedded in the binary: the brand mark and the Simple Icons (CC0)
 /// platform glyphs, see assets/README.md.
-const OWN_ASSETS: [(&str, &[u8]); 4] = [
+const OWN_ASSETS: [(&str, &[u8]); 6] = [
+    (
+        "brand/youtube.svg",
+        include_bytes!("../../../assets/brand/youtube.svg"),
+    ),
+    (
+        "brand/kick.svg",
+        include_bytes!("../../../assets/brand/kick.svg"),
+    ),
     (
         "brand/icon.svg",
         include_bytes!("../../../assets/brand/icon.svg"),

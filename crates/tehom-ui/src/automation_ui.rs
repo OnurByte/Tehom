@@ -1,6 +1,7 @@
 use super::*;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::sidebar::{Sidebar, SidebarMenu, SidebarMenuItem};
+use gpui_kit::gpui::{Div, rgb};
 use tehom_automation::Automation;
 use tehom_core::{
     AccountLogin, AiConfig, AiProvider, Appearance, AutomationSettings, CaptionStyle, Cue,
@@ -588,9 +589,9 @@ impl Tehom {
         let p = crate::theme::palette(cx);
         let unavailable = self.backend.is_none() || self.source_busy;
         div().flex().flex_col().gap_4().p(px(24.)).bg(p.background).border_1().border_color(p.border).rounded(px(12.))
-            .child(div().text_lg().child("Add a channel, video or RSS feed"))
+            .child(div().text_lg().child("Add a YouTube or Kick channel, a video or an RSS feed"))
             .child(Input::new(&self.source_url).h(px(44.)).id("channel-url").aria_label("Channel, video or RSS feed address").disabled(unavailable))
-            .child(div().text_sm().text_color(p.muted).child("A YouTube channel or video, a Kick video, or the link of any RSS or Atom feed with videos."))
+            .child(div().text_sm().text_color(p.muted).child("A YouTube or Kick channel, a video, or the link of any RSS or Atom feed with videos."))
             .child(div().flex().gap_2()
                 .child(Button::new("mode-draft").h(px(44.)).label("Drafts").when(self.source_mode==AutomationMode::AutoDraft,|b|b.primary())
                     .on_click(cx.listener(|view,_,_,cx|{view.source_mode=AutomationMode::AutoDraft;cx.notify();})))
@@ -630,6 +631,7 @@ impl Tehom {
                     .flex()
                     .flex_col()
                     .gap_2()
+                    .children(platform_badge(&source))
                     .child(div().text_sm().text_color(p.muted).child(
                         if source.channel_id.starts_with("local:") {
                             "Local file"
@@ -1360,4 +1362,32 @@ impl Render for Tehom {
             )
             .children(overlay)
     }
+}
+
+/// A coloured badge with the platform name, so the source is recognisable at a glance.
+fn platform_badge(source: &tehom_core::Source) -> Option<Div> {
+    let (glyph, name, background, foreground) = if source.url.contains("kick.com") {
+        ("brand/kick.svg", "Kick", 0x53FC18, 0x0B0E0F)
+    } else if source.url.contains("youtube.com") {
+        ("brand/youtube.svg", "YouTube", 0xFF0000, 0xFFFFFF)
+    } else {
+        return None;
+    };
+    Some(
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(
+                div()
+                    .size(px(28.))
+                    .rounded(px(6.))
+                    .bg(rgb(background))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(svg().path(glyph).size(px(22.)).text_color(rgb(foreground))),
+            )
+            .child(div().text_sm().child(name)),
+    )
 }
