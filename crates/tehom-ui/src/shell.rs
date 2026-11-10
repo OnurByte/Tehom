@@ -259,7 +259,7 @@ impl Tehom {
         let (title, body) = match step {
             0 => (
                 "Paste a link. Get clips as MP4 files.",
-                "Tehom watches YouTube channels or single videos, picks the moments worth keeping and saves them as clips. It never posts anything for you.",
+                "Tehom watches YouTube or Kick channels and single videos, picks the moments worth keeping and saves them as clips. It never posts anything for you.",
             ),
             1 => (
                 "Choose who picks the clips",

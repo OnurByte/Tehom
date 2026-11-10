@@ -440,10 +440,11 @@ async fn synthetic_media_and_local_http_model_export_a_valid_mp4() {
     assert_eq!(engine.requests.lock().unwrap().len(), 1);
 }
 #[test]
-fn outbound_requests_are_limited_to_youtube_and_loopback() {
+fn outbound_requests_are_limited_to_youtube_kick_videos_and_loopback() {
     for allowed in [
         "https://www.youtube.com/feeds/videos.xml?channel_id=UC1234567890123456789012",
         "https://www.youtube.com/@example",
+        "https://kick.com/api/v2/channels/some_streamer/videos",
         "http://127.0.0.1:11434/api/chat",
         "http://[::1]:8080/v1/chat/completions",
         "http://localhost:11434/api/tags",
@@ -459,6 +460,11 @@ fn outbound_requests_are_limited_to_youtube_and_loopback() {
         "https://upload.twitter.com/1.1/media/upload.json",
         "https://api.x.com/2/tweets",
         "https://kick.com/api/v2/channels",
+        "https://kick.com/api/v2/channels/a/b/videos",
+        "https://kick.com/api/v2/channels/a/clips",
+        "https://kick.com:8443/api/v2/channels/a/videos",
+        "https://kick.com.evil.example/api/v2/channels/a/videos",
+        "http://kick.com/api/v2/channels/a/videos",
         "http://www.youtube.com/@plaintext",
         "https://www.youtube.com:8443/@port",
         "https://user:pass@www.youtube.com/@creds",
@@ -1607,6 +1613,52 @@ async fn downloads_are_removed_only_by_user_preference_and_never_local_files() {
     assert!(!source.exists());
     assert!(user_file.exists());
     assert!(engine.cleanup_downloads(false).await.unwrap().is_empty());
+}
+
+#[test]
+fn kick_channels_are_strict_and_lowercased() {
+    for (input, slug) in [
+        ("https://kick.com/Some_Streamer", Some("some_streamer")),
+        (" https://www.kick.com/abc/ ", Some("abc")),
+        ("https://www.youtube.com/@example", None),
+        ("not a url", None),
+    ] {
+        assert_eq!(
+            kick_channel_input(input).unwrap().as_deref(),
+            slug,
+            "{input}"
+        );
+    }
+    for invalid in [
+        "http://kick.com/abc",
+        "https://kick.com:443/abc",
+        "https://u@kick.com/abc",
+        "https://kick.com/abc?x=1",
+        "https://kick.com/video",
+        "https://kick.com/a/b",
+        "https://kick.com/",
+    ] {
+        assert!(kick_channel_input(invalid).is_err(), "{invalid}");
+    }
+}
+
+#[test]
+fn kick_video_list_skips_live_and_malformed_entries() {
+    let uuid = "0123abcd-4567-89ef-0123-456789abcdef";
+    let json = format!(
+        r#"[{{"is_live":true,"video":{{"uuid":"{uuid}"}}}},
+            {{"is_live":false,"session_title":"Finale","video":{{"uuid":"fedcba98-4567-89ef-0123-456789abcdef"}}}},
+            {{"video":{{"uuid":"{uuid}"}}}},{{"video":{{"uuid":"nope"}}}}]"#
+    );
+    let entries = parse_kick_videos(json.as_bytes()).unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].title, "Finale");
+    assert_eq!(entries[1].id, format!("kick:{uuid}"));
+    assert_eq!(
+        video_url(&entries[1].id),
+        format!("https://kick.com/video/{uuid}")
+    );
+    assert!(parse_kick_videos(b"{}").is_err());
 }
 
 #[test]

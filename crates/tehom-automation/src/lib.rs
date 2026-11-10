@@ -203,6 +203,77 @@ fn single_video(input: &str) -> Option<(String, String, String)> {
         format!("Kick VOD {} (deneysel)", &uuid[..8]),
     ))
 }
+fn kick_slug(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+/// Experimental Kick channel input (`https://kick.com/<channel>`). `Ok(None)` means
+/// the address is not a Kick one; `Ok(Some(slug))` is the lowercase channel name.
+fn kick_channel_input(input: &str) -> Result<Option<String>> {
+    let input = input.trim();
+    let Ok(url) = reqwest::Url::parse(input) else {
+        return Ok(None);
+    };
+    if !matches!(url.host_str(), Some("kick.com" | "www.kick.com")) {
+        return Ok(None);
+    }
+    let authority = input
+        .split("//")
+        .nth(1)
+        .and_then(|v| v.split('/').next())
+        .unwrap_or("");
+    ensure!(
+        url.scheme() == "https"
+            && !authority.contains(':')
+            && !authority.contains('@')
+            && url.query().is_none()
+            && url.fragment().is_none()
+            && !input.contains('%'),
+        "Use a plain https://kick.com/<channel> address"
+    );
+    let segments: Vec<&str> = url
+        .path_segments()
+        .map(|segments| segments.filter(|s| !s.is_empty()).collect())
+        .unwrap_or_default();
+    match segments.as_slice() {
+        [slug] if kick_slug(slug) && !matches!(*slug, "video" | "categories" | "browse") => {
+            Ok(Some(slug.to_ascii_lowercase()))
+        }
+        _ => anyhow::bail!("Use a Kick channel address such as https://kick.com/<channel>"),
+    }
+}
+/// Canonical page for a discovered video id (`kick:<uuid>` or a YouTube id).
+fn video_url(id: &str) -> String {
+    match id.strip_prefix("kick:") {
+        Some(uuid) => format!("https://kick.com/video/{uuid}"),
+        None => format!("https://www.youtube.com/watch?v={id}"),
+    }
+}
+/// Kick's undocumented `/api/v2/channels/<slug>/videos` list; ended streams only.
+fn parse_kick_videos(bytes: &[u8]) -> Result<Vec<Entry>> {
+    let items: Vec<serde_json::Value> =
+        serde_json::from_slice(bytes).context("Kick video list could not be parsed")?;
+    let mut seen = std::collections::HashSet::new();
+    Ok(items
+        .iter()
+        .filter(|item| item["is_live"].as_bool() != Some(true))
+        .filter_map(|item| {
+            let uuid = item["video"]["uuid"].as_str().filter(|u| kick_uuid(u))?;
+            let id = format!("kick:{uuid}");
+            if !seen.insert(id.clone()) {
+                return None;
+            }
+            let title = item["session_title"]
+                .as_str()
+                .or_else(|| item["title"].as_str())
+                .filter(|t| !t.trim().is_empty())
+                .map_or_else(|| format!("Kick VOD {}", &uuid[..8]), str::to_owned);
+            Some(Entry { id, title })
+        })
+        .collect())
+}
 fn channel_input(input: &str) -> Result<String> {
     let input = input.trim();
     if channel_id(input) {
@@ -258,16 +329,23 @@ fn is_loopback_host(url: &reqwest::Url) -> bool {
     })
 }
 /// The only network destinations the engine may contact: the public YouTube
-/// site for discovery and the user's loopback AI server. Exports are files;
+/// site and Kick's channel video list for discovery, and the user's loopback AI server. Exports are files;
 /// nothing is ever sent to a publishing or social service.
 fn outbound(url: &str) -> Result<reqwest::Url> {
     let url = reqwest::Url::parse(url).context("Invalid request URL")?;
     let youtube = url.scheme() == "https"
         && url.host_str() == Some("www.youtube.com")
         && url.port().is_none();
+    let kick = url.scheme() == "https"
+        && url.host_str() == Some("kick.com")
+        && url.port().is_none()
+        && matches!(
+            url.path_segments().map(Iterator::collect::<Vec<_>>).as_deref(),
+            Some(["api", "v2", "channels", slug, "videos"]) if kick_slug(slug)
+        );
     let local = matches!(url.scheme(), "http" | "https") && is_loopback_host(&url);
     ensure!(
-        url.username().is_empty() && url.password().is_none() && (youtube || local),
+        url.username().is_empty() && url.password().is_none() && (youtube || kick || local),
         "Outbound request refused: {}",
         url.host_str().unwrap_or("unknown host")
     );
@@ -591,6 +669,26 @@ impl Automation {
             .find(|source| source.id == source_id)
             .context("Local video source disappeared")
     }
+    /// Latest videos of a watched channel: a YouTube channel id or `kick:<slug>`.
+    async fn discover(&self, channel: &str) -> Result<(String, Vec<Entry>)> {
+        if let Some(slug) = channel.strip_prefix("kick:") {
+            let bytes = self
+                .fetch(
+                    &format!("https://kick.com/api/v2/channels/{slug}/videos"),
+                    2 * 1024 * 1024,
+                )
+                .await?;
+            return Ok((slug.to_owned(), parse_kick_videos(&bytes)?));
+        }
+        parse_feed(
+            &self
+                .fetch(
+                    &format!("https://www.youtube.com/feeds/videos.xml?channel_id={channel}"),
+                    2 * 1024 * 1024,
+                )
+                .await?,
+        )
+    }
     pub async fn add_source(&self, url: &str, mode: AutomationMode) -> Result<Source> {
         let _guard = self.checks.lock().await;
         if let Some((id, canonical, title)) = single_video(url) {
@@ -625,8 +723,11 @@ impl Automation {
                 .find(|source| source.id == source_id)
                 .context("Video source disappeared");
         }
-        let mut id = channel_input(url)?;
-        if !channel_id(&id) {
+        let mut id = match kick_channel_input(url)? {
+            Some(slug) => format!("kick:{slug}"),
+            None => channel_input(url)?,
+        };
+        if !channel_id(&id) && !id.starts_with("kick:") {
             let html = String::from_utf8(self.fetch(&id, 4 * 1024 * 1024).await?)?;
             let metadata = html
                 .split("\"channelMetadataRenderer\":")
@@ -642,16 +743,7 @@ impl Automation {
                 .context("YouTube channel ID was not found; use its /channel/UC… URL")?
                 .to_owned();
         }
-        let feed = match self
-            .fetch(
-                &format!("https://www.youtube.com/feeds/videos.xml?channel_id={id}"),
-                2 * 1024 * 1024,
-            )
-            .await
-        {
-            Ok(bytes) => parse_feed(&bytes),
-            Err(error) => Err(error),
-        };
+        let feed = self.discover(&id).await;
         let (title, entries, feed_error) = match feed {
             Ok((title, entries)) => (title, entries, None),
             Err(error) => {
@@ -698,7 +790,7 @@ impl Automation {
         for (index, entry) in entries.iter().enumerate() {
             let queued =
                 matches!(mode.as_str(), "auto_draft" | "auto_export") && (!baseline || index == 0);
-            count += sqlx::query("INSERT INTO videos(source_id,external_id,title,url,state) VALUES (?,?,?,?,?) ON CONFLICT(external_id) DO NOTHING").bind(source).bind(&entry.id).bind(&entry.title).bind(format!("https://www.youtube.com/watch?v={}", entry.id)).bind(if queued { "queued" } else { "discovered" }).execute(&mut *tx).await?.rows_affected() as usize;
+            count += sqlx::query("INSERT INTO videos(source_id,external_id,title,url,state) VALUES (?,?,?,?,?) ON CONFLICT(external_id) DO NOTHING").bind(source).bind(&entry.id).bind(&entry.title).bind(video_url(&entry.id)).bind(if queued { "queued" } else { "discovered" }).execute(&mut *tx).await?.rows_affected() as usize;
         }
         sqlx::query("UPDATE sources SET last_checked=datetime('now'),error=NULL WHERE id=?")
             .bind(source)
@@ -718,17 +810,7 @@ impl Automation {
                 continue;
             }
             let result = async {
-                let (title, entries) = parse_feed(
-                    &self
-                        .fetch(
-                            &format!(
-                                "https://www.youtube.com/feeds/videos.xml?channel_id={}",
-                                source.channel_id
-                            ),
-                            2 * 1024 * 1024,
-                        )
-                        .await?,
-                )?;
+                let (title, entries) = self.discover(&source.channel_id).await?;
                 sqlx::query("UPDATE sources SET title=? WHERE id=?")
                     .bind(title)
                     .bind(source.id)

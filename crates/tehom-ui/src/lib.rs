@@ -88,7 +88,7 @@ impl Tehom {
     }
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let source_url = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("youtube.com/@channel or a video link")
+            InputState::new(window, cx).placeholder("YouTube or Kick channel, or a video link")
         });
         let ai_endpoint =
             cx.new(|cx| InputState::new(window, cx).default_value("http://127.0.0.1:11434"));
@@ -703,18 +703,24 @@ pub struct Assets;
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<std::borrow::Cow<'static, [u8]>>> {
-        if path == "brand/icon.svg" {
-            return Ok(Some(std::borrow::Cow::Borrowed(include_bytes!(
-                "../../../assets/brand/icon.svg"
-            ))));
+        let bytes: Option<&'static [u8]> = match path {
+            "brand/icon.svg" => Some(include_bytes!("../../../assets/brand/icon.svg")),
+            "brand/youtube.svg" => Some(include_bytes!("../../../assets/brand/youtube.svg")),
+            "brand/kick.svg" => Some(include_bytes!("../../../assets/brand/kick.svg")),
+            _ => None,
+        };
+        if let Some(bytes) = bytes {
+            return Ok(Some(std::borrow::Cow::Borrowed(bytes)));
         }
         assets::AllAssets.load(path)
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
         let mut paths = assets::AllAssets.list(path)?;
-        if "brand/icon.svg".starts_with(path) {
-            paths.push("brand/icon.svg".into());
+        for brand in ["brand/icon.svg", "brand/youtube.svg", "brand/kick.svg"] {
+            if brand.starts_with(path) {
+                paths.push(brand.into());
+            }
         }
         Ok(paths)
     }
@@ -738,10 +744,8 @@ mod tests {
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
             assert_eq!(
-                window
-                    .find_by_label("YouTube channel or video address")
-                    .label(),
-                Some("YouTube channel or video address")
+                window.find_by_label("YouTube or Kick address").label(),
+                Some("YouTube or Kick address")
             );
             assert_eq!(window.find("add-channel").disabled(), Some(true));
             assert_eq!(window.find("import-local-video").disabled(), Some(true));
