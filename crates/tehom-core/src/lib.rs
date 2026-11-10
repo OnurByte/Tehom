@@ -30,6 +30,10 @@ pub struct Source {
     pub mode: AutomationMode,
     pub last_checked: Option<String>,
     pub error: Option<String>,
+    /// Where this source's automatic clips are posted: `None` follows the
+    /// default account, `Some(0)` posts nowhere, otherwise that account.
+    #[serde(default)]
+    pub publish_account: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,6 +114,9 @@ pub struct CaptionStyle {
     pub size: CaptionSize,
     pub position: CaptionPosition,
     pub uppercase: bool,
+    /// Exact height, as a percentage from the top of the frame (0–100).
+    /// `None` uses `position`.
+    pub vertical: Option<u8>,
 }
 impl Default for CaptionStyle {
     fn default() -> Self {
@@ -120,6 +127,7 @@ impl Default for CaptionStyle {
             size: CaptionSize::Medium,
             position: CaptionPosition::Bottom,
             uppercase: false,
+            vertical: None,
         }
     }
 }
@@ -461,6 +469,40 @@ pub enum Appearance {
     Dark,
 }
 
+/// The colour of primary buttons and highlights.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Accent {
+    #[default]
+    Violet,
+    Blue,
+    Green,
+    Orange,
+    Pink,
+    /// Black and white only.
+    Mono,
+}
+impl Accent {
+    pub const ALL: [Self; 6] = [
+        Self::Violet,
+        Self::Blue,
+        Self::Green,
+        Self::Orange,
+        Self::Pink,
+        Self::Mono,
+    ];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Violet => "Violet",
+            Self::Blue => "Blue",
+            Self::Green => "Green",
+            Self::Orange => "Orange",
+            Self::Pink => "Pink",
+            Self::Mono => "Black and white",
+        }
+    }
+}
+
 /// Desktop sidebar width in pixels: default and bounds.
 pub const SIDEBAR_WIDTH: u32 = 280;
 pub const SIDEBAR_WIDTHS: std::ops::RangeInclusive<u32> = 200..=480;
@@ -501,6 +543,8 @@ pub struct EngineSnapshot {
     pub automation: AutomationSettings,
     #[serde(default)]
     pub appearance: Appearance,
+    #[serde(default)]
+    pub accent: Accent,
     #[serde(default = "sidebar_width")]
     pub sidebar_width: u32,
 }

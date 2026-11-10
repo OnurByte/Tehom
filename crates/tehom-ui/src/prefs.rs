@@ -61,6 +61,10 @@ impl Tehom {
             self.appearance = Some(snapshot.appearance);
             crate::theme::set_appearance(snapshot.appearance, cx);
         }
+        if self.accent != Some(snapshot.accent) {
+            self.accent = Some(snapshot.accent);
+            crate::theme::set_accent(snapshot.accent, cx);
+        }
         if self.automation.seeded.as_ref() == Some(&saved) {
             return;
         }
@@ -164,9 +168,9 @@ impl Tehom {
             .flex()
             .flex_col()
             .gap_3()
-            .child(div().text_lg().child("Automation"))
+            .child(div().text_lg().child("Rules for every source"))
             .child(hint(
-                "How Tehom watches your channels and feeds on its own. Posting to Instagram and the caption look have their own cards above; the clip folder is below.",
+                "How Tehom watches your channels and feeds on its own. These rules apply to every source.",
             ))
             .child(group("How often"))
             .child(number(&self.automation.minutes, "Check for new videos every", "minutes (1 to 1440)"))
@@ -257,6 +261,13 @@ impl Tehom {
                     .child("Light or dark. \"Same as this computer\" follows your system setting."),
             )
             .child(
+                div()
+                    .text_sm()
+                    .text_color(p.muted)
+                    .child("Colour of buttons and highlights"),
+            )
+            .child(self.accent_row(cx))
+            .child(
                 div().flex().flex_wrap().gap_2().children(
                     [
                         (Appearance::System, "Same as this computer"),
@@ -280,6 +291,55 @@ impl Tehom {
                 ),
             )
             .into_any_element()
+    }
+
+    /// One swatch button per accent colour.
+    pub(crate) fn accent_row(&self, cx: &mut Context<Self>) -> AnyElement {
+        let p = crate::theme::palette(cx);
+        let current = self.accent.unwrap_or_default();
+        div()
+            .flex()
+            .flex_wrap()
+            .gap_2()
+            .children(
+                tehom_core::Accent::ALL
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, accent)| {
+                        let selected = current == accent;
+                        Button::new(("accent", index))
+                            .h(px(44.))
+                            .label(accent.label())
+                            .accessibility_label(format!("Colour: {}", accent.label()))
+                            .when(selected, |button| button.primary())
+                            .toggled(selected)
+                            .child(
+                                div()
+                                    .size(px(16.))
+                                    .rounded_full()
+                                    .border_1()
+                                    .border_color(p.edge)
+                                    .bg(crate::theme::accent_color(accent).unwrap_or(p.text)),
+                            )
+                            .on_click(cx.listener(move |view, _, window, cx| {
+                                view.choose_accent(accent, window, cx)
+                            }))
+                    }),
+            )
+            .into_any_element()
+    }
+
+    /// Applies at once, then saves.
+    pub(crate) fn choose_accent(
+        &mut self,
+        accent: tehom_core::Accent,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.accent = Some(accent);
+        crate::theme::set_accent(accent, cx);
+        self.act(Action::Accent(accent), window, cx);
+        cx.notify();
     }
 
     /// Applies at once, then saves.

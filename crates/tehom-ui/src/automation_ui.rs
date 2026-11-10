@@ -11,8 +11,10 @@ use tehom_core::{
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Page {
     Home,
-    Sources,
     Clips,
+    Studio,
+    Automations,
+    Connections,
     Settings,
     About,
 }
@@ -55,6 +57,9 @@ pub(crate) enum Action {
     AutoPublish(Option<i64>),
     Automation(AutomationSettings),
     Appearance(Appearance),
+    Accent(tehom_core::Accent),
+    /// Source, then where its clips are posted (`Source::publish_account`).
+    SourcePublish(i64, Option<i64>),
 }
 
 /// What the view does after an action, besides showing its message.
@@ -69,8 +74,6 @@ enum Followup {
 pub(crate) const CARD_AI: usize = 1;
 pub(crate) const CARD_LOOK: usize = 2;
 pub(crate) const CARD_SPEECH: usize = 3;
-pub(crate) const CARD_INSTAGRAM: usize = 4;
-pub(crate) const CARD_AUTOMATION: usize = 5;
 
 impl Tehom {
     pub fn start_automation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -249,6 +252,8 @@ impl Tehom {
                 | Action::AutoPublish(_)
                 | Action::Automation(_)
                 | Action::Appearance(_)
+                | Action::Accent(_)
+                | Action::SourcePublish(..)
         );
         let signing_in = matches!(
             action,
@@ -414,6 +419,18 @@ impl Tehom {
                             backend.engine.set_appearance(appearance).await?;
                             "Appearance saved.".into()
                         }
+                        Action::Accent(accent) => {
+                            backend.engine.set_accent(accent).await?;
+                            "Colour saved.".into()
+                        }
+                        Action::SourcePublish(source, account) => {
+                            backend.engine.set_source_publish(source, account).await?;
+                            match account {
+                                None => "This source now posts to the default account.".into(),
+                                Some(0) => "Clips from this source are not posted.".into(),
+                                Some(_) => "Clips from this source go to that account.".into(),
+                            }
+                        }
                         Action::AutoPublish(account) => {
                             backend.engine.set_auto_publish(account).await?;
                             if account.is_some() {
@@ -576,7 +593,7 @@ impl Tehom {
 
     pub(crate) fn navigate(&mut self, page: Page, cx: &mut Context<Self>) {
         self.page = page;
-        if page != Page::Clips
+        if page != Page::Studio
             && let Some(preview) = &self.preview
             && let Err(error) = preview.set_paused(true)
         {
@@ -585,119 +602,97 @@ impl Tehom {
         cx.notify();
     }
 
-    fn source_form(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn source_form(&self, cx: &mut Context<Self>) -> AnyElement {
         let p = crate::theme::palette(cx);
         let unavailable = self.backend.is_none() || self.source_busy;
-        div().flex().flex_col().gap_4().p(px(24.)).bg(p.background).border_1().border_color(p.border).rounded(px(12.))
-            .child(div().text_lg().child("Add a YouTube or Kick channel, a video or an RSS feed"))
-            .child(Input::new(&self.source_url).h(px(44.)).id("channel-url").aria_label("Channel, video or RSS feed address").disabled(unavailable))
-            .child(div().text_sm().text_color(p.muted).child("A YouTube or Kick channel, a video, or the link of any RSS or Atom feed with videos."))
-            .child(div().flex().gap_2()
-                .child(Button::new("mode-draft").h(px(44.)).label("Drafts").when(self.source_mode==AutomationMode::AutoDraft,|b|b.primary())
-                    .on_click(cx.listener(|view,_,_,cx|{view.source_mode=AutomationMode::AutoDraft;cx.notify();})))
-                .child(Button::new("mode-export").h(px(44.)).label("MP4 files").when(self.source_mode==AutomationMode::AutoExport,|b|b.primary())
-                    .on_click(cx.listener(|view,_,_,cx|{view.source_mode=AutomationMode::AutoExport;cx.notify();}))))
-            .child(div().text_sm().text_color(p.muted).child(match self.source_mode {AutomationMode::AutoExport=>"Clips are saved to your folder automatically. Channels and feeds are watched for new videos.",AutomationMode::Manual=>"New videos are listed; you choose which ones to make clips from.",_=>"Tehom prepares drafts for you to review. Channels and feeds are watched for new videos."}))
-            .child(Button::new("add-channel").h(px(44.)).primary().label(if self.source_busy {"Adding…"} else {"Add link"}).disabled(unavailable)
-                .on_click(cx.listener(|view,_,window,cx|view.act(Action::Add(view.source_url.read(cx).value().to_string(),view.source_mode),window,cx))))
-            .child(Button::new("import-local-video").h(px(44.)).label("Make clips from a file").disabled(unavailable)
-                .on_click(cx.listener(|view,_,window,cx| view.choose_input_file(None, window, cx))))
-            .child(div().text_sm().text_color(p.muted).child("The file is read where it is. Keep it in place until the clips are ready."))
-            .into_any_element()
-    }
-
-    fn source_list(&self, cx: &mut Context<Self>) -> AnyElement {
-        let p = crate::theme::palette(cx);
-        let sources = self
-            .engine_snapshot
-            .as_ref()
-            .map(|s| s.sources.clone())
-            .unwrap_or_default();
-        div()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .when(sources.is_empty(), |v| {
-                v.child(div().p_5().text_color(p.muted).child("No sources yet."))
-            })
-            .children(sources.into_iter().map(|source| {
-                let id = source.id;
+        let mode = |id: &'static str, label: &'static str, mode: AutomationMode| {
+            Button::new(id)
+                .h(px(44.))
+                .label(label)
+                .when(self.source_mode == mode, |b| b.primary())
+                .toggled(self.source_mode == mode)
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    view.source_mode = mode;
+                    cx.notify();
+                }))
+        };
+        crate::theme::card(cx)
+            .p(px(24.))
+            .gap_4()
+            .child(div().text_lg().child("Paste a YouTube or Kick link"))
+            .child(
                 div()
-                    .p_4()
-                    .bg(p.background)
-                    .border_1()
-                    .border_color(p.border)
-                    .rounded(px(12.))
                     .flex()
-                    .flex_col()
                     .gap_2()
-                    .children(platform_badge(&source))
-                    .child(div().text_sm().text_color(p.muted).child(
-                        if source.channel_id.starts_with("local:") {
-                            "Local file"
-                        } else if source.channel_id.starts_with("video:") {
-                            "Single video"
-                        } else if source.channel_id.starts_with("feed:") {
-                            "RSS feed, watching for new videos"
-                        } else {
-                            "Channel, watching for new videos"
-                        },
-                    ))
-                    .child(div().text_lg().child(source.title))
-                    .child(div().text_sm().text_color(p.muted).child(source.url))
-                    .child(div().text_sm().child(match source.mode {
-                        AutomationMode::Paused => "Paused",
-                        AutomationMode::AutoExport => "MP4 files",
-                        AutomationMode::AutoDraft => "Drafts",
-                        AutomationMode::Manual => "Manual",
-                    }))
                     .child(
-                        div()
-                            .flex()
-                            .gap_2()
-                            .child(
-                                Button::new(("source-pause", id as usize))
-                                    .h(px(44.))
-                                    .label(if source.mode == AutomationMode::Paused {
-                                        "Resume"
-                                    } else {
-                                        "Pause"
-                                    })
-                                    .disabled(self.source_busy)
-                                    .on_click(cx.listener(move |view, _, window, cx| {
-                                        view.act(
-                                            if source.mode == AutomationMode::Paused {
-                                                Action::Resume(id)
-                                            } else {
-                                                Action::Mode(id, AutomationMode::Paused)
-                                            },
-                                            window,
-                                            cx,
-                                        )
-                                    })),
-                            )
-                            .child(
-                                Button::new(("source-export", id as usize))
-                                    .h(px(44.))
-                                    .label("MP4 files")
-                                    .disabled(self.source_busy)
-                                    .on_click(cx.listener(move |view, _, window, cx| {
-                                        view.act(
-                                            Action::Mode(id, AutomationMode::AutoExport),
-                                            window,
-                                            cx,
-                                        )
-                                    })),
-                            ),
+                        div().flex_1().min_w_0().child(
+                            Input::new(&self.source_url)
+                                .h(px(44.))
+                                .id("channel-url")
+                                .aria_label("Channel, video or RSS feed address")
+                                .disabled(unavailable),
+                        ),
                     )
-                    .when_some(source.error, |v, error| {
-                        v.child(div().text_sm().text_color(p.text).child(error))
-                    })
+                    .child(
+                        Button::new("add-channel")
+                            .h(px(44.))
+                            .primary()
+                            .icon(IconName::Plus)
+                            .label(if self.source_busy { "Adding…" } else { "Add link" })
+                            .disabled(unavailable)
+                            .on_click(cx.listener(|view, _, window, cx| {
+                                view.act(
+                                    Action::Add(
+                                        view.source_url.read(cx).value().to_string(),
+                                        view.source_mode,
+                                    ),
+                                    window,
+                                    cx,
+                                )
+                            })),
+                    ),
+            )
+            .child(div().text_sm().text_color(p.muted).child(
+                "A channel is followed for new videos. A single video is done once. RSS and Atom feeds with videos work too.",
+            ))
+            .child(div().text_sm().child("What should Tehom make?"))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .child(mode("mode-draft", "Drafts I review first", AutomationMode::AutoDraft))
+                    .child(mode("mode-export", "Finished MP4 files", AutomationMode::AutoExport)),
+            )
+            .child(div().text_sm().text_color(p.muted).child(match self.source_mode {
+                AutomationMode::AutoExport => "Clips are saved to your folder on their own, and posted if you set that up in Automations.",
+                AutomationMode::Manual => "New videos are listed; you choose which ones to make clips from.",
+                _ => "Tehom prepares clips for you to check in the Studio before anything is saved.",
             }))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        Button::new("import-local-video")
+                            .h(px(44.))
+                            .icon(IconName::Upload)
+                            .label("Use a video file instead")
+                            .disabled(unavailable)
+                            .on_click(cx.listener(|view, _, window, cx| {
+                                view.choose_input_file(None, window, cx)
+                            })),
+                    )
+                    .child(div().text_sm().text_color(p.muted).child(
+                        "The file is read where it is. Keep it in place until the clips are ready.",
+                    )),
+            )
             .into_any_element()
     }
 
-    fn job_list(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn job_list(&self, cx: &mut Context<Self>) -> AnyElement {
         let p = crate::theme::palette(cx);
         let videos = self
             .engine_snapshot
@@ -1008,8 +1003,6 @@ impl Tehom {
             self.ai_card(cx),
             self.default_look_card(cx),
             self.speech_card(cx),
-            self.instagram_card(cx),
-            self.automation_card(cx),
             div()
                 .p_5()
                 .bg(p.background)
@@ -1074,6 +1067,7 @@ impl Render for Tehom {
         self.maybe_check_speech(window, cx);
         self.sync_studio(window, cx);
         self.sync_prefs(window, cx);
+        self.sync_height_sliders(window, cx);
         let update_tag = self
             .available_update()
             .map(|status| status.latest.tag.clone());
@@ -1081,8 +1075,10 @@ impl Render for Tehom {
         let menu = SidebarMenu::new().children(
             [
                 (Page::Home, "Home", IconName::House),
-                (Page::Sources, "Sources", IconName::Rss),
                 (Page::Clips, "Clips", IconName::Scissors),
+                (Page::Studio, "Studio", IconName::Clapperboard),
+                (Page::Automations, "Automations", IconName::Zap),
+                (Page::Connections, "Connections", IconName::Plug),
                 (Page::Settings, "Settings", IconName::Settings),
                 (Page::About, "About Tehom", IconName::Info),
             ]
@@ -1102,19 +1098,56 @@ impl Render for Tehom {
             .w(px(self.sidebar_px()))
             .bg(p.background)
             .header(
-                div().p_4().flex().flex_col().gap_6().child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_3()
-                        .child(
-                            svg()
-                                .path("brand/icon.svg")
-                                .size(px(30.))
-                                .text_color(p.text),
-                        )
-                        .child(div().text_xl().child("Tehom")),
-                ),
+                div()
+                    .p_4()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap_4()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .child(
+                                svg()
+                                    .path("brand/icon.svg")
+                                    .size(px(30.))
+                                    .text_color(p.text),
+                            )
+                            .child(div().text_xl().child("Tehom")),
+                    )
+                    .child(
+                        // The search box: a click or Ctrl+K opens the palette.
+                        div()
+                            .id("open-search")
+                            .test_support()
+                            .role(Role::Button)
+                            .aria_label("Search")
+                            .h(px(44.))
+                            .w_full()
+                            .px_3()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(p.border)
+                            .bg(p.surface)
+                            .text_color(p.muted)
+                            .cursor_pointer()
+                            .hover(move |style| style.border_color(p.edge))
+                            .child(IconName::Search)
+                            .child(div().flex_1().child("Search"))
+                            .child(div().text_xs().child(if cfg!(target_os = "macos") {
+                                "⌘K"
+                            } else {
+                                "Ctrl K"
+                            }))
+                            .on_click(cx.listener(|view, _, window, cx| {
+                                view.toggle_palette(&TogglePalette, window, cx)
+                            })),
+                    ),
             )
             .child(menu)
             .footer(
@@ -1137,19 +1170,18 @@ impl Render for Tehom {
                     .child(div().text_xs().text_color(p.muted).child(format!(
                         "Tehom {}",
                         tehom_automation::update::CURRENT_VERSION
-                    )))
-                    .child(
-                        Button::new("local-video")
-                            .h(px(44.))
-                            .ghost()
-                            .label("Open a video")
-                            .icon(IconName::FolderOpen)
-                            .disabled(self.busy)
-                            .on_click(cx.listener(|view, _, window, cx| view.pick(window, cx))),
-                    ),
+                    ))),
             );
+        let editing = self.page == Page::Studio && (self.source.is_some() || self.busy);
         let content = match self.page {
-            Page::Clips if self.source.is_some() || self.busy => self.render_editor(cx),
+            // The guide covers the window, so nothing is drawn behind it.
+            _ if self.onboarding.is_some() => div().flex_1().into_any_element(),
+            Page::Studio if editing => self.render_editor(cx),
+            Page::Studio => self.studio_start(cx),
+            Page::Home => self.home_page(cx),
+            Page::Clips => self.clips_page(cx),
+            Page::Automations => self.automations_page(cx),
+            Page::Connections => self.connections_page(cx),
             Page::Settings => div()
                 .id("settings-scroll")
                 .flex_1()
@@ -1164,149 +1196,14 @@ impl Render for Tehom {
                 .gap_4()
                 .children(self.settings(cx))
                 .into_any_element(),
-            Page::About => div()
-                .id("about-scroll")
-                .flex_1()
-                .min_w_0()
-                .h_full()
-                .overflow_y_scroll()
-                .px(px(40.))
-                .py(px(32.))
-                .flex()
-                .flex_col()
-                .gap_4()
-                .child(div().text_3xl().child("About Tehom"))
-                .child(self.about_card(cx))
-                .into_any_element(),
-            Page::Home | Page::Sources => div()
-                .id("sources-scroll")
-                .flex_1()
-                .min_w_0()
-                .h_full()
-                .overflow_y_scroll()
-                .px(px(40.))
-                .py(px(32.))
-                .flex()
-                .flex_col()
-                .gap(px(32.))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .child(div().text_3xl().child(if self.page == Page::Home {
-                            "Make clips from a channel"
-                        } else {
-                            "Sources"
-                        }))
-                        .child(
-                            Button::new("check-sources")
-                                .h(px(44.))
-                                .label("Check now")
-                                .disabled(self.backend.is_none() || self.source_busy)
-                                .on_click(cx.listener(|view, _, window, cx| {
-                                    view.act(Action::Check, window, cx)
-                                })),
-                        ),
-                )
-                .child(
-                    div()
-                        .text_color(p.muted)
-                        .child("Add a channel or RSS feed once and Tehom follows its new videos."),
-                )
-                .child(self.source_form(cx))
-                .child(self.source_list(cx))
-                .when(self.page == Page::Home, |v| {
-                    v.child(div().text_lg().child("Recent jobs"))
-                        .child(self.job_list(cx))
-                })
-                .into_any_element(),
-            Page::Clips => {
-                let clips = self
-                    .engine_snapshot
-                    .as_ref()
-                    .map(|s| s.clips.clone())
-                    .unwrap_or_default();
-                div()
-                    .id("clips-scroll")
-                    .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .overflow_y_scroll()
-                    .p_6()
-                    .flex()
-                    .flex_col()
-                    .gap_4()
-                    .child(div().text_3xl().child("Clips"))
-                    .when(clips.is_empty(), |v| {
-                        v.child("Your clips will appear here.")
-                    })
-                    .children(clips.into_iter().map(|clip| {
-                        let path = clip.output_path.clone().filter(|_| clip.output_available);
-                        let export_missing = clip.output_path.is_some() && !clip.output_available;
-                        let video = self.engine_snapshot.as_ref().and_then(|snapshot| {
-                            snapshot
-                                .videos
-                                .iter()
-                                .find(|video| video.id == clip.video_id)
-                        });
-                        let original_missing = video
-                            .is_some_and(|video| video.local_path.is_some() && !video.local_available);
-                        let original = video
-                            .filter(|video| video.local_available)
-                            .and_then(|video| video.local_path.clone());
-                        let range = (clip.start_ms, clip.end_ms);
-                        let publish = clip.clone();
-                        div()
-                            .p_4()
-                            .rounded(px(12.))
-                            .bg(p.background).border_1().border_color(p.border)
-                            .flex()
-                            .flex_col()
-                            .gap_2()
-                            .child(clip.title)
-                            .child(format!(
-                                "{:.1}–{:.1} sn · {:.1} saniye",
-                                clip.start_ms as f64 / 1000.,
-                                clip.end_ms as f64 / 1000.,
-                                (clip.end_ms - clip.start_ms) as f64 / 1000.
-                            ))
-                            .when(original_missing, |v| {
-                                v.child(div().text_sm().text_color(p.text).child(
-                                    "The original video is missing, so this draft cannot be edited. Put the file back and try again.",
-                                ))
-                            })
-                            .when(export_missing, |v| {
-                                v.child(div().text_sm().text_color(p.text).child(
-                                    "The exported file was moved or deleted.",
-                                ))
-                            })
-                            .when_some(original, |v, original| {
-                                v.child(
-                                    Button::new(("draft-edit", clip.id as usize)).h(px(44.))
-                                        .label("Edit draft")
-                                        .disabled(self.busy || self.source_busy)
-                                        .on_click(cx.listener(move |view, _, window, cx| {
-                                            view.load(original.clone(), window, cx);
-                                            view.pending_range = Some(range);
-                                            view.editing_clip = Some(clip.id);
-                                        })),
-                                )
-                            })
-                            .when_some(path, |v, path| {
-                                v.child(
-                                    Button::new(("clip-open", clip.id as usize)).h(px(44.))
-                                        .label("Open clip")
-                                        .on_click(cx.listener(move |view, _, window, cx| {
-                                            view.load(path.clone(), window, cx)
-                                        })),
-                                )
-                                .child(self.publish_row(&publish, cx))
-                            })
-                    }))
-                    .child(self.job_list(cx))
-                    .into_any_element()
-            }
+            Page::About => crate::pages::page(
+                "about-scroll",
+                "About Tehom",
+                "Version, updates and where to get help.",
+                cx,
+            )
+            .child(self.about_card(cx))
+            .into_any_element(),
         };
         let overlay = self.overlay(cx);
         div()
@@ -1339,24 +1236,22 @@ impl Render for Tehom {
                     .flex()
                     .flex_col()
                     .child(content)
-                    .when(self.page != Page::Clips, |v| {
+                    .when(!editing, |v| {
                         v.child(
                             div()
-                                .p_4()
+                                .px(px(40.))
+                                .py_3()
                                 .border_t_1()
                                 .border_color(p.border)
                                 .text_sm()
-                                .child(self.status.clone()),
-                        )
-                    })
-                    .when(self.details.is_some() && self.page != Page::Clips, |v| {
-                        v.child(
-                            div()
-                                .px_4()
-                                .pb_4()
-                                .text_sm()
-                                .text_color(p.text)
-                                .child(self.details.clone().unwrap_or_default()),
+                                .text_color(p.muted)
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child(self.status.clone())
+                                .when_some(self.details.clone(), |bar, details| {
+                                    bar.child(div().text_color(p.text).child(details))
+                                }),
                         )
                     }),
             )
@@ -1365,7 +1260,7 @@ impl Render for Tehom {
 }
 
 /// A coloured badge with the platform name, so the source is recognisable at a glance.
-fn platform_badge(source: &tehom_core::Source) -> Option<Div> {
+pub(crate) fn platform_badge(source: &tehom_core::Source) -> Option<Div> {
     let (glyph, name, background, foreground) = if source.url.contains("kick.com") {
         ("brand/kick.svg", "Kick", 0x53FC18, 0x0B0E0F)
     } else if source.url.contains("youtube.com") {
