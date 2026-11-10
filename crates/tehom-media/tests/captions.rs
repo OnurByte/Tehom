@@ -63,6 +63,7 @@ fn captions_and_intro_sounds_render_valid_vertical_clips() {
         outline: "#000000",
         scale: 1.0,
         placement: Placement::Bottom,
+        vertical: None,
         uppercase: false,
     };
     let script =

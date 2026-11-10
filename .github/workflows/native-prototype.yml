@@ -31,7 +31,11 @@ jobs:
       - name: macOS dependencies
         if: runner.os == 'macOS'
         run: |
-          brew install ffmpeg
+          # Homebrew's plain ffmpeg no longer has libass, which captions need.
+          brew install ffmpeg-full || brew install ffmpeg
+          if prefix=$(brew --prefix ffmpeg-full 2>/dev/null) && [[ -x "$prefix/bin/ffmpeg" ]]; then
+            echo "$prefix/bin" >> "$GITHUB_PATH"
+          fi
           for package in gstreamer-1.0-1.28.8-universal gstreamer-1.0-devel-1.28.8-universal; do
             # The server often cuts these large downloads, so resume until whole.
             for try in {1..40}; do

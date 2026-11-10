@@ -319,6 +319,8 @@ pub struct CaptionLook<'a> {
     /// Text size relative to the default (1.0).
     pub scale: f64,
     pub placement: Placement,
+    /// Exact height as a percentage from the top; overrides `placement`.
+    pub vertical: Option<u8>,
     pub uppercase: bool,
 }
 
@@ -379,10 +381,20 @@ pub fn ass_subtitles(
         .max(8.0);
     let border = (font * 0.09).round().max(2.0);
     let tall = height > width;
-    let (alignment, margin) = match look.placement {
-        Placement::Top => (8, h * if tall { 0.14 } else { 0.07 }),
-        Placement::Middle => (5, 0.0),
-        Placement::Bottom => (2, h * if tall { 0.20 } else { 0.07 }),
+    let (alignment, margin) = match (look.vertical, look.placement) {
+        // Anchored to the nearer edge, so long captions grow toward the middle
+        // and stay on screen.
+        (Some(percent), _) => {
+            let percent = f64::from(percent.clamp(5, 95));
+            if percent <= 50.0 {
+                (8, h * percent / 100.0)
+            } else {
+                (2, h * (100.0 - percent) / 100.0)
+            }
+        }
+        (None, Placement::Top) => (8, h * if tall { 0.14 } else { 0.07 }),
+        (None, Placement::Middle) => (5, 0.0),
+        (None, Placement::Bottom) => (2, h * if tall { 0.20 } else { 0.07 }),
     };
     let side = (w * 0.08).round();
     let clock = |ms: u64| {
@@ -999,6 +1011,7 @@ mod caption_tests {
             outline: "#000000",
             scale: 1.0,
             placement: Placement::Top,
+            vertical: None,
             uppercase: true,
         };
         let script = ass_subtitles(
@@ -1046,6 +1059,20 @@ mod caption_tests {
         )
         .unwrap();
         assert!(bottom.contains(",101,") && bottom.contains(",2,86,86,384,1\n"));
+        // An exact height wins over the preset: 30% from the top, 80% = 20% from the bottom.
+        for (percent, expected) in [(30, ",8,86,86,576,1\n"), (80, ",2,86,86,384,1\n")] {
+            let placed = ass_subtitles(
+                &[],
+                &CaptionLook {
+                    vertical: Some(percent),
+                    ..look
+                },
+                1080,
+                1920,
+            )
+            .unwrap();
+            assert!(placed.contains(expected), "{percent}: {placed}");
+        }
         for bad in ["fff", "#12345", "#12345G", "red", "#1234567"] {
             assert!(
                 ass_subtitles(&[], &CaptionLook { color: bad, ..look }, 10, 10).is_err(),

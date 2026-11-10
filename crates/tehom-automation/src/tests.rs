@@ -2819,10 +2819,27 @@ mod instagram {
             engine.snapshot().await.unwrap().auto_publish_account,
             Some(account.id)
         );
+        // Each source can post to its own account, to none, or follow the default.
+        engine
+            .set_source_publish(1, Some(account.id))
+            .await
+            .unwrap();
+        assert_eq!(
+            engine.snapshot().await.unwrap().sources[0].publish_account,
+            Some(account.id)
+        );
+        assert!(engine.set_source_publish(1, Some(999)).await.is_err());
+        assert!(engine.set_source_publish(999, None).await.is_err());
+        engine.set_source_publish(1, Some(0)).await.unwrap();
+        engine
+            .set_source_publish(1, Some(account.id))
+            .await
+            .unwrap();
         engine.remove_account(account.id).await.unwrap();
         let snapshot = engine.snapshot().await.unwrap();
         assert!(snapshot.accounts.is_empty());
         assert_eq!(snapshot.auto_publish_account, None);
+        assert_eq!(snapshot.sources[0].publish_account, None);
         assert!(engine.secrets.lock().unwrap().is_empty());
     }
 
@@ -3383,11 +3400,13 @@ async fn appearance_and_sidebar_width_persist() {
     assert_eq!(snapshot.appearance, Appearance::System);
     assert_eq!(snapshot.sidebar_width, tehom_core::SIDEBAR_WIDTH);
     engine.set_appearance(Appearance::Dark).await.unwrap();
+    engine.set_accent(tehom_core::Accent::Pink).await.unwrap();
     engine.set_sidebar_width(360).await.unwrap();
     assert!(engine.set_sidebar_width(1000).await.is_err());
     engine.pool.close().await;
     drop(engine);
     let snapshot = Automation::read_snapshot(dir.path().into()).await.unwrap();
     assert_eq!(snapshot.appearance, Appearance::Dark);
+    assert_eq!(snapshot.accent, tehom_core::Accent::Pink);
     assert_eq!(snapshot.sidebar_width, 360);
 }

@@ -1,8 +1,9 @@
-//! Posting clips: the per-clip "Post" row and the Instagram account card.
+//! Posting clips: the per-clip "Post" row and the Connections cards.
 //! Only Instagram works; YouTube Shorts and TikTok are shown as coming soon.
 use super::*;
 use crate::automation_ui::Action;
 use gpui_kit::Focusable as _;
+use gpui_kit::assets::IconName;
 use tehom_core::{Clip, Platform};
 
 /// Instagram's caption limit, in characters.
@@ -41,7 +42,7 @@ impl InstagramForm {
     }
 }
 
-fn icon(platform: Platform) -> gpui_kit::component::Icon {
+pub(crate) fn icon(platform: Platform) -> gpui_kit::component::Icon {
     gpui_kit::component::Icon::empty().path(match platform {
         Platform::Instagram => "icons/instagram.svg",
         Platform::YoutubeShorts => "icons/youtubeshorts.svg",
@@ -58,7 +59,10 @@ impl Tehom {
 
     pub(crate) fn connect_instagram(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.instagram.open = true;
-        self.open_settings_at(crate::automation_ui::CARD_INSTAGRAM, cx);
+        // The guide shows the same card itself.
+        if self.onboarding.is_none() {
+            self.navigate(Page::Connections, cx);
+        }
         let handle = self.instagram.username.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
     }
@@ -244,7 +248,7 @@ impl Tehom {
                         })
                         .when(account.as_ref().is_some_and(|a| a.needs_login), |form| {
                             form.child(div().text_sm().child(
-                                "This account needs you to sign in again in Settings before posting.",
+                                "This account needs you to sign in again in Connections before posting.",
                             ))
                         })
                         .child(
@@ -308,10 +312,6 @@ impl Tehom {
         let p = crate::theme::palette(cx);
         let unavailable = self.backend.is_none() || self.source_busy;
         let accounts = self.instagram_accounts();
-        let auto = self
-            .engine_snapshot
-            .as_ref()
-            .and_then(|s| s.auto_publish_account);
         let form = &self.instagram;
         div()
             .p_5()
@@ -340,6 +340,11 @@ impl Tehom {
             ))
             .when(accounts.is_empty(), |card| {
                 card.child(div().text_sm().child("No account connected yet."))
+            })
+            .when(!accounts.is_empty(), |card| {
+                card.child(div().text_sm().text_color(p.muted).child(
+                    "Choose which source posts to which account in Automations.",
+                ))
             })
             .children(accounts.iter().enumerate().map(|(index, account)| {
                 let id = account.id;
@@ -423,13 +428,17 @@ impl Tehom {
             }))
             .when(!form.open, |card| {
                 card.child(
-                    Button::new("connect-instagram")
-                        .h(px(44.))
-                        .label("Connect Instagram")
-                        .disabled(self.backend.is_none())
-                        .on_click(cx.listener(|view, _, window, cx| {
-                            view.connect_instagram(window, cx)
-                        })),
+                    div().flex().child(
+                        Button::new("connect-instagram")
+                            .h(px(44.))
+                            .primary()
+                            .icon(IconName::Plus)
+                            .label("Connect Instagram")
+                            .disabled(self.backend.is_none())
+                            .on_click(cx.listener(|view, _, window, cx| {
+                                view.connect_instagram(window, cx)
+                            })),
+                    ),
                 )
             })
             .when(form.open && form.two_factor.is_none(), |card| {
@@ -529,12 +538,32 @@ impl Tehom {
             .when_some(form.note.clone(), |card, note| {
                 card.child(div().text_sm().child(note))
             })
-            .child(div().text_lg().child("Post new clips automatically"))
+            .into_any_element()
+    }
+
+    /// Automations: the account used by every source set to "Default".
+    pub(crate) fn default_posting_card(&self, cx: &mut Context<Self>) -> AnyElement {
+        let p = crate::theme::palette(cx);
+        let unavailable = self.backend.is_none() || self.source_busy;
+        let accounts = self.instagram_accounts();
+        let auto = self
+            .engine_snapshot
+            .as_ref()
+            .and_then(|s| s.auto_publish_account);
+        crate::theme::card(cx)
+            .child(div().text_lg().child("Default posting account"))
             .child(div().text_sm().text_color(p.muted).child(
-                "When a source is set to make MP4 files, each new clip is also posted to the account you choose here.",
+                "Used by every source set to \"Default\". Only sources that save finished MP4 files post their clips.",
             ))
             .when(accounts.is_empty(), |card| {
-                card.child(div().text_sm().child("Connect an account first."))
+                card.child(div().text_sm().child("No account connected yet.")).child(
+                    Button::new("posting-connect")
+                        .h(px(44.))
+                        .label("Open Connections")
+                        .on_click(cx.listener(|view, _, _, cx| {
+                            view.navigate(Page::Connections, cx)
+                        })),
+                )
             })
             .child(
                 div()
@@ -570,6 +599,48 @@ impl Tehom {
                                 view.act(Action::AutoPublish(Some(id)), window, cx)
                             }))
                     })),
+            )
+            .into_any_element()
+    }
+
+    /// Connections: a platform Tehom cannot post to yet.
+    pub(crate) fn unavailable_card(
+        &self,
+        platform: Platform,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let p = crate::theme::palette(cx);
+        let name = platform.label();
+        crate::theme::card(cx)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(icon(platform))
+                    .child(div().text_lg().child(name))
+                    .child(
+                        div()
+                            .px_2()
+                            .py_1()
+                            .rounded(px(6.))
+                            .bg(p.surface)
+                            .text_xs()
+                            .text_color(p.muted)
+                            .child("Not available yet"),
+                    ),
+            )
+            .child(div().text_sm().text_color(p.muted).child(format!(
+                "Tehom cannot post to {name} yet. For now, save the MP4 and upload it yourself."
+            )))
+            .child(
+                div().flex().child(
+                    Button::new(("connect-soon", platform as usize))
+                        .h(px(44.))
+                        .label(format!("Connect {name}"))
+                        .accessibility_label(format!("{name}, not available yet"))
+                        .disabled(true),
+                ),
             )
             .into_any_element()
     }

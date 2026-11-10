@@ -18,6 +18,8 @@ Actual llama.cpp/Qwen 1.5B inference selected three valid 20-second candidates f
 
 See [RSS integration evidence](evidence/rss-automation.md), [sidebar screenshot](evidence/sidebar-rss-home.png) and [earlier native preview evidence](evidence/linux-prototype.md).
 
+- 2026-11-10 at 0.5.0 (branch `feature/friendly-ux`): the desktop was reorganised into Home, Clips, Studio, Automations, Connections, Settings and About; the Ctrl+K palette now uses the kit's command list (scrolling, arrow keys, keywords) and a sidebar search box opens it; accent colours, quick caption looks, an exact caption height (`CaptionStyle.vertical`, written to the ASS margin) and a posting account per source (`sources.publish_account`) were added; the first-run guide has six steps. Checked with real pointer and key input under Xvfb against an isolated data folder holding hand-inserted rows: guide step 1 and 2, Home, Ctrl+K typing and Enter, Automations, Connections, Clips, in-app playback from "Watch", and the Studio with captions over the frame. Not checked on a real screen: dragging the caption height slider, signing in to Instagram from Connections, light mode, Windows and macOS. Per-source posting is unit-tested at the setter only; no clip was auto-posted through a per-source account, live or in a fixture.
+
 ## Full-scope audit
 
 | Sections | Implemented foundation | Required work still missing or unverified |

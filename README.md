@@ -56,9 +56,10 @@ Tehom lists the models your choice offers, with a plain note on how capable each
 - **No captions?** Tehom writes them on this computer. The speech tool comes with the app; one click in Settings downloads the speech model (about 150 MB).
 - **Edit in Studio.** Change caption text, colour, size, position and the intro sound, then make the video again.
 - **Sources.** YouTube channels and videos, Kick videos, any RSS or Atom feed with video, or a file from your computer.
-- **Autonomous.** Settings has the details: how often to check, clips per video, clip length, and what to do without captions.
-- **Instagram.** Connect an account in Settings and post a clip as a Reel, or let auto-export post for you. This uses Instagram's unofficial mobile protocol, so Instagram may ask you to confirm a login or restrict the account. Use one you can afford to lose access to. YouTube Shorts and TikTok are not available yet.
-- **Light and dark.** Follows your system, or pick one. Press **Ctrl+K** (**Cmd+K** on Mac) to find any action.
+- **Studio.** Its own tab: player, timeline, trim points and a caption editor. Quick looks, colours, size and a slider to place captions at any height.
+- **Automations.** Every channel you follow is one. Choose what happens to new videos and which account its clips are posted to; each source can use a different one. The same page sets how often to check, clips per video and clip length.
+- **Connections.** Instagram works today; YouTube Shorts and TikTok are listed as not available yet. Connect an account in Connections and post a clip as a Reel, or let auto-export post for you. This uses Instagram's unofficial mobile protocol, so Instagram may ask you to confirm a login or restrict the account. Use one you can afford to lose access to. YouTube Shorts and TikTok are not available yet.
+- **Your colours.** Light or dark, plus six accent colours. Press **Ctrl+K** (**Cmd+K** on Mac) or click the search box to find any action.
 
 ---
 

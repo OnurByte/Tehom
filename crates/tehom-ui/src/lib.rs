@@ -1,6 +1,7 @@
 mod about;
 mod automation_ui;
 mod models_ui;
+mod pages;
 mod prefs;
 mod publish;
 mod shell;
@@ -8,6 +9,7 @@ mod studio;
 pub mod theme;
 use automation_ui::{Backend, Page};
 use gpui_kit::TestSupportExt as _;
+use gpui_kit::assets::IconName;
 use gpui_kit::{
     AnyElement, AssetSource, Entity, KeyDownEvent, ObjectFit, PathPromptOptions, RenderImage,
     Result, Role, ScrollHandle, SharedString, Subscription, Task, Window, assets,
@@ -47,7 +49,7 @@ pub struct Tehom {
     ai_key_saved: std::cell::Cell<Option<(tehom_core::AiProvider, bool)>>,
     /// Root focus, so window shortcuts work before any field is focused.
     focus: gpui_kit::FocusHandle,
-    palette: Option<shell::CommandPalette>,
+    palette: Option<Entity<gpui_kit::component::command::CommandState>>,
     /// First-run guide step, when shown.
     onboarding: Option<u8>,
     onboarding_checked: bool,
@@ -62,6 +64,9 @@ pub struct Tehom {
     sidebar_focus: gpui_kit::FocusHandle,
     /// The appearance last applied from the saved settings or a choice.
     appearance: Option<tehom_core::Appearance>,
+    accent: Option<tehom_core::Accent>,
+    /// Caption height sliders: the Studio's, then the one for new clips.
+    caption_height: [Entity<SliderState>; 2],
     source_mode: AutomationMode,
     source_busy: bool,
     backend: Option<Arc<Backend>>,
@@ -135,10 +140,18 @@ impl Tehom {
         let publish_caption =
             cx.new(|cx| InputState::new(window, cx).placeholder("Write a caption"));
         // These fields change what the view shows (filtered list, counter).
-        let input_watch = vec![
+        let mut input_watch = vec![
             cx.observe(&model_query, |_, _, cx| cx.notify()),
             cx.observe(&publish_caption, |_, _, cx| cx.notify()),
         ];
+        let caption_height = [studio::Look::Studio, studio::Look::Default].map(|look| {
+            let slider = cx.new(|_| SliderState::new().min(0.).max(100.).step(1.));
+            input_watch.push(cx.observe(&slider, move |view, slider, cx| {
+                let percent = slider.read(cx).value().end().round().clamp(0., 100.) as u8;
+                view.height_dragged(look, percent, cx);
+            }));
+            slider
+        });
         let instagram = publish::InstagramForm::new(window, cx);
         let automation = prefs::AutomationForm::new(window, cx);
         let engine_stop = Arc::new(AtomicBool::new(false));
@@ -223,6 +236,8 @@ impl Tehom {
             sidebar_width: None,
             sidebar_focus: cx.focus_handle().tab_stop(true),
             appearance: None,
+            accent: None,
+            caption_height,
             source_mode: AutomationMode::AutoDraft,
             source_busy: false,
             backend: None,
@@ -269,12 +284,26 @@ impl Tehom {
     }
 
     pub fn load(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_video(path, None, None, false, window, cx);
+    }
+
+    /// Opens a video in the Studio: `range` is the part to select (ms),
+    /// `clip` the library clip being edited, `play` starts it at once.
+    pub(crate) fn open_video(
+        &mut self,
+        path: PathBuf,
+        range: Option<(u64, u64)>,
+        clip: Option<i64>,
+        play: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.busy {
             return;
         }
-        self.page = Page::Clips;
-        self.pending_range = None;
-        self.editing_clip = None;
+        self.page = Page::Studio;
+        self.pending_range = range;
+        self.editing_clip = clip;
         self.busy = true;
         self.status = "Opening video…".into();
         self.details = None;
@@ -306,7 +335,7 @@ impl Tehom {
                         let duration = info.duration;
                         view.total = duration;
                         view.metadata = format!(
-                            "{} · {} × {} · {:.2} saniye",
+                            "{} · {} × {} · {:.2} seconds",
                             path.file_name().unwrap_or_default().to_string_lossy(),
                             info.width,
                             info.height,
@@ -325,12 +354,20 @@ impl Tehom {
                         view.end.update(cx, |state, cx| {
                             state.set_value(format!("{end:.3}"), window, cx)
                         });
-                        if let Some(preview) = &view.preview
-                            && let Err(error) = preview.seek(Duration::from_secs_f64(start))
-                        {
-                            eprintln!("Draft preview: {error}");
+                        if let Some(preview) = &view.preview {
+                            let started = preview
+                                .seek(Duration::from_secs_f64(start))
+                                .and_then(|()| preview.set_paused(!play));
+                            if let Err(error) = started {
+                                eprintln!("Draft preview: {error}");
+                            }
                         }
-                        view.status = "Ready. Choose the start and end, then save the MP4.".into();
+                        view.status = if play {
+                            "Playing your clip."
+                        } else {
+                            "Ready. Choose the start and end, then save the MP4."
+                        }
+                        .into();
                     }
                     Err(error) => {
                         view.status =
@@ -342,6 +379,23 @@ impl Tehom {
             });
         })
         .detach();
+        cx.notify();
+    }
+
+    /// Closes the open video and returns to the Studio's start screen.
+    fn close_video(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.preview = None;
+        self.source = None;
+        self.editing_clip = None;
+        self.total = 0.;
+        self.metadata.clear();
+        self.details = None;
+        self.status = "Pick a clip or open a video.".into();
+        if let Some(image) = self.image.take()
+            && let Err(error) = window.drop_image(image)
+        {
+            eprintln!("Preview texture: {error}");
+        }
         cx.notify();
     }
 
@@ -487,7 +541,14 @@ impl Tehom {
     }
 }
 
+/// `1:05.3` for 65.3 seconds.
+fn stamp(seconds: f64) -> String {
+    format!("{}:{:04.1}", (seconds / 60.) as u64, seconds % 60.)
+}
+
 impl Tehom {
+    /// The Studio with a video open: toolbar, stage and inspector side by
+    /// side, and the timeline dock along the bottom.
     fn render_editor(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let p = crate::theme::palette(cx);
         let snapshot = self
@@ -499,224 +560,259 @@ impl Tehom {
         let position = snapshot.position.as_secs_f64();
         let overlay = self.caption_overlay(position, cx);
         let panel = self.studio_panel(cx);
-        let editor = div()
-            .flex_1()
-            .min_w_0()
-            .h_full()
+        let name = self
+            .source
+            .as_ref()
+            .and_then(|path| path.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Opening video…".into());
+        let toolbar = div()
+            .flex_none()
+            .px_4()
+            .py_3()
             .flex()
-            .flex_col()
-            .gap_4()
-            .p_6()
-            .bg(p.background)
-            .text_color(p.text)
+            .items_center()
+            .gap_3()
+            .border_b_1()
+            .border_color(p.border)
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(div().text_xl().child("Clip editor"))
-                    .child(
-                        Button::new("open").h(px(44.))
-                            .label("Open video")
-                            .disabled(self.busy)
-                            .on_click(cx.listener(|view, _, window, cx| view.pick(window, cx))),
-                    ),
+                Button::new("studio-close")
+                    .h(px(44.))
+                    .ghost()
+                    .icon(IconName::X)
+                    .label("Close")
+                    .disabled(self.busy)
+                    .on_click(cx.listener(|view, _, window, cx| view.close_video(window, cx))),
             )
             .child(
                 div()
+                    .flex_1()
+                    .min_w_0()
                     .flex()
                     .flex_col()
-                    .flex_1()
-                    .min_h(px(200.))
-                    // The video stage stays black in both themes so caption
-                    // colours preview as they will look in the clip.
-                    .bg(crate::theme::DARK.background).text_color(crate::theme::DARK.edge)
-                    .border_1().border_color(p.border)
-                    .rounded(px(12.))
-                    .relative()
-                    .items_center()
-                    .justify_center()
-                    .overflow_hidden()
-                    .when_some(self.image.clone(), |element, image| {
-                        element.child(img(image).size_full().object_fit(ObjectFit::Contain))
-                    })
-                    .when(self.image.is_none(), |element| {
-                        element.child("Video preview")
-                    })
-                    .children(overlay),
-            )
-            .child(
-                div()
-                    .id("timeline-keyboard")
-                    .test_support()
-                    .focusable()
-                    .tab_stop(true)
-                    .aria_label(
-                        "Timeline. Use the arrow keys to move, Home and End to jump to the start or end.",
-                    )
-                    .border_1()
-                    .border_color(p.border)
-                    .rounded_md()
-                    .p_2()
-                    .focus(move |style| style.border_color(p.text))
-                    .on_key_down(cx.listener(|view, event: &KeyDownEvent, _, cx| {
-                        let position = view
-                            .preview
-                            .as_ref()
-                            .map(|p| p.snapshot().position.as_secs_f64())
-                            .unwrap_or(0.);
-                        let target = match event.keystroke.key.as_str() {
-                            "left" => position - 1.,
-                            "right" => position + 1.,
-                            "home" => 0.,
-                            "end" => view.total,
-                            _ => return,
-                        };
-                        cx.stop_propagation();
-                        view.seek(target, cx);
-                    }))
-                    .child(
-                        Slider::new(&self.timeline)
-                            .disabled(!ready)
-                            .accessibility_label("Choose a time in the video")
-                            .w_full(),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .gap_3()
-                    .flex_wrap()
-                    .items_center()
-                    .child(
-                        Button::new("back").h(px(44.))
-                            .label("−5 sn")
-                            .disabled(!ready)
-                            .on_click(cx.listener(move |view, _, _, cx| {
-                                view.seek((position - 5.).max(0.), cx)
-                            })),
-                    )
-                    .child(
-                        Button::new("play").h(px(44.))
-                            .label(if snapshot.paused { "Play" } else { "Pause" })
-                            .disabled(!ready)
-                            .on_click(cx.listener(|view, _, _, cx| {
-                                if let Some(preview) = &view.preview
-                                    && let Err(error) =
-                                        preview.set_paused(!preview.snapshot().paused)
-                                {
-                                    view.status = "Playback could not be changed.".into();
-                                    view.details = Some(error.to_string());
-                                }
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("forward").h(px(44.))
-                            .label("+5 sn")
-                            .disabled(!ready)
-                            .on_click(
-                                cx.listener(move |view, _, _, cx| view.seek(position + 5., cx)),
-                            ),
-                    )
-                    .child(format!("{position:.2} / {:.2} saniye", self.total))
-                    .child(
-                        Button::new("volume-down").h(px(44.))
-                            .label("Volume down")
-                            .disabled(!ready)
-                            .on_click(cx.listener(|view, _, _, cx| view.adjust_volume(-0.1, cx))),
-                    )
-                    .child(format!("Volume {:.0}%", snapshot.volume * 100.))
-                    .child(
-                        Button::new("volume-up").h(px(44.))
-                            .label("Volume up")
-                            .disabled(!ready)
-                            .on_click(cx.listener(|view, _, _, cx| view.adjust_volume(0.1, cx))),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .gap_3()
-                    .flex_wrap()
-                    .items_end()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .w(px(150.))
-                            .child("Start (seconds)")
-                            .child(
-                                Input::new(&self.start).h(px(44.))
-                                    .id("start")
-                                    .disabled(self.busy || !ready)
-                                    .aria_label("Clip start, seconds"),
-                            ),
-                    )
-                    .child(
-                        Button::new("mark-start").h(px(44.))
-                            .label("Start here")
-                            .disabled(!ready || self.busy)
-                            .on_click(cx.listener(move |view, _, window, cx| {
-                                view.start.update(cx, |state, cx| {
-                                    state.set_value(format!("{position:.3}"), window, cx)
-                                });
-                            })),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .w(px(150.))
-                            .child("End (seconds)")
-                            .child(
-                                Input::new(&self.end).h(px(44.))
-                                    .id("end")
-                                    .disabled(self.busy || !ready)
-                                    .aria_label("Clip end, seconds"),
-                            ),
-                    )
-                    .child(
-                        Button::new("mark-end").h(px(44.))
-                            .label("End here")
-                            .disabled(!ready || self.busy)
-                            .on_click(cx.listener(move |view, _, window, cx| {
-                                view.end.update(cx, |state, cx| {
-                                    state.set_value(format!("{position:.3}"), window, cx)
-                                });
-                            })),
-                    )
-                    .when_some(self.editing_clip, |element, id| {
-                        element.child(
-                            Button::new("save-draft").h(px(44.))
-                                .label("Save new draft")
-                                .disabled(!ready || self.busy || self.source_busy)
-                                .on_click(cx.listener(move |view, _, window, cx| {
-                                    view.save_draft_revision(id, window, cx)
-                                })),
+                    .child(div().truncate().child(name))
+                    .when(!self.metadata.is_empty(), |title| {
+                        title.child(
+                            div()
+                                .text_xs()
+                                .text_color(p.muted)
+                                .truncate()
+                                .child(self.metadata.clone()),
                         )
-                    })
-                    .child(
-                        Button::new("save").h(px(44.))
-                            .primary()
-                            .label("Save MP4")
-                            .disabled(!ready || self.busy)
-                            .on_click(cx.listener(|view, _, window, cx| view.save(window, cx))),
+                    }),
+            )
+            .child(
+                Button::new("open")
+                    .h(px(44.))
+                    .icon(IconName::FolderOpen)
+                    .label("Open video")
+                    .disabled(self.busy)
+                    .on_click(cx.listener(|view, _, window, cx| view.pick(window, cx))),
+            )
+            .child(
+                Button::new("save")
+                    .h(px(44.))
+                    .primary()
+                    .label("Save MP4")
+                    .disabled(!ready || self.busy)
+                    .on_click(cx.listener(|view, _, window, cx| view.save(window, cx))),
+            );
+        let stage = div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h(px(160.))
+            // The video stage stays black in both themes so caption
+            // colours preview as they will look in the clip.
+            .bg(gpui_kit::black())
+            .text_color(crate::theme::DARK.edge)
+            .border_1()
+            .border_color(p.border)
+            .rounded(px(12.))
+            .relative()
+            .items_center()
+            .justify_center()
+            .overflow_hidden()
+            .when_some(self.image.clone(), |element, image| {
+                element.child(img(image).size_full().object_fit(ObjectFit::Contain))
+            })
+            .when(self.image.is_none(), |element| {
+                element.child(if self.busy {
+                    "Opening video…"
+                } else {
+                    "Video preview"
+                })
+            })
+            .children(overlay);
+        let timeline = div()
+            .id("timeline-keyboard")
+            .test_support()
+            .focusable()
+            .tab_stop(true)
+            .aria_label(
+                "Timeline. Use the arrow keys to move, Home and End to jump to the start or end.",
+            )
+            .border_1()
+            .border_color(p.border)
+            .rounded_md()
+            .p_2()
+            .focus(move |style| style.border_color(p.accent))
+            .on_key_down(cx.listener(|view, event: &KeyDownEvent, _, cx| {
+                let position = view
+                    .preview
+                    .as_ref()
+                    .map(|p| p.snapshot().position.as_secs_f64())
+                    .unwrap_or(0.);
+                let target = match event.keystroke.key.as_str() {
+                    "left" => position - 1.,
+                    "right" => position + 1.,
+                    "home" => 0.,
+                    "end" => view.total,
+                    _ => return,
+                };
+                cx.stop_propagation();
+                view.seek(target, cx);
+            }))
+            .child(
+                Slider::new(&self.timeline)
+                    .disabled(!ready)
+                    .accessibility_label("Choose a time in the video")
+                    .w_full(),
+            );
+        let transport = div()
+            .flex()
+            .gap_2()
+            .flex_wrap()
+            .items_center()
+            .child(
+                Button::new("back")
+                    .h(px(44.))
+                    .label("−5 s")
+                    .disabled(!ready)
+                    .on_click(
+                        cx.listener(move |view, _, _, cx| view.seek((position - 5.).max(0.), cx)),
                     ),
             )
-            .when(self.editing_clip.is_some(), |element| {
+            .child(
+                Button::new("play")
+                    .h(px(44.))
+                    .w(px(120.))
+                    .primary()
+                    .icon(if snapshot.paused {
+                        IconName::Play
+                    } else {
+                        IconName::Pause
+                    })
+                    .label(if snapshot.paused { "Play" } else { "Pause" })
+                    .disabled(!ready)
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        if let Some(preview) = &view.preview
+                            && let Err(error) = preview.set_paused(!preview.snapshot().paused)
+                        {
+                            view.status = "Playback could not be changed.".into();
+                            view.details = Some(error.to_string());
+                        }
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("forward")
+                    .h(px(44.))
+                    .label("+5 s")
+                    .disabled(!ready)
+                    .on_click(cx.listener(move |view, _, _, cx| view.seek(position + 5., cx))),
+            )
+            .child(
+                div()
+                    .px_2()
+                    .child(format!("{} / {}", stamp(position), stamp(self.total))),
+            )
+            .child(div().flex_1())
+            .child(
+                Button::new("volume-down")
+                    .h(px(44.))
+                    .label("−")
+                    .accessibility_label("Volume down")
+                    .disabled(!ready)
+                    .on_click(cx.listener(|view, _, _, cx| view.adjust_volume(-0.1, cx))),
+            )
+            .child(format!("Volume {:.0}%", snapshot.volume * 100.))
+            .child(
+                Button::new("volume-up")
+                    .h(px(44.))
+                    .label("+")
+                    .accessibility_label("Volume up")
+                    .disabled(!ready)
+                    .on_click(cx.listener(|view, _, _, cx| view.adjust_volume(0.1, cx))),
+            );
+        let field = |label: &'static str, input: Input| {
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .w(px(190.))
+                .child(div().text_sm().text_color(p.muted).child(label))
+                .child(input)
+        };
+        let trim = div()
+            .flex()
+            .gap_2()
+            .flex_wrap()
+            .items_end()
+            .child(field(
+                "Clip starts at (seconds)",
+                Input::new(&self.start)
+                    .h(px(44.))
+                    .id("start")
+                    .disabled(self.busy || !ready)
+                    .aria_label("Clip start, seconds"),
+            ))
+            .child(
+                Button::new("mark-start")
+                    .h(px(44.))
+                    .label("Start here")
+                    .disabled(!ready || self.busy)
+                    .on_click(cx.listener(move |view, _, window, cx| {
+                        view.start.update(cx, |state, cx| {
+                            state.set_value(format!("{position:.3}"), window, cx)
+                        });
+                    })),
+            )
+            .child(field(
+                "Clip ends at (seconds)",
+                Input::new(&self.end)
+                    .h(px(44.))
+                    .id("end")
+                    .disabled(self.busy || !ready)
+                    .aria_label("Clip end, seconds"),
+            ))
+            .child(
+                Button::new("mark-end")
+                    .h(px(44.))
+                    .label("End here")
+                    .disabled(!ready || self.busy)
+                    .on_click(cx.listener(move |view, _, window, cx| {
+                        view.end.update(cx, |state, cx| {
+                            state.set_value(format!("{position:.3}"), window, cx)
+                        });
+                    })),
+            )
+            .when_some(self.editing_clip, |element, id| {
                 element.child(
-                    div().text_sm().child(
-                        "A draft must be 20 to 90 seconds. Earlier drafts and files are kept.",
-                    ),
+                    Button::new("save-draft")
+                        .h(px(44.))
+                        .label("Save new draft")
+                        .disabled(!ready || self.busy || self.source_busy)
+                        .on_click(cx.listener(move |view, _, window, cx| {
+                            view.save_draft_revision(id, window, cx)
+                        })),
                 )
             })
             .when(self.cancellation.is_some(), |element| {
                 element.child(
-                    Button::new("cancel").h(px(44.))
-                        .label("Cancel")
+                    Button::new("cancel")
+                        .h(px(44.))
+                        .label("Cancel saving")
                         .on_click(cx.listener(|view, _, _, cx| {
                             if let Some(cancelled) = &view.cancellation {
                                 cancelled.store(true, Ordering::Release);
@@ -725,44 +821,87 @@ impl Tehom {
                             cx.notify();
                         })),
                 )
-            })
-            .when(!self.metadata.is_empty(), |element| {
-                element.child(div().text_sm().child(self.metadata.clone()))
-            })
-            .child(
-                div()
-                    .id("status")
-                    .role(Role::Status)
-                    .aria_label(self.status.clone())
-                    .text_sm()
-                    .child(self.status.clone()),
-            )
-            .when(self.details.is_some(), |element| {
-                element.child(
-                    Button::new("details").h(px(44.))
-                        .label(if self.show_details {
-                            "Hide details"
-                        } else {
-                            "Details"
-                        })
-                        .on_click(cx.listener(|view, _, _, cx| {
-                            view.show_details = !view.show_details;
-                            cx.notify();
-                        })),
-                )
-            })
-            .when(self.show_details, |element| {
-                element.when_some(self.details.clone(), |element, details| {
-                    element.child(div().text_sm().child(details))
-                })
             });
+        let dock =
+            div()
+                .flex_none()
+                .p_4()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .border_t_1()
+                .border_color(p.border)
+                .child(timeline)
+                .child(transport)
+                .child(trim)
+                .when(self.editing_clip.is_some(), |element| {
+                    element.child(div().text_sm().text_color(p.muted).child(
+                        "A draft must be 20 to 90 seconds. Earlier drafts and files are kept.",
+                    ))
+                })
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .child(
+                            div()
+                                .id("status")
+                                .role(Role::Status)
+                                .aria_label(self.status.clone())
+                                .flex_1()
+                                .text_sm()
+                                .text_color(p.muted)
+                                .child(self.status.clone()),
+                        )
+                        .when(self.details.is_some(), |element| {
+                            element.child(
+                                Button::new("details")
+                                    .h(px(44.))
+                                    .ghost()
+                                    .label(if self.show_details {
+                                        "Hide details"
+                                    } else {
+                                        "Details"
+                                    })
+                                    .on_click(cx.listener(|view, _, _, cx| {
+                                        view.show_details = !view.show_details;
+                                        cx.notify();
+                                    })),
+                            )
+                        }),
+                )
+                .when(self.show_details, |element| {
+                    element.when_some(self.details.clone(), |element, details| {
+                        element.child(div().text_sm().child(details))
+                    })
+                });
         div()
-            .size_full()
+            .flex_1()
+            .min_h_0()
+            .w_full()
             .flex()
+            .flex_col()
             .bg(p.background)
             .text_color(p.text)
-            .child(editor)
-            .children(panel)
+            .child(toolbar)
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .p_4()
+                            .flex()
+                            .flex_col()
+                            .child(stage),
+                    )
+                    .children(panel),
+            )
+            .child(dock)
             .into_any_element()
     }
 }
@@ -852,13 +991,14 @@ mod tests {
             );
             assert_eq!(window.find("add-channel").disabled(), Some(true));
             assert_eq!(window.find("import-local-video").disabled(), Some(true));
-            // The second sidebar entry opens Sources.
+            assert!(window.try_find_by_label("Search").is_some());
+            // The second sidebar entry opens Clips.
             window.click("0-1", cx);
         })
         .unwrap();
         cx.run_until_parked();
         cx.update_window(handle, |_, _, cx| {
-            assert!(view.read(cx).page == Page::Sources);
+            assert!(view.read(cx).page == Page::Clips);
         })
         .unwrap();
     }
@@ -903,7 +1043,7 @@ mod tests {
                 |window, cx| {
                     cx.new(|cx| {
                         let mut view = Tehom::new(window, cx);
-                        view.page = Page::Clips;
+                        view.page = Page::Studio;
                         view.total = 10.;
                         view.source = Some(input);
                         view.preview = Some(preview);
@@ -1019,6 +1159,7 @@ mod tests {
             auto_publish_account: None,
             automation: Default::default(),
             appearance: Default::default(),
+            accent: Default::default(),
             sidebar_width: tehom_core::SIDEBAR_WIDTH,
         }
     }
@@ -1061,16 +1202,23 @@ mod tests {
     fn clip_library_hides_actions_for_missing_files_and_offers_new_ones(cx: &mut TestAppContext) {
         cx.update(gpui_kit::init);
         let present = tempfile::tempdir().unwrap();
-        render_page(cx, Page::Clips, snapshot(present.path(), true), |window| {
-            assert_eq!(window.find_all_by_label("Edit draft").len(), 1);
-            assert_eq!(window.find_all_by_label("Open clip").len(), 1);
+        // Clips and the Studio's start screen show the same cards.
+        for page in [Page::Clips, Page::Studio] {
+            render_page(cx, page, snapshot(present.path(), true), |window| {
+                assert_eq!(window.find_all_by_label("Edit in Studio").len(), 1);
+                assert_eq!(window.find_all_by_label("Watch").len(), 1);
+            });
+        }
+        render_page(cx, Page::Home, snapshot(present.path(), true), |window| {
             assert_eq!(window.find_all_by_label("Save original").len(), 1);
             assert_eq!(window.find_all_by_label("Export captions").len(), 1);
         });
         let missing = tempfile::tempdir().unwrap();
         render_page(cx, Page::Clips, snapshot(missing.path(), false), |window| {
-            assert!(window.find_all_by_label("Edit draft").is_empty());
-            assert!(window.find_all_by_label("Open clip").is_empty());
+            assert!(window.find_all_by_label("Edit in Studio").is_empty());
+            assert!(window.find_all_by_label("Watch").is_empty());
+        });
+        render_page(cx, Page::Home, snapshot(missing.path(), false), |window| {
             // The original can be downloaded again, so saving it stays available.
             assert_eq!(window.find_all_by_label("Save original").len(), 1);
         });
@@ -1089,33 +1237,6 @@ mod tests {
                 }
             },
         );
-    }
-
-    #[test]
-    fn palette_commands_filter_by_every_word() {
-        assert_eq!(
-            shell::Command::matching("").len(),
-            shell::Command::ALL.len()
-        );
-        let shapes = shell::Command::matching("clip shape");
-        assert_eq!(shapes.len(), 3);
-        let titles: Vec<_> = shell::Command::matching("go CLIPS")
-            .into_iter()
-            .map(|(_, t)| t)
-            .collect();
-        assert_eq!(titles, ["Go to Clips"]);
-        assert!(shell::Command::matching("publish to tiktok").is_empty());
-        for (query, title) in [
-            ("instagram", "Connect Instagram"),
-            ("caption look", "Caption look for new clips"),
-            ("speech model", "Speech model for videos without captions"),
-        ] {
-            let titles: Vec<_> = shell::Command::matching(query)
-                .into_iter()
-                .map(|(_, t)| t)
-                .collect();
-            assert_eq!(titles, [title], "{query}");
-        }
     }
 
     fn open_view(
@@ -1160,14 +1281,35 @@ mod tests {
         cx.run_until_parked();
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
-            assert!(view.read(cx).palette.is_some());
-            assert!(window.try_find_by_label("Command").is_some());
+            let state = view.read(cx).palette.clone().expect("palette open");
+            assert!(window.try_find("command").is_some());
+            // Titles and everyday words both find things.
+            for (query, expected) in [
+                ("", shell::Command::ALL.len()),
+                ("clip shape", 3),
+                ("go to studio", 1),
+                ("zzzz", 0),
+            ] {
+                state.update(cx, |state, cx| state.set_query(query, window, cx));
+                assert_eq!(state.read(cx).matched_count(), expected, "{query}");
+            }
+            state.update(cx, |state, cx| state.set_query("tiktok", window, cx));
+            assert!(state.read(cx).matched_count() >= 2);
             window.dispatch_action(Box::new(ClosePalette), cx);
         })
         .unwrap();
         cx.run_until_parked();
-        cx.update_window(handle, |_, _, cx| {
+        cx.update_window(handle, |_, window, cx| {
             assert!(view.read(cx).palette.is_none());
+            // The sidebar search box opens it too, and a command runs.
+            window.render_frame(cx);
+            window.click("open-search", cx);
+            assert!(view.read(cx).palette.is_some());
+            view.update(cx, |view, cx| {
+                view.run_command(shell::Command::Go(Page::Automations), window, cx)
+            });
+            assert!(view.read(cx).palette.is_none());
+            assert!(view.read(cx).page == Page::Automations);
         })
         .unwrap();
     }
@@ -1182,6 +1324,7 @@ mod tests {
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
             assert_eq!(view.read(cx).onboarding, Some(0));
+            assert!(window.try_find_by_label("Colour: Pink").is_some());
             assert!(window.try_find_by_label("Get started").is_some());
             assert!(window.try_find_by_label("Skip setup").is_some());
             window.click("onboarding-next", cx);
@@ -1204,7 +1347,22 @@ mod tests {
             assert!(window.try_find_by_label("Skip for now").is_some());
             window.click("onboarding-next", cx);
             window.render_frame(cx);
-            assert!(window.try_find_by_label("Finish").is_some());
+            assert_eq!(view.read(cx).onboarding, Some(3));
+            assert!(window.try_find_by_label("Choose folder").is_some());
+            window.click("onboarding-next", cx);
+            window.render_frame(cx);
+            // Posting is optional too.
+            assert!(window.try_find_by_label("Connect Instagram").is_some());
+            assert!(window.try_find_by_label("Skip for now").is_some());
+            window.click("onboarding-next", cx);
+            window.render_frame(cx);
+            assert_eq!(view.read(cx).onboarding, Some(5));
+            assert!(
+                window
+                    .try_find_by_label("Channel, video or RSS feed address")
+                    .is_some()
+            );
+            assert!(window.try_find_by_label("Finish without a link").is_some());
             assert!(window.try_find_by_label("Back").is_some());
         })
         .unwrap();
@@ -1393,7 +1551,7 @@ mod tests {
         let (handle, view) = open_view(cx, fixture);
         cx.update_window(handle, |_, window, cx| {
             view.update(cx, |view, cx| {
-                view.page = Page::Clips;
+                view.page = Page::Studio;
                 view.source = Some(source);
                 view.editing_clip = Some(1);
                 cx.notify();
@@ -1412,6 +1570,26 @@ mod tests {
                     .is_some()
             );
             assert!(window.try_find_by_label("Make the video again").is_some());
+            assert!(window.try_find_by_label("Quick look: Hype").is_some());
+            // Dragging the height slider places captions exactly; a preset
+            // button goes back to the named position.
+            view.update(cx, |view, cx| {
+                view.caption_height[0].update(cx, |state, cx| state.set_value(33., window, cx));
+            });
+        })
+        .unwrap();
+        cx.update_window(handle, |_, window, cx| {
+            assert_eq!(
+                view.read(cx).studio.as_ref().unwrap().style.vertical,
+                Some(33)
+            );
+            window.render_frame(cx);
+            window.click(("look-position", 0usize), cx);
+            let style = &view.read(cx).studio.as_ref().unwrap().style;
+            assert_eq!(
+                (style.vertical, style.position),
+                (None, tehom_core::CaptionPosition::Top)
+            );
         })
         .unwrap();
         // A snapshot refresh keeps unsaved edits for the open clip.
@@ -1435,7 +1613,7 @@ mod tests {
         let (handle, view) = open_view(cx, snapshot(dir.path(), true));
         cx.update_window(handle, |_, window, cx| {
             view.update(cx, |view, cx| {
-                view.page = Page::Settings;
+                view.page = Page::Connections;
                 view.instagram.open = true;
                 cx.notify();
             });
@@ -1504,7 +1682,7 @@ mod tests {
         let engine = backend(dir.path());
         cx.update_window(handle, |_, window, cx| {
             view.update(cx, |view, cx| {
-                view.page = Page::Settings;
+                view.page = Page::Automations;
                 view.backend = Some(engine.clone());
                 cx.notify();
             });
@@ -1700,19 +1878,94 @@ mod tests {
         .unwrap();
     }
 
-    #[test]
-    fn new_palette_entries_are_found() {
-        for (query, title) in [
-            ("automation", "Automation settings"),
-            ("about", "About Tehom"),
-            ("dark", "Appearance: dark"),
-            ("wider", "Make the sidebar wider"),
-        ] {
-            let titles: Vec<_> = shell::Command::matching(query)
-                .into_iter()
-                .map(|(_, t)| t)
-                .collect();
-            assert_eq!(titles, [title], "{query}");
+    #[gpui_kit::test]
+    fn each_source_chooses_where_its_clips_are_posted(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let dir = tempfile::tempdir().unwrap();
+        let engine = backend(dir.path());
+        engine
+            .runtime
+            .block_on(
+                engine
+                    .engine
+                    .import_video(dir.path().join("talk.mp4"), AutomationMode::AutoExport),
+            )
+            .ok();
+        let mut fixture = engine.runtime.block_on(engine.engine.snapshot()).unwrap();
+        if fixture.sources.is_empty() {
+            fixture.sources.push(tehom_core::Source {
+                id: 1,
+                url: "https://kick.com/someone".into(),
+                channel_id: "kick:someone".into(),
+                title: "Someone".into(),
+                mode: AutomationMode::AutoExport,
+                last_checked: None,
+                error: None,
+                publish_account: None,
+            });
         }
+        fixture.sources[0].title = "Someone".into();
+        fixture.accounts = vec![tehom_core::Account {
+            id: 7,
+            platform: tehom_core::Platform::Instagram,
+            username: "clips".into(),
+            full_name: String::new(),
+            needs_login: false,
+        }];
+        fixture.onboarded = true;
+        let (handle, view) = open_view(cx, fixture);
+        cx.update_window(handle, |_, window, cx| {
+            view.update(cx, |view, cx| {
+                view.page = Page::Automations;
+                view.backend = Some(engine.clone());
+                cx.notify();
+            });
+            window.render_frame(cx);
+            for label in [
+                "Someone: post to the default account",
+                "Someone: post to @clips",
+                "Someone: do not post",
+                "New video → finished MP4 clips in your folder",
+            ] {
+                assert!(window.try_find_by_label(label).is_some(), "{label}");
+            }
+            assert_eq!(
+                window
+                    .find_by_label("Someone: post to the default account")
+                    .label(),
+                Some("Someone: post to the default account")
+            );
+            // A source with its own account says so in its summary.
+            view.update(cx, |view, cx| {
+                view.engine_snapshot.as_mut().unwrap().sources[0].publish_account = Some(7);
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert!(
+                window
+                    .try_find_by_label("New video → finished MP4 clips → posted to @clips")
+                    .is_some()
+            );
+        })
+        .unwrap();
+        // Connections lists Instagram and marks the others unavailable.
+        render_page(
+            cx,
+            Page::Connections,
+            snapshot(dir.path(), true),
+            |window| {
+                assert!(window.try_find_by_label("Connect Instagram").is_some());
+                for label in [
+                    "YouTube Shorts, not available yet",
+                    "TikTok, not available yet",
+                ] {
+                    assert_eq!(
+                        window.find_by_label(label).disabled(),
+                        Some(true),
+                        "{label}"
+                    );
+                }
+            },
+        );
     }
 }

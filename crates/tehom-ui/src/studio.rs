@@ -17,6 +17,23 @@ pub(crate) const COLORS: [(&str, &str); 7] = [
 ];
 const ROW_HEIGHT: f32 = 52.;
 
+/// One-click looks: name, text colour, outline, size, ALL CAPS.
+const PRESETS: [(&str, &str, &str, CaptionSize, bool); 4] = [
+    ("Clean", "#FFFFFF", "#000000", CaptionSize::Medium, false),
+    ("Hype", "#FFE600", "#000000", CaptionSize::Large, true),
+    ("Neon", "#00E5FF", "#000000", CaptionSize::Large, true),
+    ("Pop", "#FF4FD8", "#000000", CaptionSize::Medium, false),
+];
+
+/// Where a caption sits, as a percentage from the top of the frame.
+pub(crate) fn height_percent(style: &CaptionStyle) -> u8 {
+    style.vertical.unwrap_or(match style.position {
+        CaptionPosition::Top => 14,
+        CaptionPosition::Middle => 50,
+        CaptionPosition::Bottom => 80,
+    })
+}
+
 /// Which caption look a control edits.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Look {
@@ -113,6 +130,43 @@ impl Tehom {
         cx.notify();
     }
 
+    fn look_style(&self, look: Look) -> Option<CaptionStyle> {
+        match look {
+            Look::Studio => self.studio.as_ref().map(|studio| studio.style.clone()),
+            Look::Default => self.default_look.clone().or_else(|| {
+                self.engine_snapshot
+                    .as_ref()
+                    .map(|s| s.caption_style.clone())
+            }),
+        }
+    }
+
+    /// A dragged height slider sets an exact caption height.
+    pub(crate) fn height_dragged(&mut self, look: Look, percent: u8, cx: &mut Context<Self>) {
+        if self
+            .look_style(look)
+            .is_some_and(|style| height_percent(&style) != percent)
+        {
+            self.edit_look(look, |style, _| style.vertical = Some(percent), cx);
+        }
+    }
+
+    /// Moves each height slider to where its caption look now sits.
+    pub(crate) fn sync_height_sliders(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        for (look, slider) in [
+            (Look::Studio, self.caption_height[0].clone()),
+            (Look::Default, self.caption_height[1].clone()),
+        ] {
+            let Some(style) = self.look_style(look) else {
+                continue;
+            };
+            let percent = f32::from(height_percent(&style));
+            if slider.read(cx).value().end() != percent {
+                slider.update(cx, |state, cx| state.set_value(percent, window, cx));
+            }
+        }
+    }
+
     /// The caption look controls, used by the Studio and by Settings.
     /// `sound` is shown only for a clip, since only clips have an intro sound.
     pub(crate) fn caption_look(
@@ -188,10 +242,40 @@ impl Tehom {
                 }))
         };
         let heading = |text: &'static str| div().text_sm().text_color(p.muted).child(text);
+        let percent = height_percent(style);
         div()
             .flex()
             .flex_col()
             .gap_3()
+            .child(heading("Quick looks"))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .children(PRESETS.into_iter().enumerate().map(
+                        |(index, (name, text, outline, size, caps))| {
+                            let selected = style.color.eq_ignore_ascii_case(text)
+                                && style.outline.eq_ignore_ascii_case(outline)
+                                && style.size == size
+                                && style.uppercase == caps;
+                            choice(("look-preset", base + index), name.into(), selected)
+                                .accessibility_label(format!("Quick look: {name}"))
+                                .on_click(cx.listener(move |view, _, _, cx| {
+                                    view.edit_look(
+                                        look,
+                                        |style, _| {
+                                            style.color = text.into();
+                                            style.outline = outline.into();
+                                            style.size = size;
+                                            style.uppercase = caps;
+                                        },
+                                        cx,
+                                    )
+                                }))
+                        },
+                    )),
+            )
             .child(switch(
                 ("look-enabled", base),
                 "Show captions",
@@ -243,14 +327,39 @@ impl Tehom {
                         choice(
                             ("look-position", base + index),
                             label.into(),
-                            style.position == position,
+                            style.vertical.is_none() && style.position == position,
                         )
                         .on_click(cx.listener(move |view, _, _, cx| {
-                            view.edit_look(look, |style, _| style.position = position, cx)
+                            view.edit_look(
+                                look,
+                                |style, _| {
+                                    style.position = position;
+                                    style.vertical = None;
+                                },
+                                cx,
+                            )
                         }))
                     }),
                 ),
             )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(div().text_sm().child("Higher"))
+                    .child(
+                        div().flex_1().child(
+                            Slider::new(&self.caption_height[usize::from(look == Look::Default)])
+                                .accessibility_label("Caption height")
+                                .w_full(),
+                        ),
+                    )
+                    .child(div().text_sm().child("Lower")),
+            )
+            .child(div().text_sm().text_color(p.muted).child(format!(
+                "Drag to place captions anywhere: {percent}% from the top."
+            )))
             .child(switch(
                 ("look-caps", base),
                 "ALL CAPS",
@@ -308,21 +417,23 @@ impl Tehom {
                 CaptionSize::Large => line.text_3xl(),
             })
             .child(text);
+        // Like the finished video: hung from the nearer edge at that height.
+        let percent = f32::from(height_percent(&studio.style).clamp(5, 95)) / 100.;
+        let layer = div().absolute().inset_0().flex().flex_col().items_center();
         Some(
-            div()
-                .absolute()
-                .inset_0()
-                .p_6()
-                .flex()
-                .flex_col()
-                .items_center()
-                .map(|layer| match studio.style.position {
-                    CaptionPosition::Top => layer.justify_start(),
-                    CaptionPosition::Middle => layer.justify_center(),
-                    CaptionPosition::Bottom => layer.justify_end(),
-                })
-                .child(line)
-                .into_any_element(),
+            if studio.style.vertical.is_none() && studio.style.position == CaptionPosition::Middle {
+                layer.justify_center().child(line)
+            } else if percent <= 0.5 {
+                layer
+                    .child(div().flex_none().h(gpui_kit::relative(percent)))
+                    .child(line)
+            } else {
+                layer
+                    .justify_end()
+                    .child(line)
+                    .child(div().flex_none().h(gpui_kit::relative(1. - percent)))
+            }
+            .into_any_element(),
         )
     }
 
@@ -407,6 +518,7 @@ impl Tehom {
                         Some(
                             div()
                                 .h(px(ROW_HEIGHT))
+                                .w_full()
                                 .flex()
                                 .items_center()
                                 .gap_2()
@@ -448,13 +560,14 @@ impl Tehom {
                     .collect()
             }),
         )
+        .flex_none()
         .h(px(ROW_HEIGHT * count.clamp(1, 7) as f32));
         Some(
             div()
                 .id("studio-panel")
                 .w(px(400.))
                 .flex_shrink_0()
-                .h_full()
+                .min_h_0()
                 .overflow_y_scroll()
                 .border_l_1()
                 .border_color(p.border)

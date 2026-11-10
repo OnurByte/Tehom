@@ -778,6 +778,14 @@ impl Automation {
                 .await?;
             migration.commit().await?;
         }
+        if !source_columns
+            .iter()
+            .any(|row| row.get::<String, _>("name") == "publish_account")
+        {
+            sqlx::query("ALTER TABLE sources ADD COLUMN publish_account INTEGER")
+                .execute(&pool)
+                .await?;
+        }
         let video_columns = sqlx::query("PRAGMA table_info(videos)")
             .fetch_all(&pool)
             .await?;
@@ -1272,6 +1280,10 @@ impl Automation {
     }
     pub async fn set_appearance(&self, appearance: Appearance) -> Result<()> {
         self.put_setting("appearance", &serde_json::to_string(&appearance)?)
+            .await
+    }
+    pub async fn set_accent(&self, accent: tehom_core::Accent) -> Result<()> {
+        self.put_setting("accent", &serde_json::to_string(&accent)?)
             .await
     }
     /// Desktop sidebar width in pixels, within `tehom_core::SIDEBAR_WIDTHS`.
@@ -3566,6 +3578,10 @@ fn check_caption_style(style: &CaptionStyle) -> Result<()> {
             "Caption colors must look like #FFFFFF"
         );
     }
+    ensure!(
+        style.vertical.is_none_or(|percent| percent <= 100),
+        "The caption height must be 0 to 100 percent"
+    );
     Ok(())
 }
 fn caption_look(style: &CaptionStyle) -> tehom_media::CaptionLook<'_> {
@@ -3582,6 +3598,7 @@ fn caption_look(style: &CaptionStyle) -> tehom_media::CaptionLook<'_> {
             CaptionPosition::Middle => tehom_media::Placement::Middle,
             CaptionPosition::Bottom => tehom_media::Placement::Bottom,
         },
+        vertical: style.vertical,
         uppercase: style.uppercase,
     }
 }
@@ -3856,17 +3873,14 @@ impl Automation {
             .bind(id.to_string())
             .execute(&mut *tx)
             .await?;
+        sqlx::query("UPDATE sources SET publish_account=NULL WHERE publish_account=?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
         tx.commit().await?;
         Ok(())
     }
-    /// Chooses the account that automatic exports are published to, or none.
-    pub async fn set_auto_publish(&self, account_id: Option<i64>) -> Result<()> {
-        let Some(id) = account_id else {
-            sqlx::query("DELETE FROM settings WHERE key='auto_publish'")
-                .execute(&self.pool)
-                .await?;
-            return Ok(());
-        };
+    async fn check_publish_account(&self, id: i64) -> Result<()> {
         let platform: String = sqlx::query_scalar("SELECT platform FROM accounts WHERE id=?")
             .bind(id)
             .fetch_optional(&self.pool)
@@ -3876,7 +3890,36 @@ impl Automation {
             Platform::parse(&platform).is_some_and(Platform::available),
             "Publishing to this platform is not available"
         );
+        Ok(())
+    }
+    /// Chooses the default account that automatic exports are published to, or none.
+    pub async fn set_auto_publish(&self, account_id: Option<i64>) -> Result<()> {
+        let Some(id) = account_id else {
+            sqlx::query("DELETE FROM settings WHERE key='auto_publish'")
+                .execute(&self.pool)
+                .await?;
+            return Ok(());
+        };
+        self.check_publish_account(id).await?;
         self.put_setting("auto_publish", &id.to_string()).await
+    }
+    /// Where one source's automatic exports go: `None` follows the default
+    /// account, `Some(0)` posts nowhere, otherwise that account.
+    pub async fn set_source_publish(&self, source: i64, account: Option<i64>) -> Result<()> {
+        if let Some(id) = account.filter(|id| *id != 0) {
+            self.check_publish_account(id).await?;
+        }
+        ensure!(
+            sqlx::query("UPDATE sources SET publish_account=? WHERE id=?")
+                .bind(account)
+                .bind(source)
+                .execute(&self.pool)
+                .await?
+                .rows_affected()
+                == 1,
+            "Source not found"
+        );
+        Ok(())
     }
     /// Publishes an exported clip as an Instagram Reel. Every attempt that
     /// reaches the upload stage is recorded, as published or failed.
@@ -4019,13 +4062,28 @@ impl Automation {
     /// Automatic mode: publishes a freshly exported clip when the person
     /// chose an account for it. Failures are recorded, never raised.
     async fn auto_publish(&self, video_id: i64, clip_id: i64, cancel: &AtomicBool) -> Result<()> {
-        let Some(account_id) =
-            sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key='auto_publish'")
+        // The source's own choice wins; 0 means "post nowhere".
+        let own: Option<i64> = sqlx::query_scalar(
+            "SELECT s.publish_account FROM sources s JOIN videos v ON s.id=v.source_id WHERE v.id=?",
+        )
+        .bind(video_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .flatten();
+        let account_id = match own {
+            Some(0) => return Ok(()),
+            Some(id) => id,
+            None => {
+                let Some(id) = sqlx::query_scalar::<_, String>(
+                    "SELECT value FROM settings WHERE key='auto_publish'",
+                )
                 .fetch_optional(&self.pool)
                 .await?
-                .and_then(|value| value.parse::<i64>().ok())
-        else {
-            return Ok(());
+                .and_then(|value| value.parse::<i64>().ok()) else {
+                    return Ok(());
+                };
+                id
+            }
         };
         // A retried video must not upload clips that already went out.
         let started: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM publications p JOIN clips c ON c.id=p.clip_id WHERE p.clip_id=? AND p.account_id=? AND p.state IN ('uploading','published') AND p.revision=COALESCE(c.export_identity,c.output_path))")
@@ -4086,6 +4144,7 @@ async fn snapshot_from_pool(
             mode: parse_mode(r.get("mode")),
             last_checked: r.get("last_checked"),
             error: r.get("error"),
+            publish_account: r.get("publish_account"),
         })
         .collect();
     // Uploaded subtitles take priority over platform captions, as in processing.
@@ -4240,6 +4299,11 @@ async fn snapshot_from_pool(
         .await?
         .and_then(|value| serde_json::from_str(&value).ok())
         .unwrap_or_default(),
+        accent: sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key='accent'")
+            .fetch_optional(&mut *tx)
+            .await?
+            .and_then(|value| serde_json::from_str(&value).ok())
+            .unwrap_or_default(),
         sidebar_width: sqlx::query_scalar::<_, String>(
             "SELECT value FROM settings WHERE key='sidebar_width'",
         )
