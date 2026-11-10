@@ -5,8 +5,9 @@
 #   JOBS=4 packaging/linux/build-deb.sh     # parallel rustc jobs (default 2)
 #   SKIP_BUILD=1 packaging/linux/build-deb.sh  # reuse existing release binaries
 #
-# Requires cargo, dpkg-deb and fakeroot. The package is unsigned; signing,
-# update channels and clean-install tests are separate release steps.
+# Requires cargo, dpkg-deb and fakeroot, plus git and CMake for whisper-cli.
+# The package is unsigned; signing, update channels and clean-install tests
+# are separate release steps.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -23,7 +24,9 @@ esac
 if [[ -z "${SKIP_BUILD:-}" ]]; then
     cargo build --release -j "${JOBS:-2}" -p tehom-cli -p tehom-desktop
 fi
-for binary in tehom tehom-desktop; do
+# Speech-to-text engine beside tehom-desktop, from a pinned whisper.cpp.
+[[ -x target/release/whisper-cli ]] || packaging/build-whisper.sh target/release
+for binary in tehom tehom-desktop whisper-cli; do
     [[ -x "target/release/$binary" ]] || { echo "missing target/release/$binary" >&2; exit 1; }
 done
 
@@ -31,17 +34,20 @@ stage="target/deb/tehom_${version}_${arch}"
 rm -rf "$stage"
 install -Dm755 target/release/tehom "$stage/usr/bin/tehom"
 install -Dm755 target/release/tehom-desktop "$stage/usr/bin/tehom-desktop"
+install -Dm755 target/release/whisper-cli "$stage/usr/bin/whisper-cli"
 
-# Launcher icon: the supplied logo with only currentColor replaced by the
-# Oxocarbon accent (spec §7: coloured derivatives, geometry untouched).
+# Launcher icons from assets/brand/generate-icons.py: the unchanged mark on a
+# tile (spec §7); the path geometry is checked against the source.
 icon="$stage/usr/share/icons/hicolor/scalable/apps/org.tehom.Tehom.svg"
-install -d "$(dirname "$icon")"
-sed 's/currentColor/#be95ff/g' assets/brand/icon.svg > "$icon"
-if ! diff <(sed 's/currentColor/#be95ff/g' assets/brand/icon.svg) "$icon" >/dev/null \
-    || [[ "$(grep -o ' d="[^"]*"' assets/brand/icon.svg)" != "$(grep -o ' d="[^"]*"' "$icon")" ]]; then
+install -Dm644 assets/brand/icon-tile.svg "$icon"
+if [[ "$(grep -o ' d="[^"]*"' assets/brand/icon.svg)" != "$(grep -o ' d="[^"]*"' "$icon")" ]]; then
     echo "icon geometry changed" >&2
     exit 1
 fi
+for png in assets/brand/hicolor/*.png; do
+    size="$(basename "$png" .png)"
+    install -Dm644 "$png" "$stage/usr/share/icons/hicolor/${size}x$size/apps/org.tehom.Tehom.png"
+done
 
 install -Dm644 /dev/stdin "$stage/usr/share/applications/org.tehom.Tehom.desktop" <<'DESKTOP'
 [Desktop Entry]
@@ -52,17 +58,20 @@ Exec=tehom-desktop
 Icon=org.tehom.Tehom
 Terminal=false
 Categories=AudioVideo;Video;
+StartupWMClass=org.tehom.Tehom
 DESKTOP
 
 doc="$stage/usr/share/doc/tehom"
 install -Dm644 LICENSE "$doc/LICENSE"
 install -Dm644 assets/fonts/OFL.txt "$doc/fonts-OFL.txt"
+install -Dm644 target/release/whisper.cpp-LICENSE.txt "$doc/whisper.cpp-LICENSE"
 install -Dm644 config/tehom.example.toml "$doc/examples/tehom.toml"
 install -Dm644 packaging/linux/tehom.service "$doc/examples/tehom.service"
 install -Dm644 /dev/stdin "$doc/copyright" <<COPYRIGHT
 Tehom $version
 License: AGPL-3.0-or-later (see LICENSE).
 Embedded Geist and Geist Mono fonts: SIL Open Font License 1.1 (see fonts-OFL.txt).
+/usr/bin/whisper-cli: whisper.cpp, MIT License (see whisper.cpp-LICENSE).
 Rust dependency licenses have not yet been audited for redistribution.
 COPYRIGHT
 

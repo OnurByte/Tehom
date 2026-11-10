@@ -55,9 +55,6 @@ impl From<&DefaultMode> for AutomationMode {
 fn enabled() -> bool {
     true
 }
-fn thirty() -> u64 {
-    30
-}
 fn one() -> u32 {
     1
 }
@@ -69,8 +66,8 @@ pub struct Automation {
     pub enabled: bool,
     /// Mode for `add`/`import-video` when `--mode` is not given.
     pub default_mode: Option<DefaultMode>,
-    #[serde(default = "thirty")]
-    pub check_interval_minutes: u64,
+    /// Overrides the app's "check for new videos every" setting when given.
+    pub check_interval_minutes: Option<u64>,
     /// Upper bounds. The engine currently runs one job at a time, which
     /// satisfies any limit of at least one.
     #[serde(default = "one")]
@@ -164,7 +161,9 @@ impl Config {
         let mut config: Self = toml::from_str(text).context("Invalid Tehom configuration")?;
         if let Some(automation) = &config.automation {
             ensure!(
-                (1..=1440).contains(&automation.check_interval_minutes),
+                automation
+                    .check_interval_minutes
+                    .is_none_or(|minutes| (1..=1440).contains(&minutes)),
                 "check_interval_minutes must be 1 to 1440"
             );
             ensure!(
@@ -327,7 +326,7 @@ listen = "127.0.0.1:8787"
         let defaults = Config::parse("[automation]\nenabled = false", base).unwrap();
         let automation = defaults.automation.unwrap();
         assert!(!automation.enabled);
-        assert_eq!(automation.check_interval_minutes, 30);
+        assert_eq!(automation.check_interval_minutes, None);
         assert_eq!(automation.max_concurrent_renders, 1);
         assert!(
             Config::parse(

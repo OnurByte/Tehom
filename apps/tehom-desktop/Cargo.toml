@@ -9,3 +9,7 @@ gpui-kit = "=0.8.1"
 
 tehom-media = { path = "../../crates/tehom-media", features = ["preview"] }
 tehom-ui = { path = "../../crates/tehom-ui" }
+
+[build-dependencies]
+# Already in the lock file through gpui; a no-op unless the target is Windows.
+embed-resource = "3.0"

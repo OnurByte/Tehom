@@ -2,11 +2,11 @@
 #
 #   irm https://raw.githubusercontent.com/OnurByte/Tehom/main/install.ps1 | iex
 #
-# Installs tehom.exe and tehom-desktop.exe for the current user only into
-# %LOCALAPPDATA%\Programs\Tehom after checking the release archive's SHA-256,
-# adds it to the user PATH and creates a Start menu shortcut. GStreamer comes
-# with the archive. Missing FFmpeg or yt-dlp are listed and installed only if
-# you answer yes.
+# Installs tehom.exe, tehom-desktop.exe and the bundled whisper-cli.exe for the
+# current user only into %LOCALAPPDATA%\Programs\Tehom after checking the
+# release archive's SHA-256, adds it to the user PATH and creates a Start menu
+# shortcut. GStreamer comes with the archive. Missing FFmpeg or yt-dlp are
+# listed and installed only if you answer yes.
 #
 # Options (environment variables): TEHOM_VERSION, TEHOM_YES=1, TEHOM_NO_DEPS=1,
 # TEHOM_ARCHIVE=C:\path\tehom-windows-x86_64.zip (with .sha256 beside it).
@@ -97,6 +97,20 @@ try {
         Copy-Item (Join-Path $Package $Binary) $Target -Force
     }
 
+    # Bundled speech-to-text engine, looked up beside tehom-desktop.exe;
+    # archives from before it was bundled do not have it. A running copy is
+    # moved aside into .tehom-old like the DLLs.
+    foreach ($Extra in 'whisper-cli.exe', 'whisper.cpp-LICENSE.txt') {
+        $Source = Join-Path $Package $Extra
+        if (Test-Path -LiteralPath $Source) {
+            $Target = Join-Path $InstallDir $Extra
+            if (Test-Path -LiteralPath $Target) {
+                Move-Item -LiteralPath $Target (Join-Path $Old ([Guid]::NewGuid()))
+            }
+            Copy-Item -LiteralPath $Source $Target
+        }
+    }
+
     function Add-UserPath($Directory) {
         $Current = [Environment]::GetEnvironmentVariable('Path', 'User')
         if (-not $Current) { $Current = '' }
@@ -108,11 +122,82 @@ try {
     Add-UserPath $InstallDir
 
     $StartMenu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
+    $Link = Join-Path $StartMenu 'Tehom.lnk'
+    $Desktop = Join-Path $InstallDir 'tehom-desktop.exe'
     $Shell = New-Object -ComObject WScript.Shell
-    $Shortcut = $Shell.CreateShortcut((Join-Path $StartMenu 'Tehom.lnk'))
-    $Shortcut.TargetPath = Join-Path $InstallDir 'tehom-desktop.exe'
+    $Shortcut = $Shell.CreateShortcut($Link)
+    $Shortcut.TargetPath = $Desktop
     $Shortcut.WorkingDirectory = $InstallDir
+    $Shortcut.IconLocation = "$Desktop,0"
     $Shortcut.Save()
+
+    # The AppUserModelID tehom-desktop gives itself (org.tehom.Tehom), so the
+    # taskbar groups its window under this shortcut. WScript.Shell cannot set
+    # it; IPropertyStore can. C# 5 so Windows PowerShell 5.1 compiles it too.
+    try {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class TehomShortcut {
+    [ComImport, Guid("00021401-0000-0000-C000-000000000046")]
+    class ShellLink {}
+
+    [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown), Guid("0000010b-0000-0000-C000-000000000046")]
+    interface IPersistFile {
+        void GetClassID(out Guid id);
+        [PreserveSig] int IsDirty();
+        void Load([MarshalAs(UnmanagedType.LPWStr)] string file, uint mode);
+        void Save([MarshalAs(UnmanagedType.LPWStr)] string file, [MarshalAs(UnmanagedType.Bool)] bool remember);
+        void SaveCompleted([MarshalAs(UnmanagedType.LPWStr)] string file);
+        void GetCurFile([MarshalAs(UnmanagedType.LPWStr)] out string file);
+    }
+
+    [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown), Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99")]
+    interface IPropertyStore {
+        void GetCount(out uint count);
+        void GetAt(uint index, out PropertyKey key);
+        void GetValue(ref PropertyKey key, out PropVariant value);
+        void SetValue(ref PropertyKey key, ref PropVariant value);
+        void Commit();
+    }
+
+    [StructLayout(LayoutKind.Sequential, Pack = 4)]
+    struct PropertyKey { public Guid Format; public uint Id; }
+
+    // PROPVARIANT holding a VT_LPWSTR; 24 bytes on x64.
+    [StructLayout(LayoutKind.Explicit, Size = 24)]
+    struct PropVariant { [FieldOffset(0)] public ushort Type; [FieldOffset(8)] public IntPtr Value; }
+
+    public static void SetAppId(string link, string appId) {
+        object shellLink = new ShellLink();
+        try {
+            IPersistFile file = (IPersistFile)shellLink;
+            file.Load(link, 2); // STGM_READWRITE
+            PropertyKey key = new PropertyKey();
+            key.Format = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"); // PKEY_AppUserModel_ID
+            key.Id = 5;
+            PropVariant value = new PropVariant();
+            value.Type = 31; // VT_LPWSTR
+            value.Value = Marshal.StringToCoTaskMemUni(appId);
+            try {
+                IPropertyStore store = (IPropertyStore)shellLink;
+                store.SetValue(ref key, ref value);
+                store.Commit();
+            } finally {
+                Marshal.FreeCoTaskMem(value.Value);
+            }
+            file.Save(link, true);
+        } finally {
+            Marshal.ReleaseComObject(shellLink);
+        }
+    }
+}
+'@
+        [TehomShortcut]::SetAppId($Link, 'org.tehom.Tehom')
+    } catch {
+        Write-Warning "The Start menu shortcut works, but its taskbar grouping ID could not be set: $_"
+    }
 
     # --- Tools Tehom runs: FFmpeg, yt-dlp -----------------------------------
     $Missing = @()

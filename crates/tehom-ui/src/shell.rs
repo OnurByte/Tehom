@@ -3,7 +3,7 @@
 use super::*;
 use crate::automation_ui::Action;
 use gpui_kit::{App, FocusHandle, Focusable, actions, component::input::InputEvent};
-use tehom_core::ExportProfile;
+use tehom_core::{Appearance, ExportProfile};
 
 actions!(tehom, [TogglePalette, ClosePalette]);
 
@@ -33,10 +33,16 @@ pub(crate) enum Command {
     Shape(ExportProfile),
     Guide,
     CheckUpdates,
+    ConnectInstagram,
+    /// Settings, scrolled to a card (`automation_ui::CARD_*`).
+    Card(usize),
+    Look(Appearance),
+    /// Widen (positive) or narrow the sidebar by this many pixels.
+    Sidebar(i16),
 }
 
 impl Command {
-    pub(crate) const ALL: [(Command, &'static str); 15] = [
+    pub(crate) const ALL: [(Command, &'static str); 24] = [
         (Command::AddLink, "Add a channel or video"),
         (Command::FromFile, "Make clips from a file"),
         (Command::OpenVideo, "Open a video to edit"),
@@ -44,7 +50,10 @@ impl Command {
         (Command::Go(Page::Home), "Go to Home"),
         (Command::Go(Page::Sources), "Go to Sources"),
         (Command::Go(Page::Clips), "Go to Clips"),
-        (Command::Go(Page::Settings), "Choose AI model or API key"),
+        (
+            Command::Card(crate::automation_ui::CARD_AI),
+            "Choose AI model or API key",
+        ),
         (Command::ChooseFolder, "Choose clip folder"),
         (
             Command::Shape(ExportProfile::Vertical),
@@ -58,9 +67,30 @@ impl Command {
             Command::Shape(ExportProfile::Original),
             "Clip shape: original size",
         ),
+        (Command::ConnectInstagram, "Connect Instagram"),
+        (
+            Command::Card(crate::automation_ui::CARD_LOOK),
+            "Caption look for new clips",
+        ),
+        (
+            Command::Card(crate::automation_ui::CARD_SPEECH),
+            "Speech model for videos without captions",
+        ),
+        (
+            Command::Card(crate::automation_ui::CARD_AUTOMATION),
+            "Automation settings",
+        ),
+        (Command::Look(Appearance::Light), "Appearance: light"),
+        (Command::Look(Appearance::Dark), "Appearance: dark"),
+        (
+            Command::Look(Appearance::System),
+            "Appearance: same as this computer",
+        ),
+        (Command::Sidebar(40), "Make the sidebar wider"),
+        (Command::Sidebar(-40), "Make the sidebar narrower"),
         (Command::Guide, "Show the welcome guide"),
         (Command::CheckUpdates, "Check for updates"),
-        (Command::Go(Page::Settings), "About Tehom and version"),
+        (Command::Go(Page::About), "About Tehom"),
     ];
 
     /// Commands whose title contains every word of the query.
@@ -155,8 +185,14 @@ impl Tehom {
             Command::ChooseFolder => self.choose_export_directory(window, cx),
             Command::Shape(profile) => self.act(Action::ExportProfile(profile), window, cx),
             Command::Guide => self.onboarding = Some(0),
+            Command::ConnectInstagram => self.connect_instagram(window, cx),
+            Command::Card(card) => self.open_settings_at(card, cx),
+            Command::Look(appearance) => self.choose_appearance(appearance, window, cx),
+            Command::Sidebar(change) => {
+                self.resize_sidebar(self.sidebar_px() + f32::from(change), true, cx)
+            }
             Command::CheckUpdates => {
-                self.navigate(Page::Settings, cx);
+                self.navigate(Page::About, cx);
                 self.check_for_updates(window, cx);
             }
         }
@@ -256,6 +292,10 @@ impl Tehom {
         let ai_ready = snapshot.is_some_and(|s| {
             (s.ai.provider.is_remote() && s.ai.remote_consent) || !s.ai.model.trim().is_empty()
         });
+        let speech_ready = self
+            .speech
+            .as_ref()
+            .is_some_and(|s| s.program.is_some() && s.model.is_some());
         let (title, body) = match step {
             0 => (
                 "Paste a link. Get clips as MP4 files.",
@@ -264,6 +304,10 @@ impl Tehom {
             1 => (
                 "Choose who picks the clips",
                 "Use an API key (OpenAI, Anthropic, Gemini, OpenRouter), your Codex or Claude Code subscription, or a model on this computer. You can also skip this and trim clips by hand.",
+            ),
+            2 => (
+                "Make captions on this computer",
+                "Recommended. When a video has no captions, Tehom writes them here; nothing is sent anywhere. This downloads about 150 MB once. You can skip it and do it later in Settings.",
             ),
             _ => (
                 "Where should clips go?",
@@ -310,7 +354,7 @@ impl Tehom {
                             div()
                                 .text_sm()
                                 .text_color(p.muted)
-                                .child(format!("Step {} of 3", step + 1)),
+                                .child(format!("Step {} of 4", step + 1)),
                         )
                         .child(div().text_3xl().child(title))
                         .child(div().text_color(p.muted).child(body))
@@ -331,6 +375,33 @@ impl Tehom {
                             page.child(div().text_sm().text_color(p.muted).child(note))
                         })
                         .when(step == 2, |page| {
+                            let ready = self
+                                .speech
+                                .as_ref()
+                                .is_some_and(|s| s.program.is_some() && s.model.is_some());
+                            let missing = self.speech.as_ref().is_some_and(|s| s.program.is_none());
+                            page.when(ready, |page| {
+                                page.child(div().text_sm().child("Captions on this computer are ready."))
+                            })
+                            .when(missing, |page| {
+                                page.child(div().text_sm().child(
+                                    "This copy of Tehom has no built-in speech tool yet. Update Tehom later from About Tehom.",
+                                ))
+                            })
+                            .when(!ready && !missing, |page| {
+                                page.child(
+                                    Button::new("onboarding-speech")
+                                        .h(px(44.))
+                                        .primary()
+                                        .label(self.speech_setup_label())
+                                        .disabled(self.backend.is_none() || self.speech_downloading || self.source_busy)
+                                        .on_click(cx.listener(|view, _, window, cx| {
+                                            view.set_up_speech(window, cx)
+                                        })),
+                                )
+                            })
+                        })
+                        .when(step == 3, |page| {
                             page.child(
                                 div()
                                     .p(px(16.))
@@ -360,11 +431,13 @@ impl Tehom {
                                             0 => "Get started",
                                             1 if ai_ready => "Continue",
                                             1 => "Continue without AI",
+                                            2 if speech_ready => "Continue",
+                                            2 => "Skip for now",
                                             _ => "Finish",
                                         })
                                         .on_click(cx.listener(move |view, _, window, cx| {
                                             view.guide_note = None;
-                                            if step >= 2 {
+                                            if step >= 3 {
                                                 view.finish_onboarding(window, cx);
                                             } else {
                                                 view.onboarding = Some(step + 1);

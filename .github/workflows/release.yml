@@ -1,7 +1,11 @@
 name: Release
 # Pushing a tag such as v0.1.0 builds every platform archive that install.sh
 # and install.ps1 download, with SHA-256 files, and attaches them to a GitHub
-# release. Archives are not code-signed or notarised yet.
+# release. Each archive also carries whisper-cli, built from a pinned
+# whisper.cpp by packaging/build-whisper.sh. A manual run (workflow_dispatch)
+# on a branch only builds and uploads the archives as workflow artifacts; the
+# publish job runs only for v* tags. Archives are not code-signed or
+# notarised yet.
 on:
   push:
     tags: ['v*']
@@ -26,7 +30,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang lld pkg-config libasound2-dev libfontconfig1-dev libfreetype6-dev libxkbcommon-x11-dev libwayland-dev libxcb1-dev libvulkan-dev libssl-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+          sudo apt-get install -y clang lld cmake pkg-config libasound2-dev libfontconfig1-dev libfreetype6-dev libxkbcommon-x11-dev libwayland-dev libxcb1-dev libvulkan-dev libssl-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
       - name: macOS dependencies
         if: runner.os == 'macOS'
         run: |
@@ -69,6 +73,9 @@ jobs:
       - name: Build release binaries
         shell: bash
         run: cargo build --release --locked -p tehom-cli -p tehom-desktop
+      - name: Build whisper-cli (pinned whisper.cpp, static)
+        shell: bash
+        run: packaging/build-whisper.sh target/release
       - name: Pack archive
         shell: bash
         run: packaging/release-archive.sh target/release
@@ -83,10 +90,12 @@ jobs:
             # Only Windows itself on PATH: the package must carry its own GStreamer.
             export PATH=/usr/bin:/c/Windows/System32
             smoke/tehom/tehom.exe --version
+            smoke/tehom/whisper-cli.exe -h >/dev/null 2>&1
             timeout 120 smoke/tehom/tehom-desktop.exe --check-preview "$PWD/smoke/source.mp4"
           else
             tar -xzf target/dist/tehom-*.tar.gz -C smoke
             smoke/tehom/tehom --version
+            smoke/tehom/whisper-cli -h >/dev/null 2>&1
           fi
       - uses: actions/upload-artifact@v4
         with:

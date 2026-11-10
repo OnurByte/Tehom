@@ -104,9 +104,11 @@ enum Command {
         #[arg(long)]
         video: Option<i64>,
     },
+    /// Watch a YouTube channel or any RSS/Atom feed link, or add one YouTube
+    /// or Kick video.
     Add {
         url: String,
-        /// Defaults to automation.default_mode, else auto-draft.
+        /// Defaults to automation.default_mode, else the app's setting for new links.
         #[arg(long, value_enum)]
         mode: Option<Mode>,
     },
@@ -157,7 +159,7 @@ enum Command {
     },
     ImportVideo {
         path: PathBuf,
-        /// Defaults to automation.default_mode, else auto-draft.
+        /// Defaults to automation.default_mode, else the app's setting for new links.
         #[arg(long, value_enum)]
         mode: Option<Mode>,
     },
@@ -270,15 +272,13 @@ async fn main() -> Result<()> {
     let configured_interval = config
         .automation
         .as_ref()
-        .map(|a| a.check_interval_minutes)
-        .unwrap_or(30);
+        .and_then(|a| a.check_interval_minutes);
     let automation_enabled = config.automation.as_ref().is_none_or(|a| a.enabled);
-    let default_mode: AutomationMode = config
+    let configured_mode: Option<AutomationMode> = config
         .automation
         .as_ref()
         .and_then(|a| a.default_mode.as_ref())
-        .map(Into::into)
-        .unwrap_or(AutomationMode::AutoDraft);
+        .map(Into::into);
     if matches!(args.command, Command::Daemon { .. }) {
         anyhow::ensure!(
             automation_enabled,
@@ -376,6 +376,8 @@ async fn main() -> Result<()> {
             engine.set_export_profile(profile).await?;
         }
     }
+    let settings = engine.automation().await?;
+    let default_mode = configured_mode.unwrap_or(settings.new_source_mode);
     match args.command {
         Command::Status
         | Command::Events { .. }
@@ -401,7 +403,9 @@ async fn main() -> Result<()> {
             while engine.process_next().await? {}
         }
         Command::Daemon { interval_minutes } => {
-            let interval_minutes = interval_minutes.unwrap_or(configured_interval);
+            let interval_minutes = interval_minutes
+                .or(configured_interval)
+                .unwrap_or(u64::from(settings.check_minutes));
             daemon::run(&engine, interval_minutes).await?;
         }
         Command::Ai {
@@ -478,6 +482,13 @@ async fn run_update(check: bool, yes: bool, force: bool, rollback: bool) -> Resu
         return Ok(());
     }
     let status = update::check().await?;
+    // Never "update" to an older release, even with --force.
+    anyhow::ensure!(
+        update::parse_version(&status.latest.tag) >= update::parse_version(&status.current),
+        "The newest release ({}) is older than this Tehom ({}); nothing to install",
+        status.latest.tag,
+        status.current
+    );
     if !status.available && !force {
         println!("Tehom {} is up to date.", status.current);
         return Ok(());
@@ -511,10 +522,11 @@ async fn run_update(check: bool, yes: bool, force: bool, rollback: bool) -> Resu
             return Ok(());
         }
     }
-    update::install(&status.latest.tag, &bin_dir).await?;
+    let installed = update::install(&status.latest.tag, &bin_dir).await?;
     println!(
-        "Updated to {}. Restart Tehom to use it. Undo with `tehom update --rollback`.",
-        status.latest.tag
+        "Updated to {} ({}). Restart Tehom to finish. Undo with `tehom update --rollback`.",
+        status.latest.tag,
+        installed.join(", ")
     );
     Ok(())
 }
@@ -616,7 +628,7 @@ mod config_tests {
             config.data.unwrap().directory,
             PathBuf::from("/srv/config/data")
         );
-        assert_eq!(config.automation.unwrap().check_interval_minutes, 12);
+        assert_eq!(config.automation.unwrap().check_interval_minutes, Some(12));
         assert!(
             Config::parse(
                 "[automation]\ncheck_interval_minutes=0",
