@@ -1,5 +1,5 @@
 use std::{
-    io::{self, Read, Seek},
+    io::{self, Read},
     path::Path,
     process::{Command, Stdio},
     sync::atomic::{AtomicBool, Ordering},
@@ -728,8 +728,8 @@ fn render(
         Some(report) => {
             // A private file keeps progress out of the bounded stdout capture.
             let mut log = tempfile::Builder::new()
-                .prefix("tehom-progress-")
-                .tempfile()?;
+                .prefix(".tehom-progress-")
+                .tempfile_in(parent)?;
             command
                 .arg("-progress")
                 .arg(log.path())
@@ -841,61 +841,101 @@ fn run_observed(
     if cancelled.load(Ordering::Acquire) {
         return Err(io::Error::new(io::ErrorKind::Interrupted, "Cancelled"));
     }
-    let mut stdout = tempfile::tempfile()?;
-    let mut stderr = tempfile::tempfile()?;
     let mut child = command
         .stdin(Stdio::null())
-        .stdout(stdout.try_clone()?)
-        .stderr(stderr.try_clone()?)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| spawn_error(command.get_program(), error))?;
+    let stdout_pipe = child.stdout.take().expect("stdout was piped");
+    let stderr_pipe = child.stderr.take().expect("stderr was piped");
+    let failed = AtomicBool::new(false);
     let started = Instant::now();
-    let status = (|| {
-        loop {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(io::Error::new(io::ErrorKind::Interrupted, "Cancelled"));
+    // shortcut: direct FFmpeg/FFprobe children only; add process-tree shutdown if media tools spawn subprocesses.
+    std::thread::scope(|scope| {
+        let failed = &failed;
+        let (mut stdout_reader, mut stderr_reader) = (None, None);
+        let status = (|| {
+            stdout_reader = Some(
+                std::thread::Builder::new()
+                    .spawn_scoped(scope, move || capture_output(stdout_pipe, failed))?,
+            );
+            stderr_reader = Some(
+                std::thread::Builder::new()
+                    .spawn_scoped(scope, move || capture_output(stderr_pipe, failed))?,
+            );
+            loop {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(io::Error::new(io::ErrorKind::Interrupted, "Cancelled"));
+                }
+                if timeout.is_some_and(|limit| started.elapsed() >= limit) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "The video tool did not respond in time",
+                    ));
+                }
+                if failed.load(Ordering::Acquire) {
+                    return Err(io::Error::other("The video tool output could not be read"));
+                }
+                if let Some(status) = child.try_wait()? {
+                    return Ok(status);
+                }
+                tick();
+                std::thread::sleep(Duration::from_millis(20));
             }
-            if timeout.is_some_and(|limit| started.elapsed() >= limit) {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "The video tool did not respond in time",
-                ));
+        })();
+        if status.is_err() {
+            if let Err(error) = child.kill() {
+                eprintln!("Media shutdown: {error}");
             }
-            if stdout.metadata()?.len() > 65536 || stderr.metadata()?.len() > 65536 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "The video tool produced too much error output",
-                ));
+            if let Err(error) = child.wait() {
+                eprintln!("Media shutdown: {error}");
             }
-            if let Some(status) = child.try_wait()? {
-                return Ok(status);
-            }
-            tick();
-            std::thread::sleep(Duration::from_millis(20));
         }
+        // Join both readers before propagating errors, including fast-process overflow.
+        let stdout = stdout_reader
+            .map(|reader| {
+                reader
+                    .join()
+                    .unwrap_or_else(|_| Err(io::Error::other("Video stdout reader failed")))
+            })
+            .transpose();
+        let stderr = stderr_reader
+            .map(|reader| {
+                reader
+                    .join()
+                    .unwrap_or_else(|_| Err(io::Error::other("Video stderr reader failed")))
+            })
+            .transpose();
+        let stdout = stdout?.unwrap_or_default();
+        let stderr = stderr?.unwrap_or_default();
+        let status = status?;
+        if !status.success() {
+            return Err(io::Error::other(format!(
+                "{status}: {}",
+                String::from_utf8_lossy(&stderr)
+            )));
+        }
+        Ok(stdout)
+    })
+}
+
+fn capture_output(reader: impl Read, failed: &AtomicBool) -> io::Result<Vec<u8>> {
+    let result = (|| {
+        let mut bytes = Vec::new();
+        reader.take(65_537).read_to_end(&mut bytes)?;
+        if bytes.len() > 65_536 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "The video tool produced too much error output",
+            ));
+        }
+        Ok(bytes)
     })();
-    let status = match status {
-        Ok(status) => status,
-        Err(error) => {
-            if let Err(kill_error) = child.kill() {
-                eprintln!("Media shutdown: {kill_error}");
-            }
-            if let Err(wait_error) = child.wait() {
-                eprintln!("Media shutdown: {wait_error}");
-            }
-            return Err(error);
-        }
-    };
-    if !status.success() {
-        stderr.rewind()?;
-        let mut message = String::new();
-        stderr.take(65536).read_to_string(&mut message)?;
-        return Err(io::Error::other(format!("{status}: {message}")));
+    if result.is_err() {
+        failed.store(true, Ordering::Release);
     }
-    stdout.rewind()?;
-    let mut bytes = Vec::new();
-    stdout.take(65536).read_to_end(&mut bytes)?;
-    Ok(bytes)
+    result
 }
 
 #[cfg(test)]
@@ -1187,5 +1227,36 @@ mod probe_diagnostic_tests {
             "{}",
             String::from_utf8_lossy(&child.stdout)
         );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod capture_tests {
+    use super::*;
+    #[test]
+    fn simultaneous_stdout_and_stderr_overflow_is_bounded() {
+        let started = Instant::now();
+        let error = run(
+            Command::new("sh").args(["-c", "i=0; while [ \"$i\" -lt 5000 ]; do printf 0123456789abcdef; printf 0123456789abcdef >&2; i=$((i+1)); done"]),
+            &AtomicBool::new(false), Some(Duration::from_secs(5)),
+        ).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("too much"));
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn cancellation_during_capture_stops_the_child() {
+        let cancelled = AtomicBool::new(false);
+        let started = Instant::now();
+        let error = run_observed(
+            Command::new("sleep").arg("5"),
+            &cancelled,
+            None,
+            &mut || cancelled.store(true, Ordering::Release),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 }

@@ -2,6 +2,42 @@
 
 Branch: fix/provider-json-processing. Baseline: 526bc4f. Release candidate: 0.5.1 (not published).
 
+## Reproduced root cause: quota-dependent process capture
+
+The original source's EOF was reproduced five out of five times with both the
+installed 0.5.0 binary and the 0.5.1 candidate in the default environment. The
+new stage diagnostics identified FFprobe media metadata, before any transcript
+or Gemini request. A direct pipe capture returned 285 bytes of valid JSON.
+An explicit /tmp write failed with errno 122 (EDQUOT); actual FFprobe with stdout
+redirected to an anonymous /tmp file exited 0 with a zero-byte capture and no
+stderr. Python selected /var/tmp as its writable temporary-directory fallback,
+which initially obscured the comparison. Overriding the candidate's TMPDIR to
+on-disk storage also made inspection pass; this is diagnostic evidence, not the
+final workaround used for the release gate.
+
+Baseline crates/tehom-media/src/lib.rs:830–831 created stdout/stderr capture files
+in the default temporary directory. FFprobe's successful exit did not prove its
+buffered stdout write succeeded; the empty capture reached the JSON decoder.
+The repair reads both streams concurrently through bounded pipes, retains the
+64 KiB-per-stream limit and kill/reap behavior, and moves render progress logs
+to the validated export destination. It does not change the host's /tmp quota
+or erase any existing temporary/user files.
+
+A new isolated Linux integration test creates a real MP4 first, then uses
+RLIMIT_FSIZE=0 with SIGXFSZ ignored to reproduce failed capture writes without
+killing FFprobe. It failed at FFprobe media metadata Eof before the pipe repair
+and passed afterward; actual metadata and export-identity reads succeed and
+the input is byte-identical. The first standalone attempt used the full /tmp
+and failed during fixture generation; the intended red result was obtained with
+the fixture on disk and test stdout/stderr captured through pipes. Nine media
+unit tests also passed, including simultaneous stream overflow, cancellation,
+timeout, atomic export and stage diagnostics. Strict media-only Clippy first
+found a needless borrow in the new cancellation test; it was corrected and
+cargo clippy -p tehom-media --all-targets -- -D warnings passed. After rebuilding, /tmp still returned EDQUOT while the fixed candidate
+successfully inspected the original source five out of five times, with no
+TMPDIR override. The complete original-source workflow was then restarted with
+that candidate; its final result is pending.
+
 ## Reproduction
 
 Before modifying production code, added
@@ -13,8 +49,7 @@ The following cases in that loop were not reached in this baseline run.
 
 ## Findings and repair locations
 
-These are proven source defects; the historical bare EOF record does not prove
-which boundary failed on the original attempt.
+The process-capture quota failure is now reproduced on the original source. The following additional source defects and repair boundaries were also verified.
 
 | Defect/boundary | Current source location | Repair |
 | --- | --- | --- |
@@ -24,6 +59,7 @@ which boundary failed on the original attempt.
 | Recoverable status/transport failures | crates/tehom-automation/src/lib.rs:748 | Three attempts at most; authentication, unavailable models, completed invalid JSON and size violations do not retry. Long RetryInfo/Retry-After delays stop early. |
 | Error chain lost in job history | crates/tehom-automation/src/lib.rs:2035 | Persist safe full chain and classify nested Needs input errors. |
 | Completed chunks lost when a later chunk fails | crates/tehom-automation/src/lib.rs:2226 and :3249 | SQLite checkpoint per video/index, keyed by exact AI config, captured settings and input. Complete drafts remain transactional before render. |
+| Quota-dependent process capture | crates/tehom-media/src/lib.rs:835 and :923 (baseline :830–831) | Bounded concurrent stdout/stderr pipes; no capture-file writes. Render progress files use the export parent. |
 | FFprobe metadata/export-marker JSON | crates/tehom-media/src/lib.rs:99, :596 and :812 | Name the FFprobe stage and report safe parse position/category. |
 | Generated speech SRT encoding | crates/tehom-automation/src/lib.rs:2870 (baseline :2752) | Normalize invalid generated characters, retain SRT validation, commit repaired SRT and a safe caption-review warning together. User uploads remain strict. |
 | Saved AI settings decoded in worker snapshot | crates/tehom-automation/src/lib.rs:4417 | Name the stored-settings stage without disclosing its rejected values. |
@@ -92,12 +128,13 @@ No private speech text is included in the warning or this report.
   the origin of SIGKILL is not established. Final workspace checks remain pending. The later Clippy process was
   deliberately interrupted (exit 130) to let the pending regression compile
   before the final fix; the queued workspace test was temporarily suspended
-  at its build lock and must be resumed. Neither is counted as a passing check.
+  at its build lock. That pre-version-bump process was subsequently discarded
+  (exit 137) and cargo test --workspace --locked was started afresh against the
+  final 0.5.1 manifest graph. None of the interrupted runs is a passing check.
 - A temporary /tmp copy of the source hit Disk quota exceeded, also causing a
   test run to fail with SQLite I/O errors. The scratch data was moved to disk;
   the same targeted tests then passed without code changes.
-- The original saved job contained only the bare EOF message, so its historical
-  source is not proven. The retained source is a real 875.740590-second 3840×2160
+- The original saved job contained only the bare EOF message; later repetition on the same source identified the FFprobe capture/quota boundary described above. The retained source is a real 875.740590-second 3840×2160
   AV1/AAC file. Both FFprobe and the installed application's import path currently
   inspect it successfully. An isolated copy reaches needs_input because no
   captions or speech model are available. The user has now explicitly authorized
@@ -111,8 +148,9 @@ No private speech text is included in the warning or this report.
   failed. This is not a successful integration. A corresponding injected-byte
   regression using actual FFmpeg media failed before the speech-boundary fix;
   cargo test -p tehom-automation --lib speech_invalid_utf8 -- --nocapture then
-  passed its repaired-output, warning and strict-upload assertions. A real
-  original-source rerun with the rebuilt candidate remains required.
+  passed its repaired-output, warning and strict-upload assertions. The first rebuilt candidate then reproduced the original FFprobe EOF under
+  the default temporary-directory quota. A real original-source rerun with the
+  new pipe capture and repaired speech boundary remains required.
 - A separate actual public video (TED, YouTube iG9CE55wbtY, 1203.414 seconds,
   480×360) was downloaded with its English subtitles and imported into isolated
   application data. Gemini 3.5 Flash actually analyzed its two transcript chunks,
