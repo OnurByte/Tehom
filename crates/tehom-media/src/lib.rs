@@ -96,7 +96,7 @@ fn inspect_cancellable(path: &Path, cancelled: &AtomicBool) -> io::Result<VideoI
         cancelled,
         Some(Duration::from_secs(30)),
     )?;
-    let json: serde_json::Value = serde_json::from_slice(&output)?;
+    let json = probe_json(&output, "FFprobe media metadata")?;
     let seconds = json["format"]["duration"]
         .as_str()
         .and_then(|v| v.parse::<f64>().ok())
@@ -593,7 +593,7 @@ pub fn export_identity(path: &Path) -> io::Result<Option<String>> {
         &AtomicBool::new(false),
         Some(Duration::from_secs(30)),
     )?;
-    let data: serde_json::Value = serde_json::from_slice(&bytes)?;
+    let data = probe_json(&bytes, "FFprobe export identity")?;
     Ok(data["format"]["tags"]["comment"]
         .as_str()
         .and_then(|value| value.strip_prefix("tehom:"))
@@ -807,6 +807,20 @@ fn spawn_error(program: &std::ffi::OsStr, error: io::Error) -> io::Error {
         ),
         _ => io::Error::new(error.kind(), format!("{name} could not start: {error}")),
     }
+}
+
+fn probe_json(bytes: &[u8], stage: &str) -> io::Result<serde_json::Value> {
+    serde_json::from_slice(bytes).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{stage}: invalid JSON ({:?}, line {}, column {})",
+                error.classify(),
+                error.line(),
+                error.column()
+            ),
+        )
+    })
 }
 
 fn run(
@@ -1108,5 +1122,70 @@ mod process_tests {
         .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod probe_diagnostic_tests {
+    use super::*;
+    #[test]
+    fn empty_probe_output_names_the_stage_for_actual_media() {
+        const INPUT: &str = "TEHOM_TEST_EMPTY_PROBE_INPUT";
+        if let Some(input) = std::env::var_os(INPUT) {
+            let input = Path::new(&input);
+            let error = inspect(input).unwrap_err().to_string();
+            assert!(error.contains("FFprobe media metadata"), "{error}");
+            let error = export_identity(input).unwrap_err().to_string();
+            assert!(error.contains("FFprobe export identity"), "{error}");
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let work = tempfile::tempdir().unwrap();
+        let input = work.path().join("actual.mp4");
+        assert!(
+            Command::new("ffmpeg")
+                .args([
+                    "-nostdin",
+                    "-v",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "color=s=64x64:d=1",
+                    "-c:v",
+                    "libx264",
+                    "-threads",
+                    "1"
+                ])
+                .arg(&input)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(inspect(&input).is_ok());
+        let bin = work.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let probe = bin.join("ffprobe");
+        std::fs::write(&probe, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut paths = vec![bin];
+        paths.extend(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        ));
+        let child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "probe_diagnostic_tests::empty_probe_output_names_the_stage_for_actual_media",
+                "--nocapture",
+            ])
+            .env(INPUT, input)
+            .env("PATH", std::env::join_paths(paths).unwrap())
+            .output()
+            .unwrap();
+        assert!(
+            child.status.success(),
+            "{}",
+            String::from_utf8_lossy(&child.stdout)
+        );
     }
 }

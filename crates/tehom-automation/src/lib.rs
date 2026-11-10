@@ -728,6 +728,124 @@ async fn read_limited(response: &mut reqwest::Response, limit: usize) -> Result<
     }
     Ok(bytes)
 }
+/// JSON diagnostics must never echo provider text or private transcript values.
+fn parse_ai_json<T: serde::de::DeserializeOwned>(bytes: &[u8], stage: &str) -> Result<T> {
+    ensure!(
+        !bytes.iter().all(u8::is_ascii_whitespace),
+        "{stage} is empty"
+    );
+    serde_json::from_slice(bytes).map_err(|error| {
+        anyhow::anyhow!(
+            "{stage} contains invalid JSON ({:?}, line {}, column {})",
+            error.classify(),
+            error.line(),
+            error.column()
+        )
+    })
+}
+
+/// At most three attempts; only transport failures and transient HTTP statuses retry.
+async fn ai_response(
+    request: reqwest::RequestBuilder,
+    label: &str,
+    limit: usize,
+) -> Result<Vec<u8>> {
+    for attempt in 0..3 {
+        let reply = request
+            .try_clone()
+            .context("AI request cannot be retried")?
+            .send()
+            .await;
+        let mut response = match reply {
+            Ok(response) => response,
+            Err(error) => {
+                if attempt < 2 && (error.is_connect() || error.is_timeout()) {
+                    tokio::time::sleep(Duration::from_secs(1 << attempt)).await;
+                    continue;
+                }
+                return Err(error.without_url())
+                    .with_context(|| format!("{label} transport failed"));
+            }
+        };
+        let status = response.status();
+        if !status.is_success() {
+            if matches!(status.as_u16(), 401 | 403) {
+                bail!("Needs input: {label} rejected the API key ({status})");
+            }
+            if status.as_u16() == 404 {
+                bail!(
+                    "Needs input: {label} could not find the selected model or API endpoint (404); select an available model"
+                );
+            }
+            ensure!(
+                attempt < 2 && matches!(status.as_u16(), 408 | 429 | 500 | 502 | 503 | 504 | 529),
+                "{label} request failed ({status}); try again later for rate limits or service errors"
+            );
+        }
+        let header_delay = if status.is_success() {
+            None
+        } else {
+            response
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok())
+        };
+        if let Some(seconds) = header_delay.filter(|seconds| *seconds > 30) {
+            bail!("{label} request failed ({status}); retry after {seconds} seconds");
+        }
+        let body_limit = if status.is_success() {
+            limit
+        } else {
+            limit.min(65536)
+        };
+        let bytes = match read_limited(&mut response, body_limit).await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                if attempt < 2
+                    && error.downcast_ref::<reqwest::Error>().is_some_and(|error| {
+                        error.is_timeout() || error.is_body() || error.is_decode()
+                    })
+                {
+                    drop(response);
+                    tokio::time::sleep(Duration::from_secs(header_delay.unwrap_or(1 << attempt)))
+                        .await;
+                    continue;
+                }
+                return Err(error).with_context(|| {
+                    format!("{label} response body could not be read ({status})")
+                });
+            }
+        };
+        if status.is_success() {
+            return Ok(bytes);
+        }
+        // Gemini reports quota resets in RetryInfo even without Retry-After.
+        let detail: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
+        let body_delay = detail["error"]["details"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|detail| detail["@type"] == "type.googleapis.com/google.rpc.RetryInfo")
+            .filter_map(|detail| {
+                detail["retryDelay"]
+                    .as_str()?
+                    .strip_suffix('s')?
+                    .parse::<f64>()
+                    .ok()
+            })
+            .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
+            .map(|seconds| seconds.ceil() as u64)
+            .max();
+        let delay = header_delay.into_iter().chain(body_delay).max();
+        if let Some(seconds) = delay.filter(|seconds| *seconds > 30) {
+            bail!("{label} request failed ({status}); retry after {seconds} seconds");
+        }
+        drop(response);
+        tokio::time::sleep(Duration::from_secs(delay.unwrap_or(1 << attempt))).await;
+    }
+    unreachable!("the final attempt always returns")
+}
 impl Automation {
     pub async fn open(data_directory: PathBuf) -> Result<Self> {
         tokio::fs::create_dir_all(&data_directory).await?;
@@ -752,6 +870,7 @@ impl Automation {
             .await?;
         sqlx::raw_sql("CREATE TABLE IF NOT EXISTS sources(id INTEGER PRIMARY KEY,url TEXT NOT NULL,channel_id TEXT NOT NULL UNIQUE,title TEXT NOT NULL,mode TEXT NOT NULL,last_checked TEXT,error TEXT); CREATE TABLE IF NOT EXISTS videos(id INTEGER PRIMARY KEY,source_id INTEGER NOT NULL REFERENCES sources(id),external_id TEXT NOT NULL UNIQUE,title TEXT NOT NULL,url TEXT NOT NULL,state TEXT NOT NULL,error TEXT,local_path TEXT); CREATE TABLE IF NOT EXISTS clips(id INTEGER PRIMARY KEY,video_id INTEGER NOT NULL REFERENCES videos(id),title TEXT NOT NULL,start_ms INTEGER NOT NULL,end_ms INTEGER NOT NULL,reason TEXT NOT NULL DEFAULT '',output_path TEXT,UNIQUE(video_id,start_ms,end_ms)); CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL); \
             CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY,video_id INTEGER NOT NULL,level TEXT NOT NULL,state TEXT NOT NULL,message TEXT,created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))); \
+            CREATE TABLE IF NOT EXISTS analysis_chunks(video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,chunk_index INTEGER NOT NULL,digest TEXT NOT NULL,clips TEXT NOT NULL,PRIMARY KEY(video_id,chunk_index)); \
             CREATE INDEX IF NOT EXISTS events_video ON events(video_id,id); \
             CREATE TRIGGER IF NOT EXISTS video_created AFTER INSERT ON videos BEGIN INSERT INTO events(video_id,level,state,message) VALUES(NEW.id,'info',NEW.state,NEW.error); END; \
             CREATE TRIGGER IF NOT EXISTS video_changed AFTER UPDATE OF state,error ON videos WHEN OLD.state IS NOT NEW.state OR OLD.error IS NOT NEW.error BEGIN INSERT INTO events(video_id,level,state,message) VALUES(NEW.id,CASE WHEN NEW.state IN ('failed','needs_input','retryable') THEN 'warning' ELSE 'info' END,NEW.state,NEW.error); END; \
@@ -1789,39 +1908,28 @@ impl Automation {
             "{label} output exceeded size limit"
         );
         if ai.provider == AiProvider::ClaudeCode {
-            let value: serde_json::Value = serde_json::from_slice(&output.stdout)
-                .with_context(|| format!("{label} returned invalid JSON"))?;
+            let value: serde_json::Value =
+                parse_ai_json(&output.stdout, &format!("{label} CLI response envelope"))?;
             if value["is_error"] == true || !output.status.success() {
-                let reason: String = value["result"]
-                    .as_str()
-                    .unwrap_or("unknown error")
-                    .chars()
-                    .take(200)
-                    .collect();
-                anyhow::bail!("Needs input: {label} could not answer ({reason})");
+                anyhow::bail!(
+                    "Needs input: {label} CLI could not answer; check its sign-in and model"
+                );
             }
             if value["structured_output"].is_object() {
                 return Ok(value["structured_output"].clone());
             }
-            return serde_json::from_str(value["result"].as_str().unwrap_or_default())
-                .with_context(|| format!("{label} returned no clip selection"));
+            return parse_ai_json(
+                value["result"].as_str().unwrap_or_default().as_bytes(),
+                &format!("{label} CLI clip selection"),
+            );
         }
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let reason: String = stderr
-                .lines()
-                .last()
-                .unwrap_or("")
-                .chars()
-                .take(200)
-                .collect();
-            anyhow::bail!("Needs input: {label} could not answer ({reason})");
+            anyhow::bail!("Needs input: {label} CLI could not answer; check its sign-in and model");
         }
         let answer = tokio::fs::read_to_string(&answer_path)
             .await
             .with_context(|| format!("{label} returned no clip selection"))?;
-        serde_json::from_str(answer.trim())
-            .with_context(|| format!("{label} returned no clip selection"))
+        parse_ai_json(answer.as_bytes(), &format!("{label} CLI answer file"))
     }
     fn provider_key(&self, provider: AiProvider) -> Result<Option<String>> {
         #[cfg(test)]
@@ -1924,8 +2032,10 @@ impl Automation {
             match result {
                 Ok(()) => ("complete", None),
                 Err(error) => {
-                    let message = error.to_string();
-                    if message.starts_with("Needs input:")
+                    let message = format!("{error:#}");
+                    if error
+                        .chain()
+                        .any(|cause| cause.to_string().starts_with("Needs input:"))
                         || error
                             .downcast_ref::<std::io::Error>()
                             .is_some_and(|error| error.kind() == std::io::ErrorKind::StorageFull)
@@ -2056,7 +2166,9 @@ impl Automation {
             "Downloaded media escaped its directory"
         );
         let probe_path = canonical.clone();
-        let info = tokio::task::spawn_blocking(move || tehom_media::inspect(&probe_path)).await??;
+        let info = tokio::task::spawn_blocking(move || tehom_media::inspect(&probe_path))
+            .await?
+            .context("Source media inspection failed")?;
         sqlx::query("UPDATE videos SET local_path=? WHERE id=?")
             .bind(canonical.to_str().context("Invalid media path")?)
             .bind(id)
@@ -2110,9 +2222,14 @@ impl Automation {
                 chunks.len() <= 100,
                 "Transcript is too long for automatic analysis"
             );
-            for chunk in chunks {
+            let total = chunks.len();
+            for (index, chunk) in chunks.into_iter().enumerate() {
                 ensure!(!cancel.load(Ordering::Acquire), "Cancelled");
-                candidates.extend(self.analyze(&snapshot.ai, &chunk).await?);
+                candidates.extend(
+                    self.analyze_chunk(id, index, &snapshot.ai, &chunk, limits)
+                        .await
+                        .with_context(|| format!("AI analysis chunk {} of {total}", index + 1))?,
+                );
             }
             validate_candidates(
                 snap_candidates(candidates, &cues, duration, limits),
@@ -2749,7 +2866,10 @@ impl Automation {
             "Local transcription produced no subtitles"
         );
         let bytes = tokio::fs::read(&srt).await?;
-        let transcript = parse_transcript(std::str::from_utf8(&bytes)?)
+        // Whisper can emit incomplete UTF-8 byte tokens; keep usable speech and flag it for review.
+        let text = String::from_utf8_lossy(&bytes);
+        let replaced = matches!(&text, std::borrow::Cow::Owned(_));
+        let transcript = parse_transcript(&text)
             .context("Needs input: no speech was recognized in this video; provide a transcript")?;
         let language = log
             .lines()
@@ -2760,18 +2880,23 @@ impl Automation {
         let store = self.directory.join("transcripts");
         tokio::fs::create_dir_all(&store).await?;
         let destination = store.join(format!("{id}-{}.srt", uuid::Uuid::new_v4()));
-        tokio::fs::write(&destination, &bytes).await?;
-        let result = sqlx::query(
-            "INSERT INTO transcripts(video_id,origin,language,path) VALUES(?,'speech',?,?)",
-        )
-        .bind(id)
-        .bind(language)
-        .bind(destination.to_str().context("Invalid subtitle path")?)
-        .execute(&self.pool)
-        .await;
+        tokio::fs::write(&destination, text.as_bytes()).await?;
+        let result: Result<()> = async {
+            let mut tx = self.pool.begin().await?;
+            sqlx::query("INSERT INTO transcripts(video_id,origin,language,path) VALUES(?,'speech',?,?)")
+                .bind(id).bind(language)
+                .bind(destination.to_str().context("Invalid subtitle path")?)
+                .execute(&mut *tx).await?;
+            if replaced {
+                sqlx::query("INSERT INTO events(video_id,level,state,message) VALUES(?,'warning','transcribing','Some locally recognized characters were unreadable; review the captions')")
+                    .bind(id).execute(&mut *tx).await?;
+            }
+            tx.commit().await?;
+            Ok(())
+        }.await;
         if let Err(error) = result {
             tokio::fs::remove_file(&destination).await?;
-            return Err(error.into());
+            return Err(error);
         }
         Ok(transcript)
     }
@@ -3120,6 +3245,37 @@ impl Automation {
             .map_err(|error| error.error)?;
         Ok(None)
     }
+    /// Cache only complete analysis, keyed by the exact input and analysis settings.
+    async fn analyze_chunk(
+        &self,
+        id: i64,
+        index: usize,
+        ai: &AiConfig,
+        chunk: &str,
+        limits: &AutomationSettings,
+    ) -> Result<Vec<Candidate>> {
+        use sha2::{Digest, Sha256};
+        let digest = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&(ai, limits, chunk))?)
+        );
+        let saved: Option<String> = sqlx::query_scalar(
+            "SELECT clips FROM analysis_chunks WHERE video_id=? AND chunk_index=? AND digest=?",
+        )
+        .bind(id)
+        .bind(index as i64)
+        .bind(&digest)
+        .fetch_optional(&self.pool)
+        .await?;
+        if let Some(saved) = saved {
+            return parse_ai_json(saved.as_bytes(), "Saved analysis chunk");
+        }
+        let candidates = self.analyze(ai, chunk, limits).await?;
+        sqlx::query("INSERT INTO analysis_chunks(video_id,chunk_index,digest,clips) VALUES(?,?,?,?) ON CONFLICT(video_id,chunk_index) DO UPDATE SET digest=excluded.digest,clips=excluded.clips")
+            .bind(id).bind(index as i64).bind(digest).bind(serde_json::to_string(&candidates)?)
+            .execute(&self.pool).await.context("Could not save completed analysis chunk")?;
+        Ok(candidates)
+    }
     /// BYOK analysis with the provider's own structured-output mechanism.
     async fn analyze_remote(
         &self,
@@ -3127,7 +3283,10 @@ impl Automation {
         transcript: &str,
         limits: &AutomationSettings,
     ) -> Result<Vec<Candidate>> {
-        let instructions = clip_instructions(limits);
+        let instructions = clip_instructions(limits).replace(
+            "Return ONLY a JSON array",
+            "Return ONLY a JSON object containing a clips array",
+        );
         ensure!(
             ai.remote_consent,
             "Needs input: confirm that captions may be sent to {}",
@@ -3151,12 +3310,10 @@ impl Automation {
             } else {
                 payload["clips"].clone()
             };
-            return serde_json::from_value(clips).with_context(|| {
-                format!(
-                    "{} must return a list of clip candidates",
-                    ai.provider.label()
-                )
-            });
+            return parse_ai_json(
+                &serde_json::to_vec(&clips)?,
+                &format!("{} CLI clip contract", ai.provider.label()),
+            );
         }
         let key = self.provider_key(ai.provider)?.with_context(|| {
             format!(
@@ -3213,66 +3370,89 @@ impl Automation {
             }
         };
         let label = ai.provider.label();
-        let response = request
-            .send()
-            .await
-            .with_context(|| format!("Could not reach {label}"))?;
-        let status = response.status();
-        let mut response = response;
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response.chunk().await? {
-            ensure!(
-                bytes.len() + chunk.len() <= 2 * 1024 * 1024,
-                "AI response exceeded size limit"
-            );
-            bytes.extend_from_slice(&chunk);
-        }
-        if !status.is_success() {
-            let detail: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
-            let message = detail["error"]["message"]
-                .as_str()
-                .unwrap_or("")
-                .chars()
-                .take(300)
-                .collect::<String>();
-            if matches!(status.as_u16(), 401 | 403) {
-                anyhow::bail!("Needs input: {label} rejected the API key ({status})");
-            }
-            anyhow::bail!("{label} request failed ({status}) {message}");
-        }
-        let value: serde_json::Value = serde_json::from_slice(&bytes)
-            .with_context(|| format!("{label} returned invalid JSON"))?;
+        let bytes = ai_response(request, label, 2 * 1024 * 1024).await?;
+        let value: serde_json::Value =
+            parse_ai_json(&bytes, &format!("{label} response envelope"))?;
         let payload: serde_json::Value = match ai.provider {
-            AiProvider::Anthropic => value["content"]
-                .as_array()
-                .and_then(|blocks| blocks.iter().find(|b| b["type"] == "tool_use"))
-                .map(|block| block["input"].clone())
-                .with_context(|| format!("{label} returned no clip selection"))?,
-            AiProvider::Gemini => serde_json::from_str(
-                value["candidates"][0]["content"]["parts"][0]["text"]
+            AiProvider::Anthropic => {
+                if let Some(reason) = value["stop_reason"].as_str() {
+                    ensure!(
+                        reason == "tool_use",
+                        "{label} generation did not finish with clip selection"
+                    );
+                }
+                value["content"]
+                    .as_array()
+                    .and_then(|blocks| {
+                        blocks
+                            .iter()
+                            .find(|b| b["type"] == "tool_use" && b["name"] == "clip_candidates")
+                    })
+                    .map(|block| block["input"].clone())
+                    .with_context(|| format!("{label} returned no clip selection"))?
+            }
+            AiProvider::Gemini => {
+                let candidate = value["candidates"]
+                    .as_array()
+                    .and_then(|items| items.first())
+                    .context("Gemini returned no candidates (response may be blocked)")?;
+                if let Some(reason) = candidate["finishReason"].as_str() {
+                    ensure!(
+                        reason == "STOP",
+                        "Gemini generation did not finish successfully ({})",
+                        match reason {
+                            "MAX_TOKENS" => "MAX_TOKENS: output was truncated",
+                            "SAFETY" => "SAFETY: output was blocked",
+                            "RECITATION" => "RECITATION: output was blocked",
+                            _ => "non-STOP finish reason",
+                        }
+                    );
+                }
+                let parts = candidate["content"]["parts"]
+                    .as_array()
+                    .context("Gemini returned no content parts")?;
+                let text: String = parts
+                    .iter()
+                    .filter(|part| part["thought"] != true)
+                    .filter_map(|part| part["text"].as_str())
+                    .collect();
+                ensure!(!text.trim().is_empty(), "Gemini clip selection is empty");
+                parse_ai_json(text.as_bytes(), "Gemini clip selection")?
+            }
+            _ => {
+                if let Some(reason) = value["choices"][0]["finish_reason"].as_str() {
+                    ensure!(
+                        reason == "stop",
+                        "{label} generation did not finish successfully"
+                    );
+                }
+                let text = value["choices"][0]["message"]["content"]
                     .as_str()
-                    .with_context(|| format!("{label} returned no clip selection"))?,
-            )?,
-            _ => serde_json::from_str(
-                value["choices"][0]["message"]["content"]
-                    .as_str()
-                    .with_context(|| format!("{label} returned no clip selection"))?,
-            )?,
+                    .with_context(|| format!("{label} returned no clip selection"))?;
+                ensure!(!text.trim().is_empty(), "{label} clip selection is empty");
+                parse_ai_json(text.as_bytes(), &format!("{label} clip selection"))?
+            }
         };
         let clips = if payload.is_array() {
             payload
         } else {
             payload["clips"].clone()
         };
-        serde_json::from_value(clips)
-            .with_context(|| format!("{label} must return a list of clip candidates"))
+        parse_ai_json(
+            &serde_json::to_vec(&clips)?,
+            &format!("{label} clip contract"),
+        )
     }
-    async fn analyze(&self, ai: &AiConfig, transcript: &str) -> Result<Vec<Candidate>> {
-        let limits = self.automation().await?;
+    async fn analyze(
+        &self,
+        ai: &AiConfig,
+        transcript: &str,
+        limits: &AutomationSettings,
+    ) -> Result<Vec<Candidate>> {
         if ai.provider.is_remote() {
-            return self.analyze_remote(ai, transcript, &limits).await;
+            return self.analyze_remote(ai, transcript, limits).await;
         }
-        let instructions = clip_instructions(&limits);
+        let instructions = clip_instructions(limits);
         let base = ai_endpoint(ai)?.as_str().trim_end_matches('/').to_owned();
         let openai = base.ends_with("/v1");
         let messages = serde_json::json!([{ "role":"system", "content":instructions }, {"role":"user", "content":transcript}]);
@@ -3305,33 +3485,15 @@ impl Automation {
             body["format"] = schema;
         }
         let url = self.checked(&url)?;
-        let mut response = self
-            .client
-            .post(url)
-            .json(&body)
-            .send()
-            .await
-            .context("Local AI service is unavailable")?
-            .error_for_status()
-            .context("Local AI request failed")?;
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response.chunk().await? {
-            ensure!(
-                bytes.len() + chunk.len() <= 1024 * 1024,
-                "AI response exceeded size limit"
-            );
-            bytes.extend_from_slice(&chunk);
-        }
-        let value: serde_json::Value =
-            serde_json::from_slice(&bytes).context("Local AI returned invalid JSON")?;
+        let bytes = ai_response(self.client.post(url).json(&body), "Local AI", 1024 * 1024).await?;
+        let value: serde_json::Value = parse_ai_json(&bytes, "Local AI response envelope")?;
         let content = if openai {
             value["choices"][0]["message"]["content"].as_str()
         } else {
             value["message"]["content"].as_str()
         }
         .context("Local AI returned no message")?;
-        serde_json::from_str(content.trim())
-            .context("Local AI must return a JSON array of clip candidates")
+        parse_ai_json(content.as_bytes(), "Local AI clip contract (JSON array)")
     }
 }
 /// A conservative BCP 47 shape: primary language plus optional subtags.
@@ -4252,7 +4414,7 @@ async fn snapshot_from_pool(
         ai: sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key='ai'")
             .fetch_optional(&mut *tx)
             .await?
-            .map(|s| serde_json::from_str(&s))
+            .map(|s| parse_ai_json(s.as_bytes(), "Saved AI settings"))
             .transpose()?
             .unwrap_or_default(),
         export_directory: sqlx::query_scalar::<_, String>(
