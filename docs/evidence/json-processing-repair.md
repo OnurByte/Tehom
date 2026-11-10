@@ -125,7 +125,12 @@ No private speech text is included in the warning or this report.
   two-thread run uses on-disk TMPDIR; one encoder was SIGKILLed by the host.
   It ended with 74 passed and 1 failed (the SIGKILL export-progress case).
   Kernel and systemd-oomd journal queries returned no matching evidence, so
-  the origin of SIGKILL is not established. Final workspace checks remain pending. The Ubuntu PR CI on 81c398e reached
+  the origin of SIGKILL is not established. The Ubuntu native job for 9f84474 passed the full check/build/native-window
+  workflow (run 42920161334). Both macOS jobs reached 77/78 automation tests but
+  failed in the disconnected-response fixture with WouldBlock on an accepted
+  socket. The fixture now explicitly sets accepted streams to blocking mode;
+  platform assertions/checks are unchanged. New CI verification is required.
+  Final local workspace checks remain pending. The Ubuntu PR CI on 81c398e reached
   strict workspace Clippy and rejected an unchecked read byte count in the
   disconnected-response fixture; the fixture now asserts a non-empty request.
   The quota-injection test also restores its process limits/signal handler so
@@ -153,8 +158,13 @@ No private speech text is included in the warning or this report.
   regression using actual FFmpeg media failed before the speech-boundary fix;
   cargo test -p tehom-automation --lib speech_invalid_utf8 -- --nocapture then
   passed its repaired-output, warning and strict-upload assertions. The first rebuilt candidate then reproduced the original FFprobe EOF under
-  the default temporary-directory quota. A real original-source rerun with the
-  new pipe capture and repaired speech boundary remains required.
+  the default temporary-directory quota. The new default-environment run then saved one Turkish speech transcript,
+  which was independently read as valid UTF-8; one safe caption-review warning
+  was present. Gemini returned 503 after the bounded request attempts. A later
+  job retry reused that one speech transcript (no second transcription record),
+  successfully completed Gemini 3.5 Flash analysis, and committed five drafts.
+  The original-source MP4 exports are now running; full completion and output
+  validation remain pending.
 - A separate actual public video (TED, YouTube iG9CE55wbtY, 1203.414 seconds,
   480×360) was downloaded with its English subtitles and imported into isolated
   application data. Gemini 3.5 Flash actually analyzed its two transcript chunks,

@@ -3841,6 +3841,7 @@ async fn ai_retries_disconnected_response_bodies() {
                     std::thread::sleep(Duration::from_millis(10));
                     continue;
                 };
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(1)))
                     .unwrap();
