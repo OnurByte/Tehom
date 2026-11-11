@@ -214,6 +214,7 @@ async fn local_provider_request_and_response_are_real_http() {
                     ..Default::default()
                 },
                 "[0-30000] hello",
+                &AutomationSettings::default(),
             )
             .await
             .unwrap();
@@ -1860,7 +1861,10 @@ async fn byok_providers_send_their_own_request_shape_and_parse_clips() {
             ..Default::default()
         };
         engine.set_ai(ai.clone()).await.unwrap();
-        let found = engine.analyze(&ai, "[0-30000] Hello\n").await.unwrap();
+        let found = engine
+            .analyze(&ai, "[0-30000] Hello\n", &AutomationSettings::default())
+            .await
+            .unwrap();
         let request = server.join().unwrap();
         let lower = request.to_ascii_lowercase();
         assert!(
@@ -1892,7 +1896,12 @@ async fn byok_requires_consent_and_a_key_and_never_leaks_the_key() {
         ..Default::default()
     };
     assert!(engine.set_ai(ai.clone()).await.is_err());
-    assert!(engine.analyze(&ai, "[0-30000] Hi\n").await.is_err());
+    assert!(
+        engine
+            .analyze(&ai, "[0-30000] Hi\n", &AutomationSettings::default())
+            .await
+            .is_err()
+    );
     // With consent but no key, nothing is sent and the job asks for the key.
     ai.remote_consent = true;
     engine.set_ai(ai.clone()).await.unwrap();
@@ -1902,7 +1911,12 @@ async fn byok_requires_consent_and_a_key_and_never_leaks_the_key() {
         missing.starts_with("Needs input:") && missing.contains("API key"),
         "{missing}"
     );
-    assert!(engine.analyze(&ai, "[0-30000] Hi\n").await.is_err());
+    assert!(
+        engine
+            .analyze(&ai, "[0-30000] Hi\n", &AutomationSettings::default())
+            .await
+            .is_err()
+    );
     assert!(
         engine.requests.lock().unwrap().is_empty(),
         "no request without a key"
@@ -1915,7 +1929,7 @@ async fn byok_requires_consent_and_a_key_and_never_leaks_the_key() {
     engine.remote_base = Some(base);
     engine.test_key = Some("sk-secret-value-123".into());
     let error = engine
-        .analyze(&ai, "[0-30000] Hi\n")
+        .analyze(&ai, "[0-30000] Hi\n", &AutomationSettings::default())
         .await
         .unwrap_err()
         .to_string();
@@ -2027,7 +2041,10 @@ async fn agent_clis_run_without_tools_and_return_structured_clips() {
     };
     engine.set_ai(ai.clone()).await.unwrap();
     engine.ai_ready(&ai).unwrap();
-    let found = engine.analyze(&ai, "[0-25000] Hello\n").await.unwrap();
+    let found = engine
+        .analyze(&ai, "[0-25000] Hello\n", &AutomationSettings::default())
+        .await
+        .unwrap();
     assert_eq!((found[0].start_ms, found[0].end_ms), (0, 25000));
     let args = std::fs::read_to_string(&log).unwrap();
     let args: Vec<&str> = args.lines().collect();
@@ -2064,7 +2081,10 @@ async fn agent_clis_run_without_tools_and_return_structured_clips() {
         ..Default::default()
     };
     engine.set_ai(ai.clone()).await.unwrap();
-    let found = engine.analyze(&ai, "[0-25000] Hello\n").await.unwrap();
+    let found = engine
+        .analyze(&ai, "[0-25000] Hello\n", &AutomationSettings::default())
+        .await
+        .unwrap();
     assert_eq!(found.len(), 1);
     let args = std::fs::read_to_string(&log).unwrap();
     assert!(
@@ -2090,12 +2110,12 @@ async fn agent_clis_run_without_tools_and_return_structured_clips() {
         ..Default::default()
     };
     let error = engine
-        .analyze(&ai, "[0-25000] Hello\n")
+        .analyze(&ai, "[0-25000] Hello\n", &AutomationSettings::default())
         .await
         .unwrap_err()
         .to_string();
     assert!(
-        error.starts_with("Needs input:") && error.contains("Not logged in"),
+        error.starts_with("Needs input:") && error.contains("check its sign-in"),
         "{error}"
     );
     let no_consent = AiConfig {
@@ -3409,4 +3429,567 @@ async fn appearance_and_sidebar_width_persist() {
     assert_eq!(snapshot.appearance, Appearance::Dark);
     assert_eq!(snapshot.accent, tehom_core::Accent::Pink);
     assert_eq!(snapshot.sidebar_width, 360);
+}
+
+#[tokio::test]
+async fn gemini_skips_thought_parts_and_reports_empty_selection_stage() {
+    for (response, expected) in [
+        (
+            r#"{"candidates":[{"finishReason":"STOP","content":{"parts":[{"thought":true,"text":"private reasoning"},{"text":"{\"clips\":[]}" }]}}]}"#,
+            None,
+        ),
+        (
+            r#"{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":""}]}}]}"#,
+            Some("Gemini clip selection is empty"),
+        ),
+        (
+            r#"{"candidates":[{"finishReason":"MAX_TOKENS","content":{"parts":[{"text":"{"}]}}]}"#,
+            Some("Gemini generation did not finish"),
+        ),
+        (
+            r#"{"candidates":[]}"#,
+            Some("Gemini returned no candidates"),
+        ),
+    ] {
+        let (base, server) = provider_fixture("200 OK", response.into());
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = Automation::open(dir.path().into()).await.unwrap();
+        engine.remote_base = Some(base);
+        engine.test_key = Some("test-key".into());
+        let ai = AiConfig {
+            provider: AiProvider::Gemini,
+            model: "gemini-2.5-flash".into(),
+            remote_consent: true,
+            ..Default::default()
+        };
+        let result = engine
+            .analyze(&ai, "[0-30000] Hello", &AutomationSettings::default())
+            .await;
+        let request = server.join().unwrap();
+        assert!(
+            request.contains("object containing"),
+            "remote prompt must match schema"
+        );
+        match expected {
+            None => assert!(result.unwrap().is_empty()),
+            Some(expected) => assert!(format!("{:#}", result.unwrap_err()).contains(expected)),
+        }
+    }
+}
+
+#[tokio::test]
+async fn ai_retries_rate_limits_but_not_auth_or_invalid_json() {
+    use std::sync::atomic::AtomicUsize;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    for (status, expected_calls, succeeds) in [
+        (429, 2, true),
+        (503, 2, true),
+        (401, 1, false),
+        (200, 1, false),
+    ] {
+        let server = MockServer::start().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let count = calls.clone();
+        Mock::given(method("POST"))
+            .respond_with(move |_: &wiremock::Request| {
+                if count.fetch_add(1, Ordering::SeqCst) == 0 {
+                    ResponseTemplate::new(status)
+                        .insert_header("Retry-After", "0")
+                        .set_body_string("private-provider-error")
+                } else {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"{\"clips\":[]}"}]}}]
+                    }))
+                }
+            }).mount(&server).await;
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = Automation::open(dir.path().into()).await.unwrap();
+        engine.remote_base = Some(server.uri());
+        engine.test_key = Some("test-key".into());
+        let ai = AiConfig {
+            provider: AiProvider::Gemini,
+            model: "gemini-flash".into(),
+            remote_consent: true,
+            ..Default::default()
+        };
+        let result = engine
+            .analyze(&ai, "private-transcript", &AutomationSettings::default())
+            .await;
+        assert_eq!(result.is_ok(), succeeds, "status {status}: {result:?}");
+        assert_eq!(calls.load(Ordering::SeqCst), expected_calls);
+        if let Err(error) = result {
+            assert!(!format!("{error:#}").contains("private-provider-error"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn ai_rate_limit_retry_budget_is_finite() {
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "0"))
+        .expect(3)
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut engine = Automation::open(dir.path().into()).await.unwrap();
+    engine.remote_base = Some(server.uri());
+    engine.test_key = Some("test-key".into());
+    let ai = AiConfig {
+        provider: AiProvider::Gemini,
+        model: "gemini-flash".into(),
+        remote_consent: true,
+        ..Default::default()
+    };
+    let error = engine
+        .analyze(&ai, "private-transcript", &AutomationSettings::default())
+        .await
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("429"));
+}
+
+#[tokio::test]
+async fn ai_failure_after_first_chunk_resumes_without_reanalysis() {
+    use std::sync::atomic::AtomicUsize;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let dir = tempfile::tempdir().unwrap();
+    let video = dir.path().join("actual.mp4");
+    assert!(
+        std::process::Command::new("ffmpeg")
+            .args([
+                "-nostdin",
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=160x90:rate=2",
+                "-t",
+                "60",
+                "-c:v",
+                "libx264",
+                "-threads",
+                "1"
+            ])
+            .arg(&video)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let original = std::fs::read(&video).unwrap();
+    let data = dir.path().join("data");
+    let mut engine = Automation::open(data.clone()).await.unwrap();
+    engine
+        .import_video(video.clone(), AutomationMode::AutoDraft)
+        .await
+        .unwrap();
+    let transcript = dir.path().join("captions.srt");
+    std::fs::write(
+        &transcript,
+        format!(
+            "1\n00:00:00,000 --> 00:00:25,000\n{}\n\n2\n00:00:30,000 --> 00:00:55,000\n{}\n",
+            "first ".repeat(2300),
+            "second ".repeat(2000)
+        ),
+    )
+    .unwrap();
+    engine.import_transcript(1, transcript, None).await.unwrap();
+    let server = MockServer::start().await;
+    let first_calls = Arc::new(AtomicUsize::new(0));
+    let second_calls = Arc::new(AtomicUsize::new(0));
+    let first = first_calls.clone();
+    let second = second_calls.clone();
+    Mock::given(method("POST"))
+        .respond_with(move |request: &wiremock::Request| {
+            let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+            let text = body["contents"][0]["parts"][0]["text"].as_str().unwrap();
+            let (start, end) = if text.contains("first") {
+                first.fetch_add(1, Ordering::SeqCst);
+                (0, 25000)
+            } else {
+                if second.fetch_add(1, Ordering::SeqCst) == 0 {
+                    return ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "candidates":[{"finishReason":"STOP","content":{"parts":[{"text":""}]}}]
+                    }));
+                }
+                (30000, 55000)
+            };
+            let selection = serde_json::json!({"clips":[{
+                "start_ms":start,"end_ms":end,"title":"Complete thought","reason":"Independent"
+            }]})
+            .to_string();
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "candidates":[{"finishReason":"STOP","content":{"parts":[{"text":selection}]}}]
+            }))
+        })
+        .mount(&server)
+        .await;
+    let ai = AiConfig {
+        provider: AiProvider::Gemini,
+        model: "gemini-flash".into(),
+        remote_consent: true,
+        ..Default::default()
+    };
+    engine.remote_base = Some(server.uri());
+    engine.test_key = Some("test-key".into());
+    engine.set_ai(ai).await.unwrap();
+    engine.process_next().await.unwrap();
+    let snapshot = engine.snapshot().await.unwrap();
+    assert_eq!(snapshot.videos[0].state, "failed");
+    let error = snapshot.videos[0].error.as_deref().unwrap();
+    assert!(error.contains("chunk 2"), "{error}");
+    assert!(error.contains("Gemini clip selection is empty"), "{error}");
+    assert!(snapshot.clips.is_empty());
+    drop(engine);
+    // Checkpoint must survive a real engine reopen, not just another call.
+    let mut engine = Automation::open(data).await.unwrap();
+    engine.remote_base = Some(server.uri());
+    engine.test_key = Some("test-key".into());
+    engine
+        .set_mode(1, AutomationMode::AutoExport)
+        .await
+        .unwrap();
+    engine
+        .set_export_profile(ExportProfile::Original)
+        .await
+        .unwrap();
+    engine
+        .set_default_caption_style(CaptionStyle {
+            enabled: false,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let exports = dir.path().join("exports");
+    engine.set_export_directory(exports.clone()).await.unwrap();
+    let collision = exports.join("tehom-1-1.mp4");
+    std::fs::write(&collision, b"unrelated user file").unwrap();
+    engine.retry_video(1).await.unwrap();
+    engine.process_next().await.unwrap();
+    let snapshot = engine.snapshot().await.unwrap();
+    assert_eq!(snapshot.videos[0].state, "failed");
+    assert_eq!(
+        snapshot.clips.len(),
+        2,
+        "complete analysis must be committed before export"
+    );
+    assert!(snapshot.clips.iter().all(|clip| clip.output_path.is_none()));
+    assert_eq!(std::fs::read(&collision).unwrap(), b"unrelated user file");
+    // Remove only the collision created by this test, then resume the committed drafts.
+    std::fs::remove_file(&collision).unwrap();
+    engine.retry_video(1).await.unwrap();
+    engine.process_next().await.unwrap();
+    let snapshot = engine.snapshot().await.unwrap();
+    assert_eq!(
+        snapshot.videos[0].state, "complete",
+        "{:?}",
+        snapshot.videos[0].error
+    );
+    assert_eq!(snapshot.clips.len(), 2);
+    for clip in &snapshot.clips {
+        let info = tehom_media::inspect(clip.output_path.as_ref().unwrap()).unwrap();
+        assert!((info.duration - 25.0).abs() < 0.25);
+        assert_eq!((info.width, info.height), (160, 90));
+    }
+    assert_eq!(first_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(second_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(std::fs::read(&video).unwrap(), original);
+}
+
+#[tokio::test]
+async fn ai_malformed_responses_are_diagnosed_without_private_content() {
+    for (body, expected) in [
+        ("", "response envelope is empty"),
+        ("{", "response envelope contains invalid JSON"),
+        (r#"{"candidates":[{"finishReason":"SAFETY"}]}"#, "SAFETY"),
+        (
+            r#"{"candidates":[{"finishReason":"MAX_TOKENS"}]}"#,
+            "MAX_TOKENS",
+        ),
+        (
+            r#"{"candidates":[{"finishReason":"STOP","content":{"parts":[{"thought":true,"text":"private-thought"}]}}]}"#,
+            "clip selection is empty",
+        ),
+        (
+            r#"{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"{\"clips\":["}]}}]}"#,
+            "clip selection contains invalid JSON",
+        ),
+        (
+            r#"{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"{\"clips\":[{\"start_ms\":\"private-transcript\",\"end_ms\":25000,\"title\":\"private-title\"}]}"}]}}]}"#,
+            "clip contract",
+        ),
+    ] {
+        let (base, server) = provider_fixture("200 OK", body.into());
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = Automation::open(dir.path().into()).await.unwrap();
+        engine.remote_base = Some(base);
+        engine.test_key = Some("private-key".into());
+        let ai = AiConfig {
+            provider: AiProvider::Gemini,
+            model: "gemini-flash".into(),
+            remote_consent: true,
+            ..Default::default()
+        };
+        let error = engine
+            .analyze(&ai, "private-transcript", &AutomationSettings::default())
+            .await
+            .unwrap_err();
+        server.join().unwrap();
+        let message = format!("{error:#}");
+        assert!(message.contains(expected), "{expected}: {message}");
+        for secret in [
+            "private-thought",
+            "private-transcript",
+            "private-title",
+            "private-key",
+        ] {
+            assert!(!message.contains(secret), "private content leaked");
+        }
+    }
+}
+
+#[tokio::test]
+async fn analysis_checkpoint_uses_captured_limits_even_after_settings_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut engine = Automation::open(dir.path().into()).await.unwrap();
+    sqlx::query(
+        "INSERT INTO sources(id,url,channel_id,title,mode) VALUES(1,'u','c','t','auto_draft')",
+    )
+    .execute(&engine.pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO videos(id,source_id,external_id,title,url,state) VALUES(1,1,'v','t','u','queued')")
+        .execute(&engine.pool).await.unwrap();
+    let captured = AutomationSettings {
+        max_clips: 1,
+        ..Default::default()
+    };
+    engine
+        .set_automation(AutomationSettings {
+            max_clips: 3,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let (base, server) = provider_fixture(
+        "200 OK",
+        serde_json::json!({
+            "candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"{\"clips\":[]}"}]}}]
+        })
+        .to_string(),
+    );
+    engine.remote_base = Some(base);
+    engine.test_key = Some("test-key".into());
+    let ai = AiConfig {
+        provider: AiProvider::Gemini,
+        model: "gemini-flash".into(),
+        remote_consent: true,
+        ..Default::default()
+    };
+    assert!(
+        engine
+            .analyze_chunk(1, 0, &ai, "captured input", &captured)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let request = server.join().unwrap();
+    let body: serde_json::Value =
+        serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(
+        body["generationConfig"]["responseJsonSchema"]["properties"]["clips"]["maxItems"],
+        1
+    );
+    assert!(
+        body["systemInstruction"]["parts"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("at most 1 objects")
+    );
+    // No listener remains: this succeeds only when the committed checkpoint is reused.
+    assert!(
+        engine
+            .analyze_chunk(1, 0, &ai, "captured input", &captured)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn ai_retries_disconnected_response_bodies() {
+    use std::io::{Read, Write};
+    for (status, delay) in [
+        ("200 OK", 0u64),
+        ("429 Too Many Requests", 0),
+        ("503 Service Unavailable", 0),
+        ("429 Too Many Requests", 3600),
+    ] {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = format!("http://{}", listener.local_addr().unwrap());
+        listener.set_nonblocking(true).unwrap();
+        let expected_calls = if delay > 30 { 1 } else { 2 };
+        let server = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            let mut calls = 0;
+            while calls < expected_calls && std::time::Instant::now() < deadline {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
+                };
+                stream.set_nonblocking(false).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(1)))
+                    .unwrap();
+                let mut buffer = [0; 4096];
+                assert!(stream.read(&mut buffer).unwrap() > 0, "expected a request");
+                calls += 1;
+                let size = if calls == 1 { 100 } else { 2 };
+                let status = if calls == 1 { status } else { "200 OK" };
+                write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\nRetry-After: {delay}\r\nContent-Length: {size}\r\nConnection: close\r\n\r\n{{}}"
+                )
+                .unwrap();
+            }
+            calls
+        });
+        let result = ai_response(reqwest::Client::new().get(address), "Fixture AI", 1024).await;
+        let calls = server.join().unwrap();
+        if delay > 30 {
+            let error = result.unwrap_err();
+            assert!(error.to_string().contains("3600"), "{error:#}");
+        } else {
+            assert_eq!(
+                result.unwrap_or_else(|error| panic!("{status}: {error:#}")),
+                b"{}"
+            );
+        }
+        assert_eq!(calls, expected_calls);
+    }
+}
+
+#[tokio::test]
+async fn ai_rate_limit_long_delay_is_not_retried_early() {
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(429).set_body_json(
+            serde_json::json!({"error":{"details":[{
+                "@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"3600s"
+            }]}}),
+        ))
+        .mount(&server)
+        .await;
+    let error = ai_response(reqwest::Client::new().get(server.uri()), "Fixture AI", 1024)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("3600"), "{error}");
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn ai_missing_model_requires_input_without_echoing_provider_body() {
+    let (base, server) = provider_fixture("404 Not Found", "private provider body".into());
+    let error = ai_response(reqwest::Client::new().get(base), "Fixture AI", 1024)
+        .await
+        .unwrap_err()
+        .to_string();
+    server.join().unwrap();
+    assert!(
+        error.starts_with("Needs input:") && error.contains("model"),
+        "{error}"
+    );
+    assert!(!error.contains("private provider body"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn speech_invalid_utf8_is_reported_and_saved_as_readable_captions() {
+    let dir = tempfile::tempdir().unwrap();
+    let video = dir.path().join("actual.mp4");
+    assert!(
+        std::process::Command::new("ffmpeg")
+            .args([
+                "-nostdin",
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=s=64x64:r=2",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=f=300:r=16000",
+                "-t",
+                "2",
+                "-c:v",
+                "libx264",
+                "-threads",
+                "1",
+                "-c:a",
+                "aac"
+            ])
+            .arg(&video)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let data = dir.path().join("data");
+    let mut engine = Automation::open(data.clone()).await.unwrap();
+    engine
+        .import_video(video.clone(), AutomationMode::AutoDraft)
+        .await
+        .unwrap();
+    std::fs::create_dir_all(data.join("models")).unwrap();
+    std::fs::write(data.join("models/ggml-base.bin"), b"fixture").unwrap();
+    let folder = data.join("videos/1");
+    std::fs::create_dir_all(&folder).unwrap();
+    let script = r#"out=
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = '-of' ]; then shift; out="$1"; fi
+    shift
+done
+printf '1\n00:00:00,000 --> 00:00:02,000\nG\303\274zel \377 konu\n' > "$out.srt"
+"#;
+    engine.speech_program = Some(cli_fixture(dir.path(), script));
+    let transcript = engine
+        .transcribe(1, &folder, &video, 2.0, Arc::new(AtomicBool::new(false)))
+        .await
+        .unwrap();
+    assert!(transcript.contains("Güzel � konu"));
+    assert_eq!(
+        engine.uploaded_transcript(1).await.unwrap().unwrap(),
+        transcript
+    );
+    let warning: String = sqlx::query_scalar(
+        "SELECT message FROM events WHERE video_id=1 AND level='warning' ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&engine.pool)
+    .await
+    .unwrap();
+    assert!(warning.contains("review the captions"), "{warning}");
+    assert!(!warning.contains("Güzel"));
+
+    // Uploaded user text is still strict: do not silently rewrite their file.
+    let upload = dir.path().join("user.srt");
+    let bytes = b"1\n00:00:00,000 --> 00:00:02,000\nUser \xff text\n";
+    std::fs::write(&upload, bytes).unwrap();
+    assert!(
+        engine
+            .import_transcript(1, upload.clone(), None)
+            .await
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&upload).unwrap(), bytes);
+    assert_eq!(
+        engine.uploaded_transcript(1).await.unwrap().unwrap(),
+        transcript
+    );
 }

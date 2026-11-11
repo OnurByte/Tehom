@@ -1,5 +1,5 @@
 use std::{
-    io::{self, Read, Seek},
+    io::{self, Read},
     path::Path,
     process::{Command, Stdio},
     sync::atomic::{AtomicBool, Ordering},
@@ -96,7 +96,7 @@ fn inspect_cancellable(path: &Path, cancelled: &AtomicBool) -> io::Result<VideoI
         cancelled,
         Some(Duration::from_secs(30)),
     )?;
-    let json: serde_json::Value = serde_json::from_slice(&output)?;
+    let json = probe_json(&output, "FFprobe media metadata")?;
     let seconds = json["format"]["duration"]
         .as_str()
         .and_then(|v| v.parse::<f64>().ok())
@@ -593,7 +593,7 @@ pub fn export_identity(path: &Path) -> io::Result<Option<String>> {
         &AtomicBool::new(false),
         Some(Duration::from_secs(30)),
     )?;
-    let data: serde_json::Value = serde_json::from_slice(&bytes)?;
+    let data = probe_json(&bytes, "FFprobe export identity")?;
     Ok(data["format"]["tags"]["comment"]
         .as_str()
         .and_then(|value| value.strip_prefix("tehom:"))
@@ -728,8 +728,8 @@ fn render(
         Some(report) => {
             // A private file keeps progress out of the bounded stdout capture.
             let mut log = tempfile::Builder::new()
-                .prefix("tehom-progress-")
-                .tempfile()?;
+                .prefix(".tehom-progress-")
+                .tempfile_in(parent)?;
             command
                 .arg("-progress")
                 .arg(log.path())
@@ -809,6 +809,20 @@ fn spawn_error(program: &std::ffi::OsStr, error: io::Error) -> io::Error {
     }
 }
 
+fn probe_json(bytes: &[u8], stage: &str) -> io::Result<serde_json::Value> {
+    serde_json::from_slice(bytes).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{stage}: invalid JSON ({:?}, line {}, column {})",
+                error.classify(),
+                error.line(),
+                error.column()
+            ),
+        )
+    })
+}
+
 fn run(
     command: &mut Command,
     cancelled: &AtomicBool,
@@ -827,61 +841,101 @@ fn run_observed(
     if cancelled.load(Ordering::Acquire) {
         return Err(io::Error::new(io::ErrorKind::Interrupted, "Cancelled"));
     }
-    let mut stdout = tempfile::tempfile()?;
-    let mut stderr = tempfile::tempfile()?;
     let mut child = command
         .stdin(Stdio::null())
-        .stdout(stdout.try_clone()?)
-        .stderr(stderr.try_clone()?)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| spawn_error(command.get_program(), error))?;
+    let stdout_pipe = child.stdout.take().expect("stdout was piped");
+    let stderr_pipe = child.stderr.take().expect("stderr was piped");
+    let failed = AtomicBool::new(false);
     let started = Instant::now();
-    let status = (|| {
-        loop {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(io::Error::new(io::ErrorKind::Interrupted, "Cancelled"));
+    // shortcut: direct FFmpeg/FFprobe children only; add process-tree shutdown if media tools spawn subprocesses.
+    std::thread::scope(|scope| {
+        let failed = &failed;
+        let (mut stdout_reader, mut stderr_reader) = (None, None);
+        let status = (|| {
+            stdout_reader = Some(
+                std::thread::Builder::new()
+                    .spawn_scoped(scope, move || capture_output(stdout_pipe, failed))?,
+            );
+            stderr_reader = Some(
+                std::thread::Builder::new()
+                    .spawn_scoped(scope, move || capture_output(stderr_pipe, failed))?,
+            );
+            loop {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(io::Error::new(io::ErrorKind::Interrupted, "Cancelled"));
+                }
+                if timeout.is_some_and(|limit| started.elapsed() >= limit) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "The video tool did not respond in time",
+                    ));
+                }
+                if failed.load(Ordering::Acquire) {
+                    return Err(io::Error::other("The video tool output could not be read"));
+                }
+                if let Some(status) = child.try_wait()? {
+                    return Ok(status);
+                }
+                tick();
+                std::thread::sleep(Duration::from_millis(20));
             }
-            if timeout.is_some_and(|limit| started.elapsed() >= limit) {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "The video tool did not respond in time",
-                ));
+        })();
+        if status.is_err() {
+            if let Err(error) = child.kill() {
+                eprintln!("Media shutdown: {error}");
             }
-            if stdout.metadata()?.len() > 65536 || stderr.metadata()?.len() > 65536 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "The video tool produced too much error output",
-                ));
+            if let Err(error) = child.wait() {
+                eprintln!("Media shutdown: {error}");
             }
-            if let Some(status) = child.try_wait()? {
-                return Ok(status);
-            }
-            tick();
-            std::thread::sleep(Duration::from_millis(20));
         }
+        // Join both readers before propagating errors, including fast-process overflow.
+        let stdout = stdout_reader
+            .map(|reader| {
+                reader
+                    .join()
+                    .unwrap_or_else(|_| Err(io::Error::other("Video stdout reader failed")))
+            })
+            .transpose();
+        let stderr = stderr_reader
+            .map(|reader| {
+                reader
+                    .join()
+                    .unwrap_or_else(|_| Err(io::Error::other("Video stderr reader failed")))
+            })
+            .transpose();
+        let stdout = stdout?.unwrap_or_default();
+        let stderr = stderr?.unwrap_or_default();
+        let status = status?;
+        if !status.success() {
+            return Err(io::Error::other(format!(
+                "{status}: {}",
+                String::from_utf8_lossy(&stderr)
+            )));
+        }
+        Ok(stdout)
+    })
+}
+
+fn capture_output(reader: impl Read, failed: &AtomicBool) -> io::Result<Vec<u8>> {
+    let result = (|| {
+        let mut bytes = Vec::new();
+        reader.take(65_537).read_to_end(&mut bytes)?;
+        if bytes.len() > 65_536 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "The video tool produced too much error output",
+            ));
+        }
+        Ok(bytes)
     })();
-    let status = match status {
-        Ok(status) => status,
-        Err(error) => {
-            if let Err(kill_error) = child.kill() {
-                eprintln!("Media shutdown: {kill_error}");
-            }
-            if let Err(wait_error) = child.wait() {
-                eprintln!("Media shutdown: {wait_error}");
-            }
-            return Err(error);
-        }
-    };
-    if !status.success() {
-        stderr.rewind()?;
-        let mut message = String::new();
-        stderr.take(65536).read_to_string(&mut message)?;
-        return Err(io::Error::other(format!("{status}: {message}")));
+    if result.is_err() {
+        failed.store(true, Ordering::Release);
     }
-    stdout.rewind()?;
-    let mut bytes = Vec::new();
-    stdout.take(65536).read_to_end(&mut bytes)?;
-    Ok(bytes)
+    result
 }
 
 #[cfg(test)]
@@ -1107,6 +1161,102 @@ mod process_tests {
         )
         .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod probe_diagnostic_tests {
+    use super::*;
+    #[test]
+    fn empty_probe_output_names_the_stage_for_actual_media() {
+        const INPUT: &str = "TEHOM_TEST_EMPTY_PROBE_INPUT";
+        if let Some(input) = std::env::var_os(INPUT) {
+            let input = Path::new(&input);
+            let error = inspect(input).unwrap_err().to_string();
+            assert!(error.contains("FFprobe media metadata"), "{error}");
+            let error = export_identity(input).unwrap_err().to_string();
+            assert!(error.contains("FFprobe export identity"), "{error}");
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let work = tempfile::tempdir().unwrap();
+        let input = work.path().join("actual.mp4");
+        assert!(
+            Command::new("ffmpeg")
+                .args([
+                    "-nostdin",
+                    "-v",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "color=s=64x64:d=1",
+                    "-c:v",
+                    "libx264",
+                    "-threads",
+                    "1"
+                ])
+                .arg(&input)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(inspect(&input).is_ok());
+        let bin = work.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let probe = bin.join("ffprobe");
+        std::fs::write(&probe, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut paths = vec![bin];
+        paths.extend(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        ));
+        let child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "probe_diagnostic_tests::empty_probe_output_names_the_stage_for_actual_media",
+                "--nocapture",
+            ])
+            .env(INPUT, input)
+            .env("PATH", std::env::join_paths(paths).unwrap())
+            .output()
+            .unwrap();
+        assert!(
+            child.status.success(),
+            "{}",
+            String::from_utf8_lossy(&child.stdout)
+        );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod capture_tests {
+    use super::*;
+    #[test]
+    fn simultaneous_stdout_and_stderr_overflow_is_bounded() {
+        let started = Instant::now();
+        let error = run(
+            Command::new("sh").args(["-c", "i=0; while [ \"$i\" -lt 5000 ]; do printf 0123456789abcdef; printf 0123456789abcdef >&2; i=$((i+1)); done"]),
+            &AtomicBool::new(false), Some(Duration::from_secs(5)),
+        ).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("too much"));
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn cancellation_during_capture_stops_the_child() {
+        let cancelled = AtomicBool::new(false);
+        let started = Instant::now();
+        let error = run_observed(
+            Command::new("sleep").arg("5"),
+            &cancelled,
+            None,
+            &mut || cancelled.store(true, Ordering::Release),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
         assert!(started.elapsed() < Duration::from_secs(2));
     }
 }
