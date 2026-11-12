@@ -1,7 +1,7 @@
 //! The pages behind the sidebar: Home, Clips, Automations, Connections and
 //! the Studio's start screen.
 use super::*;
-use crate::automation_ui::{Action, platform_badge};
+use crate::automation_ui::{Action, source_header};
 use gpui_kit::assets::IconName;
 use gpui_kit::{App, Stateful, gpui::Div};
 use tehom_core::Platform;
@@ -281,21 +281,7 @@ impl Tehom {
             };
             let title = source.title.clone();
             crate::theme::card(cx)
-                .children(platform_badge(&source))
-                .child(div().text_lg().child(source.title.clone()))
-                .child(div().text_sm().text_color(p.muted).child(format!(
-                    "{} · {}",
-                    if source.channel_id.starts_with("local:") {
-                        "File on this computer"
-                    } else if source.channel_id.starts_with("video:") {
-                        "Single video"
-                    } else if source.channel_id.starts_with("feed:") {
-                        "RSS feed, followed for new videos"
-                    } else {
-                        "Channel, followed for new videos"
-                    },
-                    source.url
-                )))
+                .child(source_header(&source, cx))
                 .child(
                     div()
                         .id(("automation-summary", key))
@@ -305,12 +291,6 @@ impl Tehom {
                         .rounded(px(8.))
                         .bg(p.surface)
                         .child(summary),
-                )
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(p.muted)
-                        .child("When a new video arrives"),
                 )
                 .child(
                     div()
@@ -363,68 +343,67 @@ impl Tehom {
                                 })),
                         ),
                 )
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(p.muted)
-                        .child("Post its clips to"),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .gap_2()
-                        .child(
-                            choice(
-                                ("route-default", key),
-                                format!(
-                                    "Default ({})",
-                                    default_account.as_deref().unwrap_or("off")
-                                ),
-                                route.is_none(),
+                .when(source.mode == AutomationMode::AutoExport, |card| {
+                    card.child(
+                        div()
+                            .text_sm()
+                            .text_color(p.muted)
+                            .child("Post its clips to"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap_2()
+                            .child(
+                                choice(
+                                    ("route-default", key),
+                                    format!(
+                                        "Default ({})",
+                                        default_account.as_deref().unwrap_or("off")
+                                    ),
+                                    route.is_none(),
+                                )
+                                .accessibility_label(format!(
+                                    "{title}: post to the default account"
+                                ))
+                                .on_click(cx.listener(
+                                    move |view, _, window, cx| {
+                                        view.act(Action::SourcePublish(id, None), window, cx)
+                                    },
+                                )),
                             )
-                            .accessibility_label(format!("{title}: post to the default account"))
-                            .on_click(cx.listener(
-                                move |view, _, window, cx| {
-                                    view.act(Action::SourcePublish(id, None), window, cx)
-                                },
-                            )),
-                        )
-                        .children(accounts.iter().enumerate().map(|(index, account)| {
-                            let account_id = account.id;
-                            choice(
-                                ("route-account", key * 1000 + index),
-                                format!("@{}", account.username),
-                                route == Some(account_id),
-                            )
-                            .accessibility_label(format!("{title}: post to @{}", account.username))
-                            .disabled(unavailable || account.needs_login)
-                            .on_click(cx.listener(
-                                move |view, _, window, cx| {
-                                    view.act(
-                                        Action::SourcePublish(id, Some(account_id)),
-                                        window,
-                                        cx,
-                                    )
-                                },
-                            ))
-                        }))
-                        .child(
-                            choice(("route-off", key), "Nowhere".into(), route == Some(0))
-                                .accessibility_label(format!("{title}: do not post"))
-                                .on_click(cx.listener(move |view, _, window, cx| {
-                                    view.act(Action::SourcePublish(id, Some(0)), window, cx)
-                                })),
-                        ),
-                )
-                .when(
-                    source.mode != AutomationMode::AutoExport && route != Some(0),
-                    |card| {
-                        card.child(div().text_sm().text_color(p.muted).child(
-                            "Clips are posted only when this source is set to \"Save MP4 files\".",
-                        ))
-                    },
-                )
+                            .children(accounts.iter().enumerate().map(|(index, account)| {
+                                let account_id = account.id;
+                                choice(
+                                    ("route-account", key * 1000 + index),
+                                    format!("@{}", account.username),
+                                    route == Some(account_id),
+                                )
+                                .accessibility_label(format!(
+                                    "{title}: post to @{}",
+                                    account.username
+                                ))
+                                .disabled(unavailable || account.needs_login)
+                                .on_click(cx.listener(
+                                    move |view, _, window, cx| {
+                                        view.act(
+                                            Action::SourcePublish(id, Some(account_id)),
+                                            window,
+                                            cx,
+                                        )
+                                    },
+                                ))
+                            }))
+                            .child(
+                                choice(("route-off", key), "Nowhere".into(), route == Some(0))
+                                    .accessibility_label(format!("{title}: do not post"))
+                                    .on_click(cx.listener(move |view, _, window, cx| {
+                                        view.act(Action::SourcePublish(id, Some(0)), window, cx)
+                                    })),
+                            ),
+                    )
+                })
                 .when_some(source.error, |card, error| {
                     card.child(div().text_sm().child(error))
                 })

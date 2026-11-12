@@ -1902,6 +1902,8 @@ mod tests {
                 last_checked: None,
                 error: None,
                 publish_account: None,
+                avatar: None,
+                followers: None,
             });
         }
         fixture.sources[0].title = "Someone".into();

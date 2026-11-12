@@ -34,6 +34,12 @@ pub struct Source {
     /// default account, `Some(0)` posts nowhere, otherwise that account.
     #[serde(default)]
     pub publish_account: Option<i64>,
+    /// Channel picture saved on this computer, when the platform gave one.
+    #[serde(default)]
+    pub avatar: Option<PathBuf>,
+    /// Follower or subscriber count as the platform shows it ("1.2M subscribers").
+    #[serde(default)]
+    pub followers: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
