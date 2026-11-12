@@ -811,6 +811,7 @@ async fn retry_fetches_later_platform_captions_without_redownloading_media() {
         &dir.path().join("videos/1"),
         "https://www.youtube.com/watch?v=abcdefghijk",
         true,
+        true,
     );
     let args = command
         .as_std()
