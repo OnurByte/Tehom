@@ -4006,3 +4006,15 @@ async fn unreadable_saved_ai_settings_fall_back_to_defaults() {
     assert_eq!(ai.endpoint, tehom_core::AiConfig::default().endpoint);
     assert_eq!(ai.provider, tehom_core::AiProvider::Local);
 }
+
+#[test]
+fn profile_helpers_format_counts_and_extract_values() {
+    assert_eq!(short_count(950), "950");
+    assert_eq!(short_count(1_234), "1.2K");
+    assert_eq!(short_count(2_500_000), "2.5M");
+    assert_eq!(
+        between("a=\"x&amp;y\"", "a=\"", "\"").as_deref(),
+        Some("x&y")
+    );
+    assert_eq!(between("none", "a=\"", "\""), None);
+}

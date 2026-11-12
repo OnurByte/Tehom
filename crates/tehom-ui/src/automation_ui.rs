@@ -1259,30 +1259,52 @@ impl Render for Tehom {
     }
 }
 
-/// A coloured badge with the platform name, so the source is recognisable at a glance.
-pub(crate) fn platform_badge(source: &tehom_core::Source) -> Option<Div> {
-    let (glyph, name, background, foreground) = if source.url.contains("kick.com") {
-        ("brand/kick.svg", "Kick", 0x53FC18, 0x0B0E0F)
+/// Channel header: its picture (or the platform glyph), name, platform and follower count.
+pub(crate) fn source_header(source: &tehom_core::Source, cx: &gpui_kit::App) -> Div {
+    let p = crate::theme::palette(cx);
+    let platform = if source.url.contains("kick.com") {
+        Some(("brand/kick.svg", "Kick", 0x53FC18, 0x0B0E0F))
     } else if source.url.contains("youtube.com") {
-        ("brand/youtube.svg", "YouTube", 0xFF0000, 0xFFFFFF)
+        Some(("brand/youtube.svg", "YouTube", 0xFF0000, 0xFFFFFF))
     } else {
-        return None;
+        None
     };
-    Some(
+    let (name, kind) = match platform {
+        Some((_, name, _, _)) => (name, None),
+        None if source.channel_id.starts_with("local:") => ("File", Some("on this computer")),
+        None if source.channel_id.starts_with("video:") => ("Video", Some("single video")),
+        None => ("RSS", Some("feed")),
+    };
+    let subtitle = [
+        Some(name.to_owned()),
+        kind.map(str::to_owned),
+        source.followers.clone(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" · ");
+    let picture = div()
+        .size(px(48.))
+        .flex_none()
+        .rounded_full()
+        .overflow_hidden()
+        .flex()
+        .items_center()
+        .justify_center();
+    let picture = match (&source.avatar, platform) {
+        (Some(path), _) => picture.child(img(path.clone()).size_full()),
+        (None, Some((glyph, _, background, foreground))) => picture
+            .bg(rgb(background))
+            .child(svg().path(glyph).size(px(26.)).text_color(rgb(foreground))),
+        (None, None) => picture.bg(p.surface),
+    };
+    div().flex().items_center().gap_3().child(picture).child(
         div()
             .flex()
-            .items_center()
-            .gap_2()
-            .child(
-                div()
-                    .size(px(28.))
-                    .rounded(px(6.))
-                    .bg(rgb(background))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(svg().path(glyph).size(px(22.)).text_color(rgb(foreground))),
-            )
-            .child(div().text_sm().child(name)),
+            .flex_col()
+            .min_w_0()
+            .child(div().text_lg().child(source.title.clone()))
+            .child(div().text_sm().text_color(p.muted).child(subtitle)),
     )
 }

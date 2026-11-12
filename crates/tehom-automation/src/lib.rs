@@ -717,6 +717,19 @@ fn feed_found(source: i64, items: Vec<Found>) -> Vec<Found> {
         })
         .collect()
 }
+/// "1234567" → "1.2M"; the platforms show counts this way.
+fn short_count(n: u64) -> String {
+    match n {
+        1_000_000.. => format!("{:.1}M", n as f64 / 1e6),
+        1_000.. => format!("{:.1}K", n as f64 / 1e3),
+        _ => n.to_string(),
+    }
+}
+fn between(text: &str, start: &str, end: &str) -> Option<String> {
+    let from = text.find(start)? + start.len();
+    let to = text[from..].find(end)?;
+    Some(text[from..from + to].replace("&amp;", "&")).filter(|v| !v.is_empty())
+}
 async fn read_limited(response: &mut reqwest::Response, limit: usize) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await? {
@@ -904,6 +917,16 @@ impl Automation {
             sqlx::query("ALTER TABLE sources ADD COLUMN publish_account INTEGER")
                 .execute(&pool)
                 .await?;
+        }
+        for column in ["avatar", "followers"] {
+            if !source_columns
+                .iter()
+                .any(|row| row.get::<String, _>("name") == column)
+            {
+                sqlx::query(&format!("ALTER TABLE sources ADD COLUMN {column} TEXT"))
+                    .execute(&pool)
+                    .await?;
+            }
         }
         let video_columns = sqlx::query("PRAGMA table_info(videos)")
             .fetch_all(&pool)
@@ -1161,6 +1184,61 @@ impl Automation {
                 .await?,
         )
     }
+    /// Saves the channel picture and follower count shown on its card.
+    async fn refresh_profile(&self, id: i64, channel: &str) -> Result<()> {
+        let (picture, followers) = if let Some(slug) = channel.strip_prefix("kick:") {
+            let reply: serde_json::Value = serde_json::from_slice(
+                &self
+                    .fetch(&format!("https://kick.com/api/v2/channels/{slug}"), 1 << 20)
+                    .await?,
+            )?;
+            (
+                reply["user"]["profile_pic"].as_str().map(str::to_owned),
+                reply["followers_count"]
+                    .as_u64()
+                    .map(|n| format!("{} followers", short_count(n))),
+            )
+        } else {
+            let mut page = self
+                .get_public(
+                    &format!("https://www.youtube.com/channel/{channel}"),
+                    Duration::from_secs(20),
+                )
+                .await?;
+            let html =
+                String::from_utf8_lossy(&read_limited(&mut page, 4 << 20).await?).into_owned();
+            (
+                between(&html, "property=\"og:image\" content=\"", "\""),
+                between(
+                    &html,
+                    "\"subscriberCountText\":{\"accessibility\":{\"accessibilityData\":{\"label\":\"",
+                    "\"",
+                ),
+            )
+        };
+        sqlx::query("UPDATE sources SET followers=COALESCE(?,followers) WHERE id=?")
+            .bind(followers)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        let directory = self.directory.join("avatars");
+        let name = format!("{id}.img");
+        if let Some(picture) = picture.filter(|_| !directory.join(&name).is_file()) {
+            let mut reply = self.get_public(&picture, Duration::from_secs(20)).await?;
+            ensure!(reply.status().is_success(), "Picture unavailable");
+            let bytes = read_limited(&mut reply, 2 << 20).await?;
+            tokio::fs::create_dir_all(&directory).await?;
+            tokio::fs::write(directory.join(&name), bytes).await?;
+        }
+        if directory.join(&name).is_file() {
+            sqlx::query("UPDATE sources SET avatar=? WHERE id=?")
+                .bind(name)
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
+        }
+        Ok(())
+    }
     pub async fn add_source(&self, url: &str, mode: AutomationMode) -> Result<Source> {
         let _guard = self.checks.lock().await;
         if let Some((id, canonical, title)) = single_video(url) {
@@ -1315,6 +1393,8 @@ impl Automation {
                         .await;
                 }
                 let (title, entries) = self.discover(&source.channel_id).await?;
+                // Picture and follower count are decoration: never a failure.
+                let _ = self.refresh_profile(source.id, &source.channel_id).await;
                 sqlx::query("UPDATE sources SET title=? WHERE id=?")
                     .bind(title)
                     .bind(source.id)
@@ -1327,7 +1407,7 @@ impl Automation {
             match result {
                 Ok(n) => count += n,
                 Err(_) => {
-                    sqlx::query("UPDATE sources SET error='RSS check failed; check connectivity or channel availability' WHERE id=?").bind(source.id).execute(&self.pool).await?;
+                    sqlx::query("UPDATE sources SET error='Could not check this source; check your connection or that the channel still exists' WHERE id=?").bind(source.id).execute(&self.pool).await?;
                 }
             }
         }
@@ -4328,6 +4408,11 @@ async fn snapshot_from_pool(
             last_checked: r.get("last_checked"),
             error: r.get("error"),
             publish_account: r.get("publish_account"),
+            avatar: r
+                .get::<Option<String>, _>("avatar")
+                .map(|name| directory.join("avatars").join(name))
+                .filter(|path| path.is_file()),
+            followers: r.get("followers"),
         })
         .collect();
     // Uploaded subtitles take priority over platform captions, as in processing.
