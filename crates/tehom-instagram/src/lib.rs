@@ -2,6 +2,7 @@
 //!
 //! Scope: username/password login, two-factor login, session export/restore and Reel upload.
 
+mod caa;
 mod crypto;
 mod error;
 
@@ -249,8 +250,24 @@ impl Client {
         self.state().clone()
     }
 
-    /// aiograpi `login_legacy`: launcher/sync for the password key, then accounts/login/.
+    /// Signs in with Instagram's current CAA flow; only when that cannot even
+    /// start (endpoint missing or protocol mismatch) does the legacy flow run.
     pub async fn login(&mut self, username: &str, password: &str) -> Result<Login, Error> {
+        let username = username.trim();
+        if username.is_empty() || password.is_empty() {
+            return Err(Error::BadCredentials);
+        }
+        match self.login_caa(username, password).await {
+            Ok(account) => Ok(Login::Done(account)),
+            Err(Error::Protocol(_) | Error::Rejected(_)) => {
+                self.login_legacy(username, password).await
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// aiograpi `login_legacy`: launcher/sync for the password key, then accounts/login/.
+    async fn login_legacy(&mut self, username: &str, password: &str) -> Result<Login, Error> {
         let username = username.trim();
         if username.is_empty() || password.is_empty() {
             return Err(Error::BadCredentials);
