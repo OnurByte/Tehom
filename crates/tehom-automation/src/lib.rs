@@ -3727,11 +3727,35 @@ fn transcript_srt(normalized: &str) -> Result<String> {
     }
     Ok(srt)
 }
+/// Subtitle text without markup: YouTube's automatic captions carry inline
+/// timestamps and `<c>` tags, and HTML entities.
+fn clean_subtitle_line(line: &str) -> String {
+    let mut text = String::new();
+    let mut tag = false;
+    for c in line.chars() {
+        match c {
+            '<' => tag = true,
+            '>' if tag => tag = false,
+            c if !tag => text.push(c),
+            _ => {}
+        }
+    }
+    let text = text
+        .replace("&nbsp;", " ")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&amp;", "&");
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
 fn parse_transcript(input: &str) -> Result<String> {
     let normalized = input.replace("\r\n", "\n");
     let lines: Vec<&str> = normalized.lines().collect();
     let mut output = String::new();
     let mut previous_start = 0;
+    // Rolling captions repeat the previous cue's lines; only new lines count.
+    let mut previous_lines: Vec<String> = Vec::new();
     for (index, line) in lines.iter().enumerate() {
         if let Some((start, end)) = line.split_once("-->") {
             let start = timestamp(start.trim())?;
@@ -3745,12 +3769,21 @@ fn parse_transcript(input: &str) -> Result<String> {
                 "Subtitle timestamps are not ordered"
             );
             previous_start = start;
-            let text = lines[index + 1..]
+            let cue_lines: Vec<String> = lines[index + 1..]
                 .iter()
                 .take_while(|s| !s.trim().is_empty())
-                .copied()
+                .map(|s| clean_subtitle_line(s))
+                .filter(|s| !s.is_empty())
+                .collect();
+            let text = cue_lines
+                .iter()
+                .filter(|s| !previous_lines.contains(s))
+                .cloned()
                 .collect::<Vec<_>>()
                 .join(" ");
+            if !cue_lines.is_empty() {
+                previous_lines = cue_lines;
+            }
             if !text.trim().is_empty() {
                 output.push_str(&format!("[{start}-{end}] {text}\n"));
             }
@@ -3870,6 +3903,7 @@ fn caption_look(style: &CaptionStyle) -> tehom_media::CaptionLook<'_> {
         },
         vertical: style.vertical,
         uppercase: style.uppercase,
+        font: &style.font,
     }
 }
 /// A JSON text column, `None` when absent, NULL or unreadable.

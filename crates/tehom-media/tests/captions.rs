@@ -65,6 +65,7 @@ fn captions_and_intro_sounds_render_valid_vertical_clips() {
         placement: Placement::Bottom,
         vertical: None,
         uppercase: false,
+        font: "Arial",
     };
     let script =
         tehom_media::ass_subtitles(&[(0, 1500, "Hello {world}")], &look, 1080, 1920).unwrap();
