@@ -4,7 +4,7 @@ name: Release
 # release. Each archive also carries whisper-cli, built from a pinned
 # whisper.cpp by packaging/build-whisper.sh. A manual run (workflow_dispatch)
 # on a branch only builds and uploads the archives as workflow artifacts; the
-# publish job runs only for v* tags. Archives are not code-signed or
+# archives are attached to the release only for v* tags, each platform as soon as it finishes. Archives are not code-signed or
 # notarised yet.
 on:
   push:
@@ -101,21 +101,15 @@ jobs:
         with:
           name: archive-${{ matrix.runner }}
           path: target/dist/
-  publish:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
-      - name: Create GitHub release
+      # Each platform publishes its own archive as soon as it is built, so a
+      # slow runner (macOS queues) never holds back the others.
+      - name: Attach archive to the GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # A release created by hand for this tag is reused; archives are (re)attached.
-          if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "Tehom $GITHUB_REF_NAME" --notes "Install: see README. Archives are SHA-256 checked by the installers but not code-signed or notarised."
-          fi
-          gh release upload "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "Tehom $GITHUB_REF_NAME" --notes "Install: see README. Archives are SHA-256 checked by the installers but not code-signed or notarised." \
+            || gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null
+          gh release upload "$GITHUB_REF_NAME" target/dist/* --repo "$GITHUB_REPOSITORY" --clobber
