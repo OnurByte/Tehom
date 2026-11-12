@@ -46,7 +46,11 @@ else
     base="https://github.com/$REPO/releases/download/$VERSION"
 fi
 
-tmp="$(mktemp -d)"
+# The archive is large: unpack on disk (a size-limited /tmp tmpfs makes curl
+# fail with "Failure writing output"), falling back to the default temp dir.
+cache="${XDG_CACHE_HOME:-$HOME/.cache}"
+mkdir -p "$cache" 2>/dev/null || true
+tmp="$(mktemp -d "$cache/tehom-install.XXXXXX" 2>/dev/null || mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
 fetch() {
