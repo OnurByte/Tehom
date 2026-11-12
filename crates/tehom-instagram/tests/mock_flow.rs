@@ -166,7 +166,11 @@ async fn login_then_upload_reel() {
         .iter()
         .map(|r| format!("{} {}", r.method, r.url.path()))
         .collect();
+    // The mock has no CAA endpoints, so the current flow stops at device
+    // registration and the legacy login takes over.
     let expected_prefixes = [
+        "POST /api/v1/launcher/sync/",
+        "POST /graphql_www",
         "POST /api/v1/launcher/sync/",
         "POST /api/v1/accounts/login/",
         "POST /upload_settings/",
@@ -182,6 +186,7 @@ async fn login_then_upload_reel() {
         assert!(p.starts_with(e), "{p} vs {e}");
     }
 
+    let requests = requests[2..].to_vec();
     // Common private-API headers.
     for r in &requests {
         assert_eq!(header(r, "x-ig-app-id"), "567067343352427");
