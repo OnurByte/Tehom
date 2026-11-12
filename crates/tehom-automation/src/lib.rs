@@ -4414,8 +4414,8 @@ async fn snapshot_from_pool(
         ai: sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key='ai'")
             .fetch_optional(&mut *tx)
             .await?
-            .map(|s| parse_ai_json(s.as_bytes(), "Saved AI settings"))
-            .transpose()?
+            // Unreadable saved settings fall back to the defaults; failing here locks the whole window.
+            .and_then(|s| parse_ai_json(s.as_bytes(), "Saved AI settings").ok())
             .unwrap_or_default(),
         export_directory: sqlx::query_scalar::<_, String>(
             "SELECT value FROM settings WHERE key='exports'",

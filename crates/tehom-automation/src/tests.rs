@@ -3993,3 +3993,15 @@ printf '1\n00:00:00,000 --> 00:00:02,000\nG\303\274zel \377 konu\n' > "$out.srt"
         transcript
     );
 }
+#[tokio::test]
+async fn unreadable_saved_ai_settings_fall_back_to_defaults() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Automation::open(dir.path().into()).await.unwrap();
+    sqlx::query("INSERT INTO settings(key,value) VALUES('ai','{broken')")
+        .execute(&engine.pool)
+        .await
+        .unwrap();
+    let ai = engine.snapshot().await.unwrap().ai;
+    assert_eq!(ai.endpoint, tehom_core::AiConfig::default().endpoint);
+    assert_eq!(ai.provider, tehom_core::AiProvider::Local);
+}
