@@ -202,6 +202,8 @@ pub struct Media {
 
 pub struct Client {
     http: reqwest::Client,
+    /// TLS 1.3 / HTTP/2 client shaped like the Android app, for the CAA login.
+    caa_http: reqwest::Client,
     jar: Arc<Jar>,
     base: String,
     state: Mutex<Session>,
@@ -225,6 +227,7 @@ impl Client {
             .map_err(|e| Error::Transport(e.to_string()))?;
         Ok(Self {
             http,
+            caa_http: caa::caa_http()?,
             jar,
             base: API_ORIGIN.into(),
             state: Mutex::new(session),
@@ -259,8 +262,11 @@ impl Client {
         }
         match self.login_caa(username, password).await {
             Ok(account) => Ok(Login::Done(account)),
-            Err(Error::Protocol(_) | Error::Rejected(_)) => {
-                self.login_legacy(username, password).await
+            Err(error @ (Error::Protocol(_) | Error::Rejected(_))) => {
+                // Report the current flow's reason unless the old one still works.
+                self.login_legacy(username, password)
+                    .await
+                    .map_err(|_| error)
             }
             Err(error) => Err(error),
         }
@@ -677,10 +683,13 @@ impl Client {
 
     /// aiograpi `base_headers` + `private_headers` (Authorization when present).
     fn request(&self, method: Method, url: &str) -> RequestBuilder {
+        self.request_with(&self.http, method, url)
+    }
+
+    fn request_with(&self, http: &reqwest::Client, method: Method, url: &str) -> RequestBuilder {
         let s = self.session();
         let now = unix_secs_f64();
-        let mut r = self
-            .http
+        let mut r = http
             .request(method, url)
             .header("X-IG-App-Locale", LOCALE)
             .header("X-IG-Device-Locale", LOCALE)

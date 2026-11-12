@@ -6621,6 +6621,7 @@ dependencies = [
  "cookie_store",
  "futures-core",
  "futures-util",
+ "h2",
  "http",
  "http-body",
  "http-body-util",
@@ -7968,11 +7969,13 @@ dependencies = [
  "rand 0.8.8",
  "reqwest",
  "rsa",
+ "rustls",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tokio",
  "uuid",
+ "webpki-roots",
  "wiremock",
 ]
 

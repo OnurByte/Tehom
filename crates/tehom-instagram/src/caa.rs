@@ -161,6 +161,30 @@ fn network_info() -> Value {
     })
 }
 
+/// Instagram's edge answers `send_login_request` with an empty 429 unless the
+/// ClientHello resembles the Android app's: TLS 1.3 only, one cipher suite,
+/// X25519/P-256, over HTTP/2 (instagrapi#2852, #2862).
+pub(crate) fn caa_http() -> Result<reqwest::Client, Error> {
+    use rustls::crypto::ring::{cipher_suite, kx_group};
+    let tls = |e: rustls::Error| Error::Protocol(format!("TLS setup failed: {e}"));
+    let mut provider = rustls::crypto::ring::default_provider();
+    provider.cipher_suites = vec![cipher_suite::TLS13_AES_128_GCM_SHA256];
+    provider.kx_groups = vec![kx_group::X25519, kx_group::SECP256R1];
+    let roots = rustls::RootCertStore {
+        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+    };
+    let mut config = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(provider))
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(tls)?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    config.alpn_protocols = vec![b"h2".to_vec()];
+    reqwest::Client::builder()
+        .use_preconfigured_tls(config)
+        .build()
+        .map_err(crate::transport)
+}
+
 impl Client {
     fn caa_origin(&self) -> String {
         if self.base == API_ORIGIN {
@@ -178,8 +202,9 @@ impl Client {
         headers: &[(&str, String)],
         usdid: &Usdid,
     ) -> Result<(u16, HeaderMap, String), Error> {
+        let url = format!("{}{path}", self.caa_origin());
         let mut request = self
-            .request(Method::POST, &format!("{}{path}", self.caa_origin()))
+            .request_with(&self.caa_http, Method::POST, &url)
             .timeout(crate::READ_TIMEOUT)
             .header("X-Meta-Usdid", usdid.header())
             .form(form);
@@ -453,7 +478,10 @@ impl Client {
             let text = result.to_string().to_ascii_lowercase();
             return Err(if text.contains("two_step_verification") {
                 Error::Checkpoint("verification code required; approve the login in the Instagram app, then try again".into())
-            } else if text.contains("password") && text.contains("incorrect") {
+            } else if text.contains("find an account")
+                || text.contains("password you entered")
+                || (text.contains("password") && text.contains("incorrect"))
+            {
                 Error::BadCredentials
             } else {
                 Error::Protocol("Instagram did not return a session".into())
