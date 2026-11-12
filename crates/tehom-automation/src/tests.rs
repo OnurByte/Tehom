@@ -4018,3 +4018,11 @@ fn profile_helpers_format_counts_and_extract_values() {
     );
     assert_eq!(between("none", "a=\"", "\""), None);
 }
+
+#[test]
+fn even_windows_fit_the_clip_limits_without_overlap() {
+    let limits = AutomationSettings::default();
+    let windows = even_windows(600_000, &limits);
+    assert_eq!(validate_candidates(windows, 600_000, &limits).len(), 5);
+    assert!(even_windows(10_000, &limits).is_empty());
+}

@@ -2331,6 +2331,13 @@ impl Automation {
                 limits,
             )
         };
+        // Sparse speech (ASMR, music) gives the model nothing to pick: spread
+        // evenly timed clips over the video instead of stopping.
+        let candidates = if candidates.is_empty() {
+            even_windows(duration, limits)
+        } else {
+            candidates
+        };
         ensure!(
             !candidates.is_empty(),
             "Needs input: model returned no valid {}–{} second clip candidates",
@@ -3946,6 +3953,33 @@ fn chat_model(id: &str) -> bool {
     ]
     .iter()
     .any(|word| id.contains(word))
+}
+/// Evenly spread clips of the middle length, for videos the model finds nothing in.
+fn even_windows(duration: u64, limits: &AutomationSettings) -> Vec<Candidate> {
+    let (min, max) = (
+        u64::from(limits.min_clip_seconds) * 1000,
+        u64::from(limits.max_clip_seconds) * 1000,
+    );
+    if duration < min {
+        return Vec::new();
+    }
+    let length = ((min + max) / 2).min(duration);
+    let count = (duration / length).clamp(1, u64::from(limits.max_clips));
+    (0..count)
+        .map(|i| {
+            let start = if count > 1 {
+                i * (duration - length) / (count - 1)
+            } else {
+                0
+            };
+            Candidate {
+                start_ms: start,
+                end_ms: start + length,
+                title: format!("Part {}", i + 1),
+                reason: "Evenly spaced: the model found no standout moment".into(),
+            }
+        })
+        .collect()
 }
 fn validate_candidates(
     candidates: Vec<Candidate>,
