@@ -12,6 +12,8 @@
 # TEHOM_ARCHIVE=C:\path\tehom-windows-x86_64.zip (with .sha256 beside it).
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+# Windows PowerShell 5.1 offers only old TLS by default, which GitHub refuses.
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch {}
 
 $Repo = if ($env:TEHOM_REPO) { $env:TEHOM_REPO } else { 'OnurByte/Tehom' }
 $Version = if ($env:TEHOM_VERSION) { $env:TEHOM_VERSION } else { 'latest' }
@@ -46,7 +48,7 @@ try {
             Invoke-WebRequest "$Base/$Asset" -OutFile $Zip -UseBasicParsing
             Invoke-WebRequest "$Base/$Asset.sha256" -OutFile "$Zip.sha256" -UseBasicParsing
         } catch {
-            Fail "Could not download $Asset. There may be no release yet: https://github.com/$Repo/releases"
+            Fail "Could not download $Asset ($($_.Exception.Message)). Releases: https://github.com/$Repo/releases"
         }
     }
     $Expected = ((Get-Content "$Zip.sha256" -Raw).Trim() -split '\s+')[0].ToLower()
