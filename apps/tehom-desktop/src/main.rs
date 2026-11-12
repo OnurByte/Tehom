@@ -66,6 +66,16 @@ fn main() {
             std::borrow::Cow::Borrowed(include_bytes!(
                 "../../../assets/fonts/GeistMono-Regular.ttf"
             )),
+            std::borrow::Cow::Borrowed(include_bytes!(
+                "../../../assets/fonts/Staatliches-Regular.ttf"
+            )),
+            std::borrow::Cow::Borrowed(include_bytes!("../../../assets/fonts/Anton-Regular.ttf")),
+            std::borrow::Cow::Borrowed(include_bytes!(
+                "../../../assets/fonts/Righteous-Regular.ttf"
+            )),
+            std::borrow::Cow::Borrowed(include_bytes!(
+                "../../../assets/fonts/BebasNeue-Regular.ttf"
+            )),
         ]) {
             eprintln!("Tehom fonts: {error}");
         }

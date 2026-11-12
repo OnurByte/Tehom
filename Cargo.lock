@@ -7903,7 +7903,7 @@ dependencies = [
 
 [[package]]
 name = "tehom-automation"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "anyhow",
  "feed-rs",
@@ -7924,7 +7924,7 @@ dependencies = [
 
 [[package]]
 name = "tehom-cli"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "anyhow",
  "clap",
@@ -7943,7 +7943,7 @@ dependencies = [
 
 [[package]]
 name = "tehom-core"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "serde",
  "serde_json",
@@ -7951,7 +7951,7 @@ dependencies = [
 
 [[package]]
 name = "tehom-desktop"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "embed-resource",
  "gpui-kit",
@@ -7961,7 +7961,7 @@ dependencies = [
 
 [[package]]
 name = "tehom-instagram"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -7981,7 +7981,7 @@ dependencies = [
 
 [[package]]
 name = "tehom-media"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "fs2",
  "gstreamer",
@@ -7995,7 +7995,7 @@ dependencies = [
 
 [[package]]
 name = "tehom-ui"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "anyhow",
  "directories",

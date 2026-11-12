@@ -17,12 +17,57 @@ pub(crate) const COLORS: [(&str, &str); 7] = [
 ];
 const ROW_HEIGHT: f32 = 52.;
 
-/// One-click looks: name, text colour, outline, size, ALL CAPS.
-const PRESETS: [(&str, &str, &str, CaptionSize, bool); 4] = [
-    ("Clean", "#FFFFFF", "#000000", CaptionSize::Medium, false),
-    ("Hype", "#FFE600", "#000000", CaptionSize::Large, true),
-    ("Neon", "#00E5FF", "#000000", CaptionSize::Large, true),
-    ("Pop", "#FF4FD8", "#000000", CaptionSize::Medium, false),
+/// One-click looks in the spirit of Instagram's text styles: name, text
+/// colour, outline, size, ALL CAPS, font. The first is the default.
+const PRESETS: [(&str, &str, &str, CaptionSize, bool, &str); 6] = [
+    (
+        "Classic",
+        "#FFFFFF",
+        "#000000",
+        CaptionSize::Medium,
+        false,
+        "Staatliches",
+    ),
+    (
+        "Poster",
+        "#FFFFFF",
+        "#000000",
+        CaptionSize::Large,
+        true,
+        "Anton",
+    ),
+    (
+        "Hype",
+        "#FFE600",
+        "#000000",
+        CaptionSize::Large,
+        true,
+        "Anton",
+    ),
+    (
+        "Neon",
+        "#00E5FF",
+        "#2A0A6B",
+        CaptionSize::Large,
+        false,
+        "Righteous",
+    ),
+    (
+        "Pop",
+        "#FF4FD8",
+        "#000000",
+        CaptionSize::Medium,
+        false,
+        "Righteous",
+    ),
+    (
+        "Editor",
+        "#FFFFFF",
+        "#000000",
+        CaptionSize::Large,
+        true,
+        "Bebas Neue",
+    ),
 ];
 
 /// Where a caption sits, as a percentage from the top of the frame.
@@ -254,11 +299,12 @@ impl Tehom {
                     .flex_wrap()
                     .gap_2()
                     .children(PRESETS.into_iter().enumerate().map(
-                        |(index, (name, text, outline, size, caps))| {
+                        |(index, (name, text, outline, size, caps, font))| {
                             let selected = style.color.eq_ignore_ascii_case(text)
                                 && style.outline.eq_ignore_ascii_case(outline)
                                 && style.size == size
-                                && style.uppercase == caps;
+                                && style.uppercase == caps
+                                && style.font == font;
                             choice(("look-preset", base + index), name.into(), selected)
                                 .accessibility_label(format!("Quick look: {name}"))
                                 .on_click(cx.listener(move |view, _, _, cx| {
@@ -269,6 +315,7 @@ impl Tehom {
                                             style.outline = outline.into();
                                             style.size = size;
                                             style.uppercase = caps;
+                                            style.font = font.into();
                                         },
                                         cx,
                                     )
@@ -291,6 +338,21 @@ impl Tehom {
                 &style.outline,
                 true,
             ))
+            .child(heading("Font"))
+            .child(
+                div().flex().flex_wrap().gap_2().children(
+                    tehom_core::CAPTION_FONTS
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, name)| {
+                            choice(("look-font", base + index), name.into(), style.font == name)
+                                .accessibility_label(format!("Font: {name}"))
+                                .on_click(cx.listener(move |view, _, _, cx| {
+                                    view.edit_look(look, |style, _| style.font = name.into(), cx)
+                                }))
+                        }),
+                ),
+            )
             .child(heading("Size"))
             .child(
                 div().flex().flex_wrap().gap_2().children(
@@ -408,6 +470,7 @@ impl Tehom {
         let line = div()
             .px_3()
             .text_center()
+            .font_family(studio.style.font.clone())
             .when_some(color(&studio.style.color), |line, color| {
                 line.text_color(color)
             })

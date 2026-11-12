@@ -120,6 +120,8 @@ pub struct CaptionStyle {
     pub size: CaptionSize,
     pub position: CaptionPosition,
     pub uppercase: bool,
+    /// Font family; one of the families Tehom ships (`CAPTION_FONTS`).
+    pub font: String,
     /// Exact height, as a percentage from the top of the frame (0–100).
     /// `None` uses `position`.
     pub vertical: Option<u8>,
@@ -133,10 +135,13 @@ impl Default for CaptionStyle {
             size: CaptionSize::Medium,
             position: CaptionPosition::Bottom,
             uppercase: false,
+            font: "Staatliches".into(),
             vertical: None,
         }
     }
 }
+/// Caption font families bundled with Tehom (all cover Turkish letters).
+pub const CAPTION_FONTS: [&str; 4] = ["Staatliches", "Anton", "Righteous", "Bebas Neue"];
 
 /// A short synthesized sound at the start of a clip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

@@ -322,7 +322,33 @@ pub struct CaptionLook<'a> {
     /// Exact height as a percentage from the top; overrides `placement`.
     pub vertical: Option<u8>,
     pub uppercase: bool,
+    /// Family name of one of `FONTS`; anything else falls back to Arial.
+    pub font: &'a str,
 }
+
+/// Caption fonts shipped with Tehom (SIL OFL), written beside the script for libass.
+pub const FONTS: [(&str, &str, &[u8]); 4] = [
+    (
+        "Staatliches",
+        "Staatliches.ttf",
+        include_bytes!("../../../assets/fonts/Staatliches-Regular.ttf"),
+    ),
+    (
+        "Anton",
+        "Anton.ttf",
+        include_bytes!("../../../assets/fonts/Anton-Regular.ttf"),
+    ),
+    (
+        "Righteous",
+        "Righteous.ttf",
+        include_bytes!("../../../assets/fonts/Righteous-Regular.ttf"),
+    ),
+    (
+        "Bebas Neue",
+        "BebasNeue.ttf",
+        include_bytes!("../../../assets/fonts/BebasNeue-Regular.ttf"),
+    ),
+];
 
 /// `#RRGGBB` as an opaque ASS `&HAABBGGRR` color.
 fn ass_color(hex: &str) -> io::Result<String> {
@@ -375,6 +401,10 @@ pub fn ass_subtitles(
     height: u32,
 ) -> io::Result<String> {
     let (primary, outline) = (ass_color(look.color)?, ass_color(look.outline)?);
+    let family = FONTS
+        .iter()
+        .find(|(name, _, _)| *name == look.font)
+        .map_or("Arial", |(name, _, _)| *name);
     let (w, h) = (f64::from(width), f64::from(height));
     let font = (w.min(h) * 0.075 * look.scale.clamp(0.5, 2.0))
         .round()
@@ -409,8 +439,9 @@ pub fn ass_subtitles(
     let mut script = format!(
         "[Script Info]\nScriptType: v4.00+\nPlayResX: {width}\nPlayResY: {height}\nWrapStyle: 0\nScaledBorderAndShadow: yes\n\n\
          [V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n\
-         Style: Default,Arial,{font},{primary},{primary},{outline},&H80000000,-1,0,0,0,100,100,0,0,1,{border},{shadow},{alignment},{side},{side},{margin},1\n\n\
+         Style: Default,{family},{font},{primary},{primary},{outline},&H80000000,{bold},0,0,0,100,100,0,0,1,{border},{shadow},{alignment},{side},{side},{margin},1\n\n\
          [Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n",
+        bold = if family == "Arial" { -1 } else { 0 },
         shadow = (border / 2.0).round(),
         margin = margin.round(),
     );
@@ -641,6 +672,7 @@ fn render(
     let sound = overlay.map_or(Sound::None, |overlay| overlay.sound);
     // Kept alive until FFmpeg has finished reading it.
     let mut script = None;
+    let mut fonts = None;
     if let Some(text) = overlay.and_then(|overlay| overlay.subtitles.as_deref()) {
         use std::io::Write;
         require_libass(cancelled)?;
@@ -651,6 +683,13 @@ fn render(
         file.write_all(text.as_bytes())?;
         file.flush()?;
         script = Some(file);
+        let directory = tempfile::Builder::new()
+            .prefix(".tehom-fonts-")
+            .tempdir_in(parent)?;
+        for (_, file, bytes) in FONTS {
+            std::fs::write(directory.path().join(file), bytes)?;
+        }
+        fonts = Some(directory);
     }
     let mut command = Command::new("ffmpeg");
     command
@@ -684,7 +723,10 @@ fn render(
     let mut video = identity.map(|(_, framing)| framing.filter());
     if let Some(script) = &script {
         // Drawn after scaling and cropping, so captions match the output frame.
-        let captions = format!("ass=filename={}", filter_path(script.path()));
+        let mut captions = format!("ass=filename={}", filter_path(script.path()));
+        if let Some(fonts) = &fonts {
+            captions.push_str(&format!(":fontsdir={}", filter_path(fonts.path())));
+        }
         video = Some(match video {
             Some(framing) => format!("{framing},{captions}"),
             None => captions,
@@ -1067,6 +1109,7 @@ mod caption_tests {
             placement: Placement::Top,
             vertical: None,
             uppercase: true,
+            font: "Arial",
         };
         let script = ass_subtitles(
             &[

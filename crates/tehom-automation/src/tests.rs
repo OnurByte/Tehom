@@ -4026,3 +4026,17 @@ fn even_windows_fit_the_clip_limits_without_overlap() {
     assert_eq!(validate_candidates(windows, 600_000, &limits).len(), 5);
     assert!(even_windows(10_000, &limits).is_empty());
 }
+
+#[test]
+fn youtube_rolling_captions_lose_timestamps_tags_and_repeats() {
+    let vtt = "WEBVTT\n\n00:00:00.000 --> 00:00:02.000 align:start position:0%\nmerhaba <00:00:00.500><c>dünya</c><00:00:01.000><c> nasılsın</c>\n\n00:00:02.000 --> 00:00:02.010 align:start position:0%\nmerhaba dünya nasılsın\n \n\n00:00:02.010 --> 00:00:04.000 align:start position:0%\nmerhaba dünya nasılsın\niyiyim &amp; sen\n\n";
+    let parsed = parse_transcript(vtt).unwrap();
+    assert!(
+        !parsed.contains('<') && !parsed.contains("&amp;"),
+        "{parsed}"
+    );
+    let lines: Vec<&str> = parsed.lines().collect();
+    assert_eq!(lines.len(), 2, "{parsed}");
+    assert_eq!(lines[0], "[0-2000] merhaba dünya nasılsın");
+    assert_eq!(lines[1], "[2010-4000] iyiyim & sen");
+}
