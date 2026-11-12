@@ -3014,6 +3014,7 @@ impl Automation {
         folder: &std::path::Path,
         url: &str,
         subtitles_only: bool,
+        with_subtitles: bool,
     ) -> tokio::process::Command {
         #[cfg(not(test))]
         let executable = std::path::Path::new("yt-dlp");
@@ -3034,15 +3035,19 @@ impl Automation {
             "2",
             "--fragment-retries",
             "2",
-            "--write-subs",
-            "--write-auto-subs",
-            "--sub-langs",
-            // Exact languages only: a "tr.*" pattern also matches dozens of
-            // machine-translated tracks (tr-ar, en-fr, …) and YouTube answers 429.
-            "tr,tr-orig,tr-TR,en,en-orig,en-US,en-GB",
-            "--sub-format",
-            "vtt/srt",
         ]);
+        if with_subtitles {
+            command.args([
+                "--write-subs",
+                "--write-auto-subs",
+                "--sub-langs",
+                // Exact languages only: a "tr.*" pattern also matches dozens of
+                // machine-translated tracks (tr-ar, en-fr, …) and YouTube answers 429.
+                "tr,tr-orig,tr-TR,en,en-orig,en-US,en-GB",
+                "--sub-format",
+                "vtt/srt",
+            ]);
+        }
         if subtitles_only {
             command.arg("--skip-download");
         } else {
@@ -3124,44 +3129,60 @@ impl Automation {
             .context("Needs input: not enough disk space to download; free some space and retry")?;
         // yt-dlp's messages go to a log so a failure can say why.
         let log_path = folder.join("download.log");
-        let mut command = self.download_command(folder, url, subtitles_only);
-        command.stderr(std::fs::File::create(&log_path)?);
-        let mut child = command
-            .spawn()
-            .context("yt-dlp was not found or could not start; install yt-dlp, make sure it is on PATH, and retry")?;
-        let result = tokio::time::timeout(
-            Duration::from_secs(if subtitles_only { 300 } else { 7200 }),
-            async {
-                let mut space_check = tokio::time::Instant::now();
-                loop {
-                    ensure!(!cancel.load(Ordering::Acquire), "Cancelled");
-                    if space_check.elapsed() >= Duration::from_secs(1) {
-                        tehom_media::require_space(folder, if subtitles_only { 16 * 1024 * 1024 } else { 256 * 1024 * 1024 })
-                            .context("Needs input: disk space ran low while downloading; free some space and retry")?;
-                        space_check = tokio::time::Instant::now();
-                    }
-                    if let Some(status) = child.try_wait()? {
-                        if !status.success() {
-                            let reason = last_error_line(&log_path).await;
-                            bail!("Video download failed{reason}; check the link and try again");
+        let mut with_subtitles = true;
+        loop {
+            let outcome: Result<()> = async {
+            let mut command = self.download_command(folder, url, subtitles_only, with_subtitles);
+            command.stderr(std::fs::File::create(&log_path)?);
+            let mut child = command
+                .spawn()
+                .context("yt-dlp was not found or could not start; install yt-dlp, make sure it is on PATH, and retry")?;
+            let result = tokio::time::timeout(
+                Duration::from_secs(if subtitles_only { 300 } else { 7200 }),
+                async {
+                    let mut space_check = tokio::time::Instant::now();
+                    loop {
+                        ensure!(!cancel.load(Ordering::Acquire), "Cancelled");
+                        if space_check.elapsed() >= Duration::from_secs(1) {
+                            tehom_media::require_space(folder, if subtitles_only { 16 * 1024 * 1024 } else { 256 * 1024 * 1024 })
+                                .context("Needs input: disk space ran low while downloading; free some space and retry")?;
+                            space_check = tokio::time::Instant::now();
                         }
-                        return Ok(());
+                        if let Some(status) = child.try_wait()? {
+                            if !status.success() {
+                                let reason = last_error_line(&log_path).await;
+                                bail!("Video download failed{reason}; check the link and try again");
+                            }
+                            return Ok(());
+                        }
+                        tokio::time::sleep(Duration::from_millis(100)).await;
                     }
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
-            },
-        )
-        .await;
-        match result {
-            Ok(Ok(())) => Ok(()),
-            other => {
-                let _ = child.kill().await;
-                let _ = child.wait().await;
-                match other {
-                    Ok(Err(error)) => Err(error),
-                    _ => bail!("YouTube download timed out"),
+                },
+            )
+            .await;
+            match result {
+                Ok(Ok(())) => Ok(()),
+                other => {
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
+                    match other {
+                        Ok(Err(error)) => Err(error),
+                        _ => bail!("YouTube download timed out"),
+                    }
                 }
             }
+            }
+            .await;
+            // A rate-limited caption fetch must not sink the video itself.
+            if let Err(error) = &outcome
+                && with_subtitles
+                && !subtitles_only
+                && format!("{error}").contains("subtitles")
+            {
+                with_subtitles = false;
+                continue;
+            }
+            return outcome;
         }
     }
     /// Downloads a generic feed's media to `source.mp4` with the same space,
