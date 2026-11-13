@@ -462,6 +462,8 @@ impl Tehom {
         .child(self.instagram_card(cx))
         .child(self.browser_card(Platform::YoutubeShorts, cx))
         .child(self.browser_card(Platform::Tiktok, cx))
+        .child(self.key_card(Platform::Bluesky, cx))
+        .child(self.key_card(Platform::FacebookReels, cx))
         .child(div().text_sm().text_color(p.muted).child(
             "Videos come from YouTube, Kick and RSS feeds without signing in. Add them on Home.",
         ))

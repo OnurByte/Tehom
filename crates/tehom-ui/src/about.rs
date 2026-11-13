@@ -346,7 +346,7 @@ impl Tehom {
                 "Free software under the GNU AGPL 3.0 or later.",
             ))
             .child(div().text_sm().text_color(p.muted).child(
-                "Built with GPUI Kit, FFmpeg, yt-dlp and whisper.cpp; Instagram posting ports the aiograpi protocol; TikTok upload steps follow TiktokAutoUploader and YouTube Shorts steps follow youtube-studio; platform icons from Simple Icons.",
+                "Built with GPUI Kit, FFmpeg, yt-dlp and whisper.cpp; Instagram posting ports the aiograpi protocol; TikTok upload steps follow TiktokAutoUploader and YouTube Shorts steps follow youtube-studio; Bluesky uses the AT Protocol and Facebook Reels the Graph API; platform icons from Simple Icons.",
             ))
             .child(div().text_sm().text_color(p.muted).child(
                 "Tip: Ctrl+K (Cmd+K on macOS) finds any action.",
