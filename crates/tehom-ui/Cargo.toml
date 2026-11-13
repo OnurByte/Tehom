@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-gpui-kit = "=0.8.1"
+gpui-kit = "=0.9.1"
 tehom-media = { path = "../tehom-media", features = ["preview"] }
 image = { version = "0.25", default-features = false }
 
@@ -16,5 +16,5 @@ directories = "6"
 anyhow = "1"
 
 [dev-dependencies]
-gpui-kit = { version = "=0.8.1", features = ["test-support"] }
+gpui-kit = { version = "=0.9.1", features = ["test-support"] }
 tempfile = "3"

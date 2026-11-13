@@ -16,7 +16,7 @@ use gpui_kit::{
     component::{
         Disableable,
         button::{Button, ButtonVariants},
-        input::{Input, InputState},
+        input::{Input, InputEvent, InputState},
         slider::{Slider, SliderEvent, SliderState},
     },
     div, img,
@@ -81,6 +81,8 @@ pub struct Tehom {
     /// Caption edits for the clip open in the Studio; kept across snapshot
     /// refreshes and re-seeded only when another clip is opened.
     studio: Option<studio::Studio>,
+    /// The sidebar's update card was put away until the next start.
+    update_later: bool,
     /// Unsaved "Caption look for new clips" draft.
     default_look: Option<tehom_core::CaptionStyle>,
     speech: Option<tehom_core::SpeechStatus>,
@@ -146,6 +148,22 @@ impl Tehom {
             cx.new(|cx| InputState::new(window, cx).placeholder("Write a caption"));
         // These fields change what the view shows (filtered list, counter).
         let mut input_watch = vec![
+            // The add-link card names what the pasted link is as it is typed.
+            cx.observe(&source_url, |_, _, cx| cx.notify()),
+            cx.subscribe_in(
+                &source_url,
+                window,
+                |view, input, event: &InputEvent, window, cx| {
+                    if matches!(event, InputEvent::PressEnter { .. }) {
+                        let link = input.read(cx).value().to_string();
+                        view.act(
+                            automation_ui::Action::Add(link, view.source_mode),
+                            window,
+                            cx,
+                        );
+                    }
+                },
+            ),
             cx.observe(&model_query, |_, _, cx| cx.notify()),
             cx.observe(&publish_caption, |_, _, cx| cx.notify()),
         ];
@@ -255,6 +273,7 @@ impl Tehom {
             model_query,
             model_other: false,
             studio: None,
+            update_later: false,
             default_look: None,
             speech: None,
             speech_checking: false,
@@ -1076,12 +1095,12 @@ pub struct Assets;
 /// platform glyphs, see assets/README.md.
 const OWN_ASSETS: [(&str, &[u8]); 8] = [
     (
-        "brand/youtube.svg",
-        include_bytes!("../../../assets/brand/youtube.svg"),
+        "icons/youtube.svg",
+        include_bytes!("../../../assets/icons/youtube.svg"),
     ),
     (
-        "brand/kick.svg",
-        include_bytes!("../../../assets/brand/kick.svg"),
+        "icons/kick.svg",
+        include_bytes!("../../../assets/icons/kick.svg"),
     ),
     (
         "brand/icon.svg",
@@ -1609,8 +1628,52 @@ mod tests {
             ] {
                 assert!(window.try_find_by_label(label).is_some(), "{label}");
             }
+            // The sidebar card can be put away; About keeps the offer.
+            assert!(
+                window
+                    .try_find_by_label(
+                        "Tehom v9.9.9 is here. A fresh version is ready whenever you are."
+                    )
+                    .is_some()
+            );
+            window.click("update-later", cx);
+            window.render_frame(cx);
+            assert!(window.try_find("update-card").is_none());
+            assert!(window.try_find_by_label("Install update").is_some());
         })
         .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn add_link_card_names_the_pasted_link(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, view) = open_view(cx, snapshot(dir.path(), true));
+        for (link, note) in [
+            (
+                "https://kick.com/some_streamer",
+                "Kick channel. Tehom follows it and makes clips from every new stream recording. Experimental.",
+            ),
+            (
+                "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                "YouTube video. Tehom makes clips from it once.",
+            ),
+            (
+                "youtube",
+                "Tehom does not know this link. Paste the full address, like https://www.youtube.com/@name or https://kick.com/name.",
+            ),
+        ] {
+            cx.update_window(handle, |_, window, cx| {
+                view.update(cx, |view, cx| {
+                    view.page = Page::Home;
+                    view.source_url
+                        .update(cx, |state, cx| state.set_value(link, window, cx));
+                });
+                window.render_frame(cx);
+                assert!(window.try_find_by_label(note).is_some(), "{link}");
+            })
+            .unwrap();
+        }
     }
 
     #[gpui_kit::test]

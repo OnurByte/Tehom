@@ -218,6 +218,39 @@ fn kick_vod_input(input: &str) -> Result<String> {
     Ok(uuid.to_owned())
 }
 /// A single-video input: (external id, canonical URL, display title).
+/// What a pasted link is, by the same rules `add_source` applies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkKind {
+    YoutubeChannel,
+    YoutubeVideo,
+    KickChannel,
+    KickVideo,
+    /// Any other HTTPS address: tried as an RSS or Atom feed when added.
+    Feed,
+}
+
+/// `None` for text that `add_source` would refuse without going online.
+pub fn link_kind(input: &str) -> Option<LinkKind> {
+    if video_input(input).is_ok() {
+        return Some(LinkKind::YoutubeVideo);
+    }
+    if kick_vod_input(input).is_ok() {
+        return Some(LinkKind::KickVideo);
+    }
+    match kick_channel_input(input) {
+        Ok(Some(_)) => return Some(LinkKind::KickChannel),
+        Ok(None) => {}
+        Err(_) => return None,
+    }
+    if channel_input(input).is_ok() {
+        return Some(LinkKind::YoutubeChannel);
+    }
+    let url = reqwest::Url::parse(input.trim()).ok()?;
+    let host = url.host_str()?;
+    (url.scheme() == "https" && !host.ends_with("youtube.com") && host != "youtu.be")
+        .then_some(LinkKind::Feed)
+}
+
 fn single_video(input: &str) -> Option<(String, String, String)> {
     if let Ok(id) = video_input(input) {
         let canonical = format!("https://www.youtube.com/watch?v={id}");

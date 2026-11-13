@@ -27,7 +27,7 @@ irm https://raw.githubusercontent.com/OnurByte/Tehom/main/install.ps1 | iex
 
 Then open **Tehom** from your apps. A short guide helps you choose an AI the first time.
 
-**Updating:** Tehom tells you when a new version is out. Choose **Install update** in Settings, or run `tehom update`.
+**Updating:** when a new version is out, a card appears at the bottom of the sidebar. Choose **Update** there, or run `tehom update`.
 
 ## How it works
 
@@ -60,7 +60,7 @@ Tehom lists the models your choice offers, with a plain note on how capable each
 
 - **No captions?** Tehom writes them on this computer. The speech tool comes with the app; one click in Settings downloads the speech model (about 150 MB).
 - **Edit in Studio.** Change caption text, colour, size, position and the intro sound, then make the video again.
-- **Sources.** YouTube channels and videos, Kick videos, any RSS or Atom feed with video, or a file from your computer.
+- **Sources.** <img src="assets/readme/source-youtube.svg" height="16" alt=""> YouTube channels and videos, <img src="assets/readme/source-kick.svg" height="16" alt=""> Kick channels and stream recordings (experimental), any RSS or Atom feed with video, or a file from your computer.
 - **Studio.** Its own tab: player, timeline, trim points and a caption editor. A hook check reads the first 3 seconds for you; phone view shows the 9:16 crop with the bands the apps cover; loop and sound-off playback show the clip the way a feed does. Quick looks, colours, size and a slider to place captions at any height.
 - **Automations.** Every channel you follow is one. Choose what happens to new videos and which account its clips are posted to; each source can use a different one. The same page sets how often to check, clips per video and clip length.
 - **Connections.** Connect Instagram, TikTok, YouTube Shorts, Bluesky or Facebook Reels, then post a clip by hand or let auto-export post for you. Instagram, TikTok and YouTube Shorts use unofficial routes, so the platform may ask you to confirm a login or restrict the account; use one you can afford to lose access to. Bluesky (handle and app password) and Facebook Reels (Page id and Page access token from your own Meta app) use the platforms' official APIs. All five are experimental and untested against the live services. LinkedIn, Snapchat Spotlight, Bilibili, Kwai and Likee are planned.

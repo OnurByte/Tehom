@@ -642,10 +642,50 @@ impl Tehom {
                     cx.notify();
                 }))
         };
+        use tehom_automation::LinkKind;
+        let typed = self.source_url.read(cx).value().trim().to_string();
+        let (link_platform, link_note) = match tehom_automation::link_kind(&typed) {
+            Some(LinkKind::YoutubeChannel) => (
+                Some(YOUTUBE),
+                "YouTube channel. Tehom follows it and makes clips from every new video.",
+            ),
+            Some(LinkKind::YoutubeVideo) => (
+                Some(YOUTUBE),
+                "YouTube video. Tehom makes clips from it once.",
+            ),
+            Some(LinkKind::KickChannel) => (
+                Some(KICK),
+                "Kick channel. Tehom follows it and makes clips from every new stream recording. Experimental.",
+            ),
+            Some(LinkKind::KickVideo) => (
+                Some(KICK),
+                "Kick stream recording. Tehom makes clips from it once. Experimental.",
+            ),
+            Some(LinkKind::Feed) => (
+                None,
+                "A feed link. Tehom looks for videos in it when you add it.",
+            ),
+            None if typed.is_empty() => (
+                None,
+                "A channel is followed for new videos. A single video is done once. RSS and Atom feeds with videos work too.",
+            ),
+            None => (
+                None,
+                "Tehom does not know this link. Paste the full address, like https://www.youtube.com/@name or https://kick.com/name.",
+            ),
+        };
         crate::theme::card(cx)
             .p(px(24.))
             .gap_4()
-            .child(div().text_lg().child("Paste a YouTube or Kick link"))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(platform_badge(YOUTUBE, 28., cx))
+                    .child(platform_badge(KICK, 28., cx))
+                    .child(div().text_lg().child("Paste a YouTube or Kick link")),
+            )
             .child(
                 div()
                     .flex()
@@ -678,9 +718,20 @@ impl Tehom {
                             })),
                     ),
             )
-            .child(div().text_sm().text_color(p.muted).child(
-                "A channel is followed for new videos. A single video is done once. RSS and Atom feeds with videos work too.",
-            ))
+            .child(
+                div()
+                    .id("link-kind")
+                    .test_support()
+                    .aria_label(link_note)
+                    .min_h(px(28.))
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_sm()
+                    .when(link_platform.is_none(), |row| row.text_color(p.muted))
+                    .children(link_platform.map(|platform| platform_badge(platform, 28., cx)))
+                    .child(div().flex_1().min_w_0().child(link_note)),
+            )
             .child(div().text_sm().child("What should Tehom make?"))
             .child(
                 div()
@@ -1094,9 +1145,27 @@ impl Render for Tehom {
         self.sync_studio(window, cx);
         self.sync_prefs(window, cx);
         self.sync_height_sliders(window, cx);
-        let update_tag = self
-            .available_update()
-            .map(|status| status.latest.tag.clone());
+        // Title, a kind word, and the release to install when one is waiting.
+        let update_card = match &self.update {
+            crate::about::UpdateState::Ready(status) if status.available && !self.update_later => {
+                Some((
+                    format!("Tehom {} is here", status.latest.tag),
+                    "A fresh version is ready whenever you are.",
+                    Some(status.latest.tag.clone()),
+                ))
+            }
+            crate::about::UpdateState::Installing(tag) => Some((
+                format!("Getting {tag} ready…"),
+                "Keep working. This takes a moment.",
+                None,
+            )),
+            crate::about::UpdateState::Installed(tag, _) => Some((
+                format!("{tag} is installed"),
+                "Restart Tehom to start using it.",
+                None,
+            )),
+            _ => None,
+        };
         let p = crate::theme::palette(cx);
         let menu = SidebarMenu::new().children(
             [
@@ -1182,15 +1251,72 @@ impl Render for Tehom {
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .when_some(update_tag, |footer, tag| {
+                    .when_some(update_card, |footer, (title, note, tag)| {
                         footer.child(
-                            Button::new("update-banner")
-                                .h(px(44.))
-                                .primary()
-                                .label(format!("Update to {tag}"))
-                                .on_click(
-                                    cx.listener(|view, _, _, cx| view.navigate(Page::About, cx)),
-                                ),
+                            div()
+                                .id("update-card")
+                                .test_support()
+                                .role(Role::Status)
+                                .aria_label(format!("{title}. {note}"))
+                                .p_3()
+                                .flex()
+                                .flex_col()
+                                .gap_2()
+                                .rounded(px(12.))
+                                .border_1()
+                                .border_color(p.accent)
+                                .bg(p.surface)
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .child(
+                                            svg()
+                                                .path("brand/icon.svg")
+                                                .flex_none()
+                                                .size(px(18.))
+                                                .text_color(p.accent),
+                                        )
+                                        .child(div().min_w_0().child(title)),
+                                )
+                                .child(div().text_sm().text_color(p.muted).child(note))
+                                .map(|card| match tag {
+                                    Some(tag) => card
+                                        .child(
+                                            Button::new("update-banner")
+                                                .h(px(44.))
+                                                .primary()
+                                                .label(format!("Update to {tag}"))
+                                                .disabled(self.backend.is_none())
+                                                .on_click(cx.listener(
+                                                    move |view, _, window, cx| {
+                                                        view.navigate(Page::About, cx);
+                                                        view.install_update(tag.clone(), window, cx)
+                                                    },
+                                                )),
+                                        )
+                                        .child(
+                                            Button::new("update-later")
+                                                .h(px(44.))
+                                                .ghost()
+                                                .label("Later")
+                                                .accessibility_label("Update later")
+                                                .text_color(p.text)
+                                                .on_click(cx.listener(|view, _, _, cx| {
+                                                    view.update_later = true;
+                                                    cx.notify();
+                                                })),
+                                        ),
+                                    None => card.child(
+                                        Button::new("update-details")
+                                            .h(px(44.))
+                                            .label("See details")
+                                            .on_click(cx.listener(|view, _, _, cx| {
+                                                view.navigate(Page::About, cx)
+                                            })),
+                                    ),
+                                }),
                         )
                     })
                     .child(div().text_xs().text_color(p.muted).child(format!(
@@ -1285,13 +1411,42 @@ impl Render for Tehom {
     }
 }
 
-/// Channel header: its picture (or the platform glyph), name, platform and follower count.
+/// A platform's glyph, name, badge colour and glyph colour.
+type Platform = (&'static str, &'static str, u32, u32);
+const YOUTUBE: Platform = ("icons/youtube.svg", "YouTube", 0xFFFFFF, 0xFF0000);
+const KICK: Platform = ("icons/kick.svg", "Kick", 0x0B0E0F, 0x53FC18);
+
+/// The platform's mark on a round badge in its own colours.
+fn platform_badge(
+    (glyph, _, background, foreground): Platform,
+    size: f32,
+    cx: &gpui_kit::App,
+) -> Div {
+    div()
+        .size(px(size))
+        .flex_none()
+        .rounded_full()
+        .border_1()
+        .border_color(crate::theme::palette(cx).border)
+        .bg(rgb(background))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            svg()
+                .path(glyph)
+                .size(px(size * 0.55))
+                .text_color(rgb(foreground)),
+        )
+}
+
+/// Channel header: its picture (or the platform mark), name, platform and follower count.
 pub(crate) fn source_header(source: &tehom_core::Source, cx: &gpui_kit::App) -> Div {
     let p = crate::theme::palette(cx);
     let platform = if source.url.contains("kick.com") {
-        Some(("brand/kick.svg", "Kick", 0x53FC18, 0x0B0E0F))
+        Some(KICK)
     } else if source.url.contains("youtube.com") {
-        Some(("brand/youtube.svg", "YouTube", 0xFF0000, 0xFFFFFF))
+        Some(YOUTUBE)
     } else {
         None
     };
@@ -1319,10 +1474,18 @@ pub(crate) fn source_header(source: &tehom_core::Source, cx: &gpui_kit::App) -> 
         .items_center()
         .justify_center();
     let picture = match (&source.avatar, platform) {
-        (Some(path), _) => picture.child(img(path.clone()).size_full()),
-        (None, Some((glyph, _, background, foreground))) => picture
-            .bg(rgb(background))
-            .child(svg().path(glyph).size(px(26.)).text_color(rgb(foreground))),
+        // The channel's own picture, with the platform's mark on its corner.
+        (Some(path), platform) => div()
+            .relative()
+            .flex_none()
+            .child(picture.child(img(path.clone()).size_full()))
+            .children(platform.map(|platform| {
+                platform_badge(platform, 20., cx)
+                    .absolute()
+                    .right(px(-4.))
+                    .bottom(px(-4.))
+            })),
+        (None, Some(platform)) => platform_badge(platform, 48., cx),
         (None, None) => picture.bg(p.surface),
     };
     div().flex().items_center().gap_3().child(picture).child(
