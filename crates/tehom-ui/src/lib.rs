@@ -108,6 +108,9 @@ pub struct Tehom {
     timeline: Entity<SliderState>,
     timeline_position: f32,
     scrubbing: bool,
+    /// Shows the picture cropped to 9:16 with the app-covered bands marked.
+    phone_view: bool,
+    repeat: studio::Repeat,
     _timeline_events: Subscription,
     _timeline_value: Subscription,
     total: f64,
@@ -277,6 +280,8 @@ impl Tehom {
             timeline,
             timeline_position: 0.,
             scrubbing: false,
+            phone_view: false,
+            repeat: studio::Repeat::Off,
             _timeline_events: timeline_events,
             _timeline_value: timeline_value,
             total: 0.,
@@ -311,6 +316,9 @@ impl Tehom {
         self.page = Page::Studio;
         self.pending_range = range;
         self.editing_clip = clip;
+        // Library clips are made for phones; a loose file keeps its own shape.
+        self.phone_view = clip.is_some();
+        self.repeat = studio::Repeat::Off;
         self.busy = true;
         self.status = "Opening video…".into();
         self.details = None;
@@ -443,6 +451,75 @@ impl Tehom {
         cx.notify();
     }
 
+    fn toggle_play(&mut self, cx: &mut Context<Self>) {
+        if let Some(preview) = &self.preview
+            && let Err(error) = preview.set_paused(!preview.snapshot().paused)
+        {
+            self.status = "Playback could not be changed.".into();
+            self.details = Some(error.to_string());
+        }
+        cx.notify();
+    }
+
+    fn toggle_muted(&mut self, cx: &mut Context<Self>) {
+        if let Some(preview) = &self.preview
+            && let Err(error) = preview.set_muted(!preview.snapshot().muted)
+        {
+            self.status = "The sound could not be changed.".into();
+            self.details = Some(error.to_string());
+        }
+        cx.notify();
+    }
+
+    /// The chosen start and end in seconds; the whole video until both are valid.
+    fn selection(&self, cx: &gpui_kit::App) -> (f64, f64) {
+        let read = |input: &Entity<InputState>| input.read(cx).value().parse::<f64>();
+        match (read(&self.start), read(&self.end)) {
+            (Ok(start), Ok(end)) if start >= 0. && end > start && end <= self.total + 0.0005 => {
+                (start, end.min(self.total))
+            }
+            _ => (0., self.total),
+        }
+    }
+
+    /// Replays the clip, or only its hook, the way a feed does. Choosing the
+    /// mode that is already on turns it off.
+    pub(crate) fn set_repeat(&mut self, repeat: studio::Repeat, cx: &mut Context<Self>) {
+        let repeat = if self.repeat == repeat {
+            studio::Repeat::Off
+        } else {
+            repeat
+        };
+        let (start, end) = self.selection(cx);
+        let range = match repeat {
+            studio::Repeat::Off => None,
+            studio::Repeat::Clip => Some((start, end)),
+            studio::Repeat::Hook => Some((start, end.min(start + studio::HOOK_MS as f64 / 1000.))),
+        }
+        .filter(|(from, to)| to > from)
+        .map(|(from, to)| (Duration::from_secs_f64(from), Duration::from_secs_f64(to)));
+        self.repeat = if range.is_some() {
+            repeat
+        } else {
+            studio::Repeat::Off
+        };
+        if let Some(preview) = &self.preview {
+            let result = preview.set_loop(range).and_then(|()| match range {
+                // The hook is watched from its first frame.
+                Some((from, _)) if repeat == studio::Repeat::Hook => {
+                    preview.seek(from).and_then(|()| preview.set_paused(false))
+                }
+                _ => Ok(()),
+            });
+            if let Err(error) = result {
+                self.repeat = studio::Repeat::Off;
+                self.status = "That part could not be replayed.".into();
+                self.details = Some(error.to_string());
+            }
+        }
+        cx.notify();
+    }
+
     fn seek(&mut self, seconds: f64, cx: &mut Context<Self>) {
         if let Some(preview) = &self.preview
             && let Err(error) = preview.seek(Duration::from_secs_f64(seconds.clamp(0., self.total)))
@@ -565,7 +642,8 @@ impl Tehom {
             .unwrap_or_default();
         let ready = self.preview.is_some();
         let position = snapshot.position.as_secs_f64();
-        let overlay = self.caption_overlay(position, cx);
+        let mut overlay = self.caption_overlay(position, cx);
+        let phone = self.phone_view && self.image.is_some();
         let panel = self.studio_panel(cx);
         let name = self
             .source
@@ -641,7 +719,48 @@ impl Tehom {
             .justify_center()
             .overflow_hidden()
             .when_some(self.image.clone(), |element, image| {
-                element.child(img(image).size_full().object_fit(ObjectFit::Contain))
+                if !phone {
+                    return element.child(img(image).size_full().object_fit(ObjectFit::Contain));
+                }
+                // Filled and centre-cropped like the vertical export.
+                // shortcut: one set of bands for every app (top 12%, bottom
+                // 20%, right 12%); the apps differ by a few percent, so add
+                // per-app guides if captions must sit closer to an edge.
+                let covered = || div().absolute().bg(gpui_kit::rgba(0xFF3B_3059));
+                element.child(
+                    div()
+                        .id("phone-view")
+                        .aria_label(
+                            "Phone view. The red bands are where the app's buttons and text cover the video.",
+                        )
+                        .h_full()
+                        .aspect_ratio(9. / 16.)
+                        .relative()
+                        .overflow_hidden()
+                        .child(img(image).size_full().object_fit(ObjectFit::Cover))
+                        .child(
+                            covered()
+                                .top_0()
+                                .left_0()
+                                .right_0()
+                                .h(gpui_kit::relative(studio::COVERED_TOP)),
+                        )
+                        .child(
+                            covered()
+                                .bottom_0()
+                                .left_0()
+                                .right_0()
+                                .h(gpui_kit::relative(studio::COVERED_BOTTOM)),
+                        )
+                        .child(
+                            covered()
+                                .right_0()
+                                .top(gpui_kit::relative(studio::COVERED_TOP))
+                                .bottom(gpui_kit::relative(studio::COVERED_BOTTOM))
+                                .w(gpui_kit::relative(0.12)),
+                        )
+                        .children(overlay.take()),
+                )
             })
             .when(self.image.is_none(), |element| {
                 element.child(if self.busy {
@@ -657,7 +776,7 @@ impl Tehom {
             .focusable()
             .tab_stop(true)
             .aria_label(
-                "Timeline. Use the arrow keys to move, Home and End to jump to the start or end.",
+                "Timeline. Use the arrow keys to move, Home and End to jump to the start or end, Space to play or pause.",
             )
             .border_1()
             .border_color(p.border)
@@ -675,6 +794,10 @@ impl Tehom {
                     "right" => position + 1.,
                     "home" => 0.,
                     "end" => view.total,
+                    "space" => {
+                        cx.stop_propagation();
+                        return view.toggle_play(cx);
+                    }
                     _ => return,
                 };
                 cx.stop_propagation();
@@ -686,6 +809,14 @@ impl Tehom {
                     .accessibility_label("Choose a time in the video")
                     .w_full(),
             );
+        let toggle = |id: &'static str, label: &'static str, on: bool| {
+            Button::new(id)
+                .h(px(44.))
+                .label(label)
+                .when(on, |button| button.primary())
+                .toggled(on)
+                .disabled(!ready)
+        };
         let transport = div()
             .flex()
             .gap_2()
@@ -712,15 +843,7 @@ impl Tehom {
                     })
                     .label(if snapshot.paused { "Play" } else { "Pause" })
                     .disabled(!ready)
-                    .on_click(cx.listener(|view, _, _, cx| {
-                        if let Some(preview) = &view.preview
-                            && let Err(error) = preview.set_paused(!preview.snapshot().paused)
-                        {
-                            view.status = "Playback could not be changed.".into();
-                            view.details = Some(error.to_string());
-                        }
-                        cx.notify();
-                    })),
+                    .on_click(cx.listener(|view, _, _, cx| view.toggle_play(cx))),
             )
             .child(
                 Button::new("forward")
@@ -734,7 +857,32 @@ impl Tehom {
                     .px_2()
                     .child(format!("{} / {}", stamp(position), stamp(self.total))),
             )
+            .child(
+                toggle(
+                    "watch-hook",
+                    "Watch the hook",
+                    self.repeat == studio::Repeat::Hook,
+                )
+                .on_click(cx.listener(|view, _, _, cx| view.set_repeat(studio::Repeat::Hook, cx))),
+            )
+            .child(
+                toggle("loop", "Loop", self.repeat == studio::Repeat::Clip).on_click(
+                    cx.listener(|view, _, _, cx| view.set_repeat(studio::Repeat::Clip, cx)),
+                ),
+            )
+            .child(
+                toggle("phone-view-toggle", "Phone view", self.phone_view).on_click(cx.listener(
+                    |view, _, _, cx| {
+                        view.phone_view = !view.phone_view;
+                        cx.notify();
+                    },
+                )),
+            )
             .child(div().flex_1())
+            .child(
+                toggle("mute", "Sound off", snapshot.muted)
+                    .on_click(cx.listener(|view, _, _, cx| view.toggle_muted(cx))),
+            )
             .child(
                 Button::new("volume-down")
                     .h(px(44.))
@@ -1123,6 +1271,27 @@ mod tests {
             assert!(
                 std::time::Instant::now() < deadline,
                 "keyboard seek stayed at {position}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // The hook replays from the start with the sound off.
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("watch-hook", cx);
+            window.click("mute", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert!(cx.update(|cx| view.read(cx).repeat == studio::Repeat::Hook));
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let snapshot = cx.update(|cx| view.read(cx).preview.as_ref().unwrap().snapshot());
+            if snapshot.muted && !snapshot.paused && snapshot.position < Duration::from_secs(3) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the hook did not replay: {snapshot:?}"
             );
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -1596,6 +1765,14 @@ mod tests {
             assert_eq!(
                 view.read(cx).studio.as_ref().unwrap().style.vertical,
                 Some(33)
+            );
+            window.render_frame(cx);
+            // The Hook section sits above the look, so the position buttons
+            // start below the fold.
+            window.scroll(
+                "studio-panel",
+                gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-400.))),
+                cx,
             );
             window.render_frame(cx);
             window.click(("look-position", 0usize), cx);

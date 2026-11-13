@@ -24,6 +24,7 @@ pub struct Snapshot {
     pub duration: Duration,
     pub paused: bool,
     pub volume: f64,
+    pub muted: bool,
     pub ended: bool,
     pub error: Option<String>,
 }
@@ -38,7 +39,9 @@ struct Shared {
 enum Control {
     Paused(bool),
     Volume(f64),
+    Muted(bool),
     Seek(Duration),
+    Loop(Option<(Duration, Duration)>),
 }
 
 pub struct Preview {
@@ -191,6 +194,21 @@ impl Preview {
         }
         self.send(Control::Volume(volume))
     }
+    /// Sound off, the way many people meet a clip in a feed.
+    pub fn set_muted(&self, muted: bool) -> io::Result<()> {
+        self.send(Control::Muted(muted))
+    }
+    /// Plays `from..to` over and over, like a feed replays a short clip;
+    /// `None` plays on to the end as usual.
+    pub fn set_loop(&self, range: Option<(Duration, Duration)>) -> io::Result<()> {
+        if range.is_some_and(|(from, to)| from >= to || from > self.snapshot().duration) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "That part is outside the video",
+            ));
+        }
+        self.send(Control::Loop(range))
+    }
     pub fn seek(&self, position: Duration) -> io::Result<()> {
         if position > self.snapshot().duration {
             return Err(io::Error::new(
@@ -216,6 +234,15 @@ fn run_worker(pipeline: &gst::Element, receiver: &mpsc::Receiver<Control>, share
         lock(&shared.snapshot).error = Some("Video events could not be read".into());
         return;
     };
+    let seek = |position: Duration| {
+        pipeline
+            .seek_simple(
+                gst::SeekFlags::FLUSH | gst::SeekFlags::ACCURATE,
+                gst::ClockTime::from_nseconds(position.as_nanos() as u64),
+            )
+            .map_err(|error| error.to_string())
+    };
+    let mut repeat = None;
     while !shared.stop.load(Ordering::Acquire) {
         match receiver.recv_timeout(Duration::from_millis(10)) {
             Ok(command) => {
@@ -244,14 +271,17 @@ fn run_worker(pipeline: &gst::Element, receiver: &mpsc::Receiver<Control>, share
                         pipeline.set_property("volume", volume);
                         Ok(())
                     }
+                    Control::Muted(muted) => {
+                        pipeline.set_property("mute", muted);
+                        Ok(())
+                    }
                     Control::Seek(position) => {
                         lock(&shared.snapshot).ended = false;
-                        pipeline
-                            .seek_simple(
-                                gst::SeekFlags::FLUSH | gst::SeekFlags::ACCURATE,
-                                gst::ClockTime::from_nseconds(position.as_nanos() as u64),
-                            )
-                            .map_err(|error| error.to_string())
+                        seek(position)
+                    }
+                    Control::Loop(range) => {
+                        repeat = range;
+                        Ok(())
                     }
                 };
                 if let Err(error) = result {
@@ -267,6 +297,12 @@ fn run_worker(pipeline: &gst::Element, receiver: &mpsc::Receiver<Control>, share
                     lock(&shared.snapshot).error = Some(error.error().to_string());
                 }
                 gst::MessageView::Eos(_) => {
+                    // A loop that runs to the last frame starts over here.
+                    if let Some((from, _)) = repeat
+                        && seek(from).is_ok()
+                    {
+                        continue;
+                    }
                     lock(&shared.snapshot).ended = true;
                     if let Err(error) = pipeline.set_state(gst::State::Paused) {
                         lock(&shared.snapshot).error = Some(error.to_string());
@@ -275,6 +311,22 @@ fn run_worker(pipeline: &gst::Element, receiver: &mpsc::Receiver<Control>, share
                 _ => {}
             }
         }
+        let (position, paused) = update_snapshot(pipeline, shared);
+        if let Some((from, to)) = repeat
+            && !paused
+            && position >= to
+        {
+            match seek(from) {
+                // Until the seek lands the old position is still reported.
+                Ok(()) => lock(&shared.snapshot).position = from,
+                Err(error) => lock(&shared.snapshot).error = Some(error),
+            }
+        }
+    }
+}
+
+fn update_snapshot(pipeline: &gst::Element, shared: &Shared) -> (Duration, bool) {
+    {
         let mut snapshot = lock(&shared.snapshot);
         snapshot.position = pipeline
             .query_position::<gst::ClockTime>()
@@ -285,7 +337,9 @@ fn run_worker(pipeline: &gst::Element, receiver: &mpsc::Receiver<Control>, share
             .map(|t| t.into())
             .unwrap_or(snapshot.duration);
         snapshot.volume = pipeline.property::<f64>("volume");
+        snapshot.muted = pipeline.property::<bool>("mute");
         snapshot.paused = pipeline.state(gst::ClockTime::ZERO).1 == gst::State::Paused;
+        (snapshot.position, snapshot.paused)
     }
 }
 
@@ -388,6 +442,29 @@ mod tests {
             assert!(Instant::now() < deadline);
             std::thread::sleep(Duration::from_millis(10));
         }
+        preview.set_muted(true).unwrap();
+        assert!(
+            preview
+                .set_loop(Some((Duration::from_secs(2), Duration::from_secs(1))))
+                .is_err()
+        );
+        preview
+            .set_loop(Some((
+                Duration::from_millis(500),
+                Duration::from_millis(1000),
+            )))
+            .unwrap();
+        preview.seek(Duration::from_millis(500)).unwrap();
+        preview.set_paused(false).unwrap();
+        // Three times the loop's length: without the loop it would be at 2 s.
+        std::thread::sleep(Duration::from_millis(1500));
+        let looped = preview.snapshot();
+        assert!(looped.muted, "mute did not reach the audio pipeline");
+        assert!(!looped.paused);
+        assert!(
+            looped.position < Duration::from_millis(1300),
+            "playback left the loop: {looped:?}"
+        );
         let weak = Arc::downgrade(&preview.shared);
         drop(preview);
         let deadline = Instant::now() + Duration::from_secs(3);
