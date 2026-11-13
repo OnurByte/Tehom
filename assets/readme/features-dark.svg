@@ -13,12 +13,13 @@
 <rect x="328.5" y="48.5" width="303.0" height="151" rx="12" fill="#000000" stroke="#404040"/>
 <rect x="328.5" y="48.5" width="303.0" height="151" rx="12" fill="none" stroke="url(#tr)"/>
 <rect x="328.5" y="48.5" width="303.0" height="151" rx="12" fill="none" stroke="url(#bl)"/>
-<svg x="348.0" y="68" width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><g fill="none" stroke="url(#iface)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" filter="url(#idepth)"><circle cx="16" cy="16" r="12"/><path d="M16 9 V16 L21 19"/></g></svg>
+<svg x="348.0" y="68" width="32" height="32" viewBox="0 0 24 24" aria-hidden="true"><path fill="url(#iface24)" d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>
+<svg x="392.0" y="68" width="32" height="32" viewBox="0 0 24 24" aria-hidden="true"><path fill="url(#iface24)" d="M1.333 0h8v5.333H12V2.667h2.667V0h8v8H20v2.667h-2.667v2.666H20V16h2.667v8h-8v-2.667H12v-2.666H9.333V24h-8Z"/></svg>
 <rect x="555.5" y="72.5" width="56.0" height="23" rx="8" fill="none" stroke="#404040"/>
 <text x="583.5" y="88" font-size="13" font-weight="400" fill="#ffffff" text-anchor="middle" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">Works</text>
 <text x="348.0" y="124" font-size="16" font-weight="500" fill="#ffffff" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">Watches sources</text>
-<text x="348.0" y="152" font-size="14" font-weight="400" fill="#ffffff" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">Channels and RSS feeds turn new</text>
-<text x="348.0" y="174" font-size="14" font-weight="400" fill="#ffffff" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">videos into clips on their own.</text>
+<text x="348.0" y="152" font-size="14" font-weight="400" fill="#ffffff" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">YouTube, RSS and (experimental) Kick</text>
+<text x="348.0" y="174" font-size="14" font-weight="400" fill="#ffffff" text-anchor="start" font-family="&quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif">channels turn new videos into clips.</text>
 <rect x="656.5" y="48.5" width="303.0" height="151" rx="12" fill="#000000" stroke="#404040"/>
 <rect x="656.5" y="48.5" width="303.0" height="151" rx="12" fill="none" stroke="url(#tr)"/>
 <rect x="656.5" y="48.5" width="303.0" height="151" rx="12" fill="none" stroke="url(#bl)"/>
