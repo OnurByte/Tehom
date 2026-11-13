@@ -4040,3 +4040,34 @@ fn youtube_rolling_captions_lose_timestamps_tags_and_repeats() {
     assert_eq!(lines[0], "[0-2000] merhaba dünya nasılsın");
     assert_eq!(lines[1], "[2010-4000] iyiyim & sen");
 }
+
+#[test]
+fn link_kind_agrees_with_what_adding_accepts() {
+    let uuid = "0123abcd-4567-89ef-0123-456789abcdef";
+    for (link, kind) in [
+        (
+            "https://www.youtube.com/@some.channel",
+            Some(LinkKind::YoutubeChannel),
+        ),
+        (
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            Some(LinkKind::YoutubeVideo),
+        ),
+        (
+            "https://kick.com/Some_Streamer",
+            Some(LinkKind::KickChannel),
+        ),
+        (
+            &*format!("https://kick.com/video/{uuid}"),
+            Some(LinkKind::KickVideo),
+        ),
+        ("https://example.org/feed.xml", Some(LinkKind::Feed)),
+        ("https://www.youtube.com/playlist?list=PL1", None),
+        ("https://kick.com/a/b", None),
+        ("http://example.org/feed.xml", None),
+        ("some words", None),
+        ("", None),
+    ] {
+        assert_eq!(link_kind(link), kind, "{link}");
+    }
+}

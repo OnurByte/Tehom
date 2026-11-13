@@ -92,7 +92,7 @@ impl Tehom {
         .detach();
     }
 
-    fn install_update(&mut self, tag: String, window: &Window, cx: &mut Context<Self>) {
+    pub(crate) fn install_update(&mut self, tag: String, window: &Window, cx: &mut Context<Self>) {
         let Some(backend) = self.backend.clone() else {
             return;
         };
