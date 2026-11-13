@@ -268,6 +268,16 @@ impl Client {
                     .await
                     .map_err(|_| error)
             }
+            // The Bloks reply carries every screen's text, so a "wrong password"
+            // guess from it can be false; only the old flow's structured
+            // bad_password answer counts as certain.
+            Err(Error::BadCredentials) => match self.login_legacy(username, password).await {
+                Err(Error::BadCredentials) => Err(Error::BadCredentials),
+                Err(_) => Err(Error::Protocol(
+                    "Instagram did not accept this sign-in; it may distrust this network or device. Wait a while or approve the login in the Instagram app, then try again".into(),
+                )),
+                done => done,
+            },
             Err(error) => Err(error),
         }
     }
