@@ -63,7 +63,7 @@ Tehom lists the models your choice offers, with a plain note on how capable each
 - **Sources.** YouTube channels and videos, Kick videos, any RSS or Atom feed with video, or a file from your computer.
 - **Studio.** Its own tab: player, timeline, trim points and a caption editor. Quick looks, colours, size and a slider to place captions at any height.
 - **Automations.** Every channel you follow is one. Choose what happens to new videos and which account its clips are posted to; each source can use a different one. The same page sets how often to check, clips per video and clip length.
-- **Connections.** Connect Instagram, TikTok or YouTube Shorts, then post a clip by hand or let auto-export post for you. All three use unofficial routes and are experimental, so the platform may ask you to confirm a login or restrict the account. Use one you can afford to lose access to.
+- **Connections.** Connect Instagram, TikTok or YouTube Shorts, then post a clip by hand or let auto-export post for you. All three use unofficial routes and are experimental, so the platform may ask you to confirm a login or restrict the account. Use one you can afford to lose access to. Kwai and Likee are planned.
 - **Your colours.** Light or dark, plus six accent colours. Press **Ctrl+K** (**Cmd+K** on Mac) or click the search box to find any action.
 
 ---

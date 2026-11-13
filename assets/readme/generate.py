@@ -190,7 +190,7 @@ for theme in THEMES:
         c.pill(x + item_w - 20, y + 24, status)
         c.text(x + 20, y + 76, title, size=16, weight=500)
         wrap(c, x + 20, y + 104, lines)
-    planned = "Also ⁜ Light and dark mode ⁜ Ctrl+K command palette ⁜ never overwrites files"
+    planned = "Also ⁜ Light and dark mode ⁜ Ctrl+K command palette ⁜ never overwrites files ⁜ Soon ⁜ Kwai ⁜ Likee"
     c.text(0, 48 + 2 * item_h + gap + 40, planned, size=14, muted=True)
     height = 48 + 2 * item_h + gap + 56
     c.save("features", theme, height, "What it does")
