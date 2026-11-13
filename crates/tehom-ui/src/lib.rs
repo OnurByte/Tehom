@@ -1830,14 +1830,18 @@ mod tests {
                 Some(33)
             );
             window.render_frame(cx);
-            // The Hook section sits above the look, so the position buttons
-            // start below the fold.
-            window.scroll(
-                "studio-panel",
-                gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-400.))),
-                cx,
-            );
-            window.render_frame(cx);
+            // The position buttons can start below the fold, and how far
+            // depends on the machine's fonts: scroll by what is measured.
+            let below = window.find(("look-position", 0usize)).bounds().bottom()
+                - window.find("studio-panel").bounds().bottom();
+            if below > px(-24.) {
+                window.scroll(
+                    "studio-panel",
+                    gpui_kit::ScrollDelta::Pixels(point(px(0.), -(below + px(24.)))),
+                    cx,
+                );
+                window.render_frame(cx);
+            }
             window.click(("look-position", 0usize), cx);
             let style = &view.read(cx).studio.as_ref().unwrap().style;
             assert_eq!(
