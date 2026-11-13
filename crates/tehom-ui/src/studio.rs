@@ -79,6 +79,75 @@ pub(crate) fn height_percent(style: &CaptionStyle) -> u8 {
     })
 }
 
+/// How long a viewer gives a clip before swiping on. The apps publish no
+/// number; three seconds is the working figure creators and the apps'
+/// own analytics (3-second views, viewed vs swiped away) are built around.
+pub(crate) const HOOK_MS: u64 = 3000;
+/// The share of a 9:16 frame the apps cover with their own buttons and text.
+pub(crate) const COVERED_TOP: f32 = 0.12;
+pub(crate) const COVERED_BOTTOM: f32 = 0.20;
+
+/// What the player replays.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum Repeat {
+    Off,
+    Clip,
+    Hook,
+}
+
+/// The words on screen during the hook, and what would lose a viewer there.
+/// No notes means nothing stands out, not that the clip will do well.
+pub(crate) fn hook_check(cues: &[Cue], style: &CaptionStyle) -> (String, Vec<String>) {
+    let words = cues
+        .iter()
+        .filter(|cue| cue.start_ms < HOOK_MS)
+        .map(|cue| cue.text.trim())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if !style.enabled {
+        return (
+            String::new(),
+            vec!["Captions are off. Anyone watching with the sound off gets no words.".into()],
+        );
+    }
+    let mut notes = Vec::new();
+    match cues.first() {
+        None => notes.push("There are no words on screen in the first 3 seconds.".into()),
+        // A second of nothing is a third of the hook.
+        Some(first) if first.start_ms >= 1000 => notes.push(format!(
+            "Nothing to read for the first {:.1} seconds. Start the clip closer to the first words.",
+            first.start_ms as f64 / 1000.
+        )),
+        Some(_) => {}
+    }
+    // 20 characters a second is the usual subtitling ceiling for adult readers.
+    let rushed = cues
+        .iter()
+        .filter(|cue| {
+            cue.text.trim().chars().count() as u64 * 1000
+                > 20 * cue.end_ms.saturating_sub(cue.start_ms)
+        })
+        .count();
+    if rushed > 0 {
+        notes.push(format!(
+            "{rushed} caption {} too fast to read. Shorten the words.",
+            if rushed == 1 {
+                "line passes"
+            } else {
+                "lines pass"
+            }
+        ));
+    }
+    let height = f32::from(height_percent(style)) / 100.;
+    if height < COVERED_TOP || height > 1. - COVERED_BOTTOM {
+        notes.push(
+            "Captions sit where the app's own buttons and text cover the video. Move them towards the middle."
+                .into(),
+        );
+    }
+    (words, notes)
+}
+
 /// Which caption look a control edits.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Look {
@@ -564,6 +633,21 @@ impl Tehom {
             .as_ref()
             .and_then(|s| s.clips.iter().find(|clip| clip.id == studio.clip_id))
             .cloned();
+        let typed: Vec<Cue> = studio
+            .lines
+            .iter()
+            .map(|(cue, input)| Cue {
+                text: input.read(cx).value().to_string(),
+                ..cue.clone()
+            })
+            .collect();
+        let (hook_words, hook_notes) = hook_check(&typed, &studio.style);
+        let clear = hook_notes.is_empty();
+        let hook_summary = if clear {
+            "Nothing stands out. Press Watch the hook, with Sound off, to be sure.".to_string()
+        } else {
+            hook_notes.join(" ")
+        };
         let list = uniform_list(
             "caption-lines",
             count,
@@ -628,6 +712,7 @@ impl Tehom {
         Some(
             div()
                 .id("studio-panel")
+                .test_support()
                 .w(px(400.))
                 .flex_shrink_0()
                 .min_h_0()
@@ -638,6 +723,27 @@ impl Tehom {
                 .flex()
                 .flex_col()
                 .gap_4()
+                .child(div().text_xl().child("Hook"))
+                .child(div().text_sm().text_color(p.muted).child(
+                    "People decide to stay or swipe in about 3 seconds, often with the sound off.",
+                ))
+                .when(!hook_words.is_empty(), |panel| {
+                    panel.child(div().child(format!("They read: “{hook_words}”")))
+                })
+                .child(
+                    div()
+                        .id("hook-notes")
+                        .test_support()
+                        .aria_label(hook_summary.clone())
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .text_sm()
+                        .children(hook_notes.into_iter().map(|note| div().child(note)))
+                        .when(clear, |notes| {
+                            notes.text_color(p.muted).child(hook_summary.clone())
+                        }),
+                )
                 .child(div().text_xl().child("Captions"))
                 .child(div().text_sm().text_color(p.muted).child(if count == 0 {
                     "This clip has no caption lines.".to_string()
@@ -834,5 +940,48 @@ impl Tehom {
                 )
             })
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cue(start_ms: u64, end_ms: u64, text: &str) -> Cue {
+        Cue {
+            start_ms,
+            end_ms,
+            text: text.into(),
+        }
+    }
+
+    #[test]
+    fn hook_check_names_what_loses_a_viewer() {
+        let style = CaptionStyle::default();
+        let good = [
+            cue(0, 1500, "Nobody tells you this"),
+            cue(3200, 5000, "later"),
+        ];
+        assert_eq!(
+            hook_check(&good, &style),
+            ("Nobody tells you this".into(), Vec::new())
+        );
+
+        let late = [cue(1400, 1600, "A line far too long to read in a blink")];
+        let (_, notes) = hook_check(&late, &style);
+        assert!(notes[0].contains("first 1.4 seconds"), "{notes:?}");
+        assert!(notes[1].starts_with("1 caption line passes"), "{notes:?}");
+
+        let low = CaptionStyle {
+            vertical: Some(90),
+            ..style.clone()
+        };
+        assert!(hook_check(&good, &low).1[0].contains("cover the video"));
+
+        let off = CaptionStyle {
+            enabled: false,
+            ..style
+        };
+        assert!(hook_check(&good, &off).1[0].starts_with("Captions are off"));
     }
 }
