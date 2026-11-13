@@ -16,6 +16,11 @@ source = (Path(__file__).resolve().parents[1] / "brand" / "icon.svg").read_text(
 MARK_PATH = re.search(r' d="([^"]+)"', source).group(1)
 assert 'fill-rule="evenodd"' in source and 'viewBox="0 0 512 512"' in source
 
+ICON_DIR = Path(__file__).resolve().parents[1] / "icons"
+# Brand glyphs, path data unchanged from assets/icons (Simple Icons, CC0).
+GLYPHS = {n: re.search(r' d="([^"]+)"', (ICON_DIR / f"{n}.svg").read_text()).group(1)
+          for n in ("instagram", "tiktok", "youtubeshorts")}
+
 THEMES = {
     "dark": dict(background="#000000", text="#ffffff", muted="#ffffff", border="#404040",
                  surface="#222222", face=("#ffffff", "#a0a0a0"), shadow=("#606060", 0.95)),
@@ -67,6 +72,8 @@ class Canvas:
             f'<stop offset="0" stop-color="{self.t["face"][0]}"/><stop offset="1" stop-color="{self.t["face"][1]}"/></linearGradient>',
             f'<linearGradient id="iface" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">'
             f'<stop offset="0" stop-color="{self.t["face"][0]}"/><stop offset="1" stop-color="{self.t["face"][1]}"/></linearGradient>',
+            f'<linearGradient id="iface24" x1="0" y1="0" x2="24" y2="24" gradientUnits="userSpaceOnUse">'
+            f'<stop offset="0" stop-color="{self.t["face"][0]}"/><stop offset="1" stop-color="{self.t["face"][1]}"/></linearGradient>',
             f'<filter id="idepth" x="-20%" y="-20%" width="150%" height="150%">'
             f'<feDropShadow dx="0.64" dy="1.28" stdDeviation="0.16" flood-color="{self.t["shadow"][0]}" '
             f'flood-opacity="{self.t["shadow"][1]}"/></filter>',
@@ -100,6 +107,11 @@ class Canvas:
             f'<svg x="{x}" y="{y}" width="{size}" height="{size}" viewBox="0 0 32 32" aria-hidden="true">'
             f'<g fill="none" stroke="url(#iface)" stroke-width="2.4" stroke-linecap="round" '
             f'stroke-linejoin="round" filter="url(#idepth)">{ICONS[name]}</g></svg>')
+
+    def glyph(self, x, y, name, size=32):
+        self.parts.append(
+            f'<svg x="{x}" y="{y}" width="{size}" height="{size}" viewBox="0 0 24 24" aria-hidden="true">'
+            f'<path fill="url(#iface24)" d="{GLYPHS[name]}"/></svg>')
 
     def mark(self, x, y, size):
         s = size
@@ -167,7 +179,7 @@ for theme in THEMES:
         ("spark", "Your AI, your choice", ["OpenAI, Anthropic, Gemini, OpenRouter,", "Codex, Claude Code or a local model."], "Works"),
         ("captions", "Captions you can edit", ["Written on this computer, burned in,", "with colour, size and sound."], "Works"),
         ("local", "Private by default", ["Videos stay here; only captions go to", "the AI you allow. You choose what posts."], "Works"),
-        ("lab", "Instagram Reels", ["Post clips from the app. Uses the", "unofficial mobile protocol."], "Experimental"),
+        ("lab", "Instagram and TikTok", ["Post clips from the app, by hand", "or automatically. Unofficial routes."], "Experimental"),
     ]
     c.text(0, 26, "What it does", size=18)
     item_w, item_h, gap = (WIDTH - 2 * 24) / 3, 152, 24
@@ -178,7 +190,25 @@ for theme in THEMES:
         c.pill(x + item_w - 20, y + 24, status)
         c.text(x + 20, y + 76, title, size=16, weight=500)
         wrap(c, x + 20, y + 104, lines)
-    planned = "Also ⁜ Light and dark mode ⁜ Ctrl+K command palette ⁜ never overwrites files ⁜ Soon ⁜ YouTube Shorts ⁜ TikTok"
+    planned = "Also ⁜ Light and dark mode ⁜ Ctrl+K command palette ⁜ never overwrites files ⁜ Soon ⁜ YouTube Shorts"
     c.text(0, 48 + 2 * item_h + gap + 40, planned, size=14, muted=True)
     height = 48 + 2 * item_h + gap + 56
     c.save("features", theme, height, "What it does")
+
+    # Posting: one card per platform with its glyph and a plain status.
+    c = Canvas(theme)
+    c.text(0, 26, "Post where your audience is", size=18)
+    platforms = [
+        ("instagram", "Instagram Reels", ["Sign in once in the app.", "Post by hand or automatically."], "Experimental"),
+        ("tiktok", "TikTok", ["Sign in once in a browser window.", "Post by hand or automatically."], "Experimental"),
+        ("youtubeshorts", "YouTube Shorts", ["Save the MP4 for now.", "Posting is planned."], "Soon"),
+    ]
+    item_w, item_h, gap = (WIDTH - 2 * 24) / 3, 152, 24
+    for i, (glyph, title, lines, status) in enumerate(platforms):
+        x, y = i * (item_w + gap), 48
+        c.card(x, y, item_w, item_h)
+        c.glyph(x + 20, y + 20, glyph)
+        c.pill(x + item_w - 20, y + 24, status)
+        c.text(x + 20, y + 84, title, size=16, weight=500)
+        wrap(c, x + 20, y + 110, lines)
+    c.save("post", theme, 48 + item_h + 8, "Post to Instagram Reels and TikTok; YouTube Shorts soon")

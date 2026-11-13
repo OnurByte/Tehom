@@ -1,5 +1,5 @@
 //! Posting clips: the per-clip "Post" row and the Connections cards.
-//! Only Instagram works; YouTube Shorts and TikTok are shown as coming soon.
+//! Instagram and TikTok work; YouTube Shorts is shown as coming soon.
 use super::*;
 use crate::automation_ui::Action;
 use gpui_kit::Focusable as _;
@@ -42,6 +42,14 @@ impl InstagramForm {
     }
 }
 
+/// "@name", with the platform when it is not Instagram.
+pub(crate) fn account_label(account: &tehom_core::Account) -> String {
+    match account.platform {
+        Platform::Instagram => format!("@{}", account.username),
+        platform => format!("@{} ({})", account.username, platform.label()),
+    }
+}
+
 pub(crate) fn icon(platform: Platform) -> gpui_kit::component::Icon {
     gpui_kit::component::Icon::empty().path(match platform {
         Platform::Instagram => "icons/instagram.svg",
@@ -67,10 +75,22 @@ impl Tehom {
         window.focus(&handle, cx);
     }
 
-    fn open_publish_form(&mut self, clip: &Clip, window: &mut Window, cx: &mut Context<Self>) {
-        let accounts = self.instagram_accounts();
-        if accounts.is_empty() {
-            self.connect_instagram(window, cx);
+    fn open_publish_form(
+        &mut self,
+        clip: &Clip,
+        platform: Platform,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let on_platform = self.accounts_on(platform);
+        if on_platform.is_empty() {
+            match platform {
+                Platform::Instagram => self.connect_instagram(window, cx),
+                _ => {
+                    self.navigate(Page::Connections, cx);
+                    self.status = format!("Connect {} first.", platform.label());
+                }
+            }
             return;
         }
         if self.publish_open == Some(clip.id) {
@@ -80,28 +100,44 @@ impl Tehom {
             let title = clip.title.clone();
             self.publish_caption
                 .update(cx, |state, cx| state.set_value(title, window, cx));
-            if !accounts.iter().any(|a| Some(a.id) == self.publish_account) {
-                self.publish_account = accounts
+            if !on_platform
+                .iter()
+                .any(|a| Some(a.id) == self.publish_account)
+            {
+                self.publish_account = on_platform
                     .iter()
                     .find(|a| !a.needs_login)
-                    .or(accounts.first())
+                    .or(on_platform.first())
                     .map(|a| a.id);
             }
         }
         cx.notify();
     }
 
-    pub(crate) fn instagram_accounts(&self) -> Vec<tehom_core::Account> {
+    /// Every connected account Tehom can post to.
+    pub(crate) fn publish_accounts(&self) -> Vec<tehom_core::Account> {
         self.engine_snapshot
             .as_ref()
             .map(|s| {
                 s.accounts
                     .iter()
-                    .filter(|a| a.platform == Platform::Instagram)
+                    .filter(|a| a.platform.available())
                     .cloned()
                     .collect()
             })
             .unwrap_or_default()
+    }
+    pub(crate) fn accounts_on(&self, platform: Platform) -> Vec<tehom_core::Account> {
+        let mut accounts = self.publish_accounts();
+        accounts.retain(|a| a.platform == platform);
+        accounts
+    }
+    /// The platform of an account, Instagram when it is unknown.
+    pub(crate) fn platform_of(&self, account: i64) -> Platform {
+        self.publish_accounts()
+            .iter()
+            .find(|a| a.id == account)
+            .map_or(Platform::Instagram, |a| a.platform)
     }
 
     /// "Post" with Instagram, YouTube Shorts and TikTok, plus the form and
@@ -111,7 +147,7 @@ impl Tehom {
         let unavailable = self.backend.is_none() || self.source_busy;
         let id = clip.id;
         let key = id as usize;
-        let accounts = self.instagram_accounts();
+        let accounts = self.publish_accounts();
         let latest = self
             .engine_snapshot
             .as_ref()
@@ -125,6 +161,10 @@ impl Tehom {
             .find(|a| Some(a.id) == self.publish_account)
             .cloned();
         let open_clip = clip.clone();
+        let target = account.as_ref().map_or(Platform::Instagram, |a| a.platform);
+        let latest_platform = latest
+            .as_ref()
+            .map_or(target, |l| self.platform_of(l.account_id));
         div()
             .flex()
             .flex_col()
@@ -143,7 +183,7 @@ impl Tehom {
                             Platform::YoutubeShorts => {
                                 ("post-shorts", format!("{} · Soon", platform.label()))
                             }
-                            Platform::Tiktok => ("post-tiktok", format!("{} · Soon", platform.label())),
+                            Platform::Tiktok => ("post-tiktok", "TikTok".to_string()),
                         };
                         let clip = open_clip.clone();
                         Button::new((name, key))
@@ -155,23 +195,24 @@ impl Tehom {
                             } else {
                                 platform.label().to_string()
                             })
-                            .when(form_open && !soon, |button| button.primary())
+                            .when(form_open && !soon && target == platform, |button| button.primary())
                             .disabled(soon)
                             .on_click(cx.listener(move |view, _, window, cx| {
-                                view.open_publish_form(&clip, window, cx)
+                                view.open_publish_form(&clip, platform, window, cx)
                             }))
                     })),
             )
             .when_some(latest.clone(), |row, publication| {
+                let name = latest_platform.label();
                 let message = match publication.state.as_str() {
-                    "uploading" => "Posting to Instagram…".to_string(),
-                    "published" => "Posted to Instagram.".to_string(),
+                    "uploading" => format!("Posting to {name}…"),
+                    "published" => format!("Posted to {name}."),
                     _ => format!(
                         "Could not post: {}",
                         publication
                             .error
                             .clone()
-                            .unwrap_or_else(|| "Instagram did not accept the clip.".into())
+                            .unwrap_or_else(|| format!("{name} did not accept the clip."))
                     ),
                 };
                 let url = publication.url.clone().filter(|_| publication.state == "published");
@@ -182,7 +223,7 @@ impl Tehom {
                         row.child(
                             Button::new(("open-post", key))
                                 .h(px(44.))
-                                .label("Open on Instagram")
+                                .label(format!("Open on {name}"))
                                 .on_click(move |_, _, cx: &mut gpui_kit::App| cx.open_url(&url)),
                         )
                     })
@@ -191,7 +232,7 @@ impl Tehom {
                             Button::new(("retry-post", key))
                                 .h(px(44.))
                                 .label("Retry")
-                                .accessibility_label("Retry posting to Instagram")
+                                .accessibility_label(format!("Retry posting to {name}"))
                                 .disabled(unavailable)
                                 .on_click(cx.listener(move |view, _, window, cx| {
                                     view.act(
@@ -216,7 +257,7 @@ impl Tehom {
                         .child(
                             Input::new(&self.publish_caption)
                                 .h(px(44.))
-                                .aria_label("Instagram caption")
+                                .aria_label(format!("{} caption", target.label()))
                                 .disabled(unavailable),
                         )
                         .child(div().text_sm().text_color(p.muted).child(
@@ -236,7 +277,7 @@ impl Tehom {
                                     let account = a.id;
                                     Button::new(("publish-account", index))
                                         .h(px(44.))
-                                        .label(format!("@{}", a.username))
+                                        .label(account_label(a))
                                         .when(selected, |button| button.primary())
                                         .toggled(selected)
                                         .on_click(cx.listener(move |view, _, _, cx| {
@@ -255,7 +296,7 @@ impl Tehom {
                             Button::new(("publish-post", key))
                                 .h(px(44.))
                                 .primary()
-                                .label("Post to Instagram")
+                                .label(format!("Post to {}", target.label()))
                                 .disabled(
                                     unavailable
                                         || length > CAPTION_LIMIT
@@ -269,7 +310,7 @@ impl Tehom {
                                         view.publish_caption.read(cx).value().to_string();
                                     view.act(Action::Publish(id, account, caption), window, cx);
                                     if view.source_busy {
-                                        view.status = "Posting to Instagram…".into();
+                                        view.status = format!("Posting to {}…", view.platform_of(account).label());
                                     }
                                 })),
                         ),
@@ -307,11 +348,113 @@ impl Tehom {
         self.act(Action::InstagramTwoFactor(code), window, cx);
     }
 
+    /// The connected accounts of one platform, each with its Remove (and
+    /// "Sign in again") controls.
+    fn account_rows(&self, platform: Platform, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let p = crate::theme::palette(cx);
+        let unavailable = self.backend.is_none() || self.source_busy;
+        let form = &self.instagram;
+        let accounts = self.accounts_on(platform);
+        accounts
+            .iter()
+            .enumerate()
+            .map(|(index, account)| {
+                {
+                    let id = account.id;
+                    let key = index + platform as usize * 1000;
+                    let username = account.username.clone();
+                    let confirming = form.confirm_remove == Some(id);
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex_1()
+                                .flex()
+                                .flex_col()
+                                .child(format!("@{}", account.username))
+                                .when(!account.full_name.is_empty(), |name| {
+                                    name.child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(p.muted)
+                                            .child(account.full_name.clone()),
+                                    )
+                                }),
+                        )
+                        .when(account.needs_login, |row| {
+                            row.child(
+                                Button::new(("account-sign-in", key))
+                                    .h(px(44.))
+                                    .label("Sign in again")
+                                    .accessibility_label(format!("Sign in again as @{username}"))
+                                    .disabled(unavailable)
+                                    .on_click(cx.listener(move |view, _, window, cx| {
+                                        if platform == Platform::Instagram {
+                                            let name = username.clone();
+                                            view.instagram.username.update(cx, |state, cx| {
+                                                state.set_value(name, window, cx)
+                                            });
+                                            view.connect_instagram(window, cx);
+                                        } else {
+                                            view.sign_in_tiktok(window, cx);
+                                        }
+                                    })),
+                            )
+                        })
+                        .when(!confirming, |row| {
+                            row.child(
+                                Button::new(("account-remove", key))
+                                    .h(px(44.))
+                                    .label("Remove")
+                                    .accessibility_label(format!("Remove @{}", account.username))
+                                    .disabled(unavailable)
+                                    .on_click(cx.listener(move |view, _, _, cx| {
+                                        view.instagram.confirm_remove = Some(id);
+                                        cx.notify();
+                                    })),
+                            )
+                        })
+                        .when(confirming, |row| {
+                            row.child(div().text_sm().child(format!(
+                                "Remove @{} from Tehom? Your posts stay on {}.",
+                                account.username,
+                                platform.label()
+                            )))
+                            .child(
+                                Button::new(("account-remove-yes", key))
+                                    .h(px(44.))
+                                    .primary()
+                                    .label("Yes, remove")
+                                    .disabled(unavailable)
+                                    .on_click(cx.listener(move |view, _, window, cx| {
+                                        view.instagram.confirm_remove = None;
+                                        view.act(Action::RemoveAccount(id), window, cx)
+                                    })),
+                            )
+                            .child(
+                                Button::new(("account-remove-no", key))
+                                    .h(px(44.))
+                                    .label("Keep")
+                                    .on_click(cx.listener(|view, _, _, cx| {
+                                        view.instagram.confirm_remove = None;
+                                        cx.notify();
+                                    })),
+                            )
+                        })
+                }
+                .into_any_element()
+            })
+            .collect()
+    }
+
     /// Settings: connected Instagram accounts, signing in and automatic posting.
     pub(crate) fn instagram_card(&self, cx: &mut Context<Self>) -> AnyElement {
         let p = crate::theme::palette(cx);
         let unavailable = self.backend.is_none() || self.source_busy;
-        let accounts = self.instagram_accounts();
+        let accounts = self.accounts_on(Platform::Instagram);
         let form = &self.instagram;
         div()
             .p_5()
@@ -346,86 +489,7 @@ impl Tehom {
                     "Choose which source posts to which account in Automations.",
                 ))
             })
-            .children(accounts.iter().enumerate().map(|(index, account)| {
-                let id = account.id;
-                let username = account.username.clone();
-                let confirming = form.confirm_remove == Some(id);
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .flex()
-                            .flex_col()
-                            .child(format!("@{}", account.username))
-                            .when(!account.full_name.is_empty(), |name| {
-                                name.child(
-                                    div()
-                                        .text_sm()
-                                        .text_color(p.muted)
-                                        .child(account.full_name.clone()),
-                                )
-                            }),
-                    )
-                    .when(account.needs_login, |row| {
-                        row.child(
-                            Button::new(("account-sign-in", index))
-                                .h(px(44.))
-                                .label("Sign in again")
-                                .accessibility_label(format!("Sign in again as @{username}"))
-                                .disabled(unavailable)
-                                .on_click(cx.listener(move |view, _, window, cx| {
-                                    let name = username.clone();
-                                    view.instagram
-                                        .username
-                                        .update(cx, |state, cx| state.set_value(name, window, cx));
-                                    view.connect_instagram(window, cx);
-                                })),
-                        )
-                    })
-                    .when(!confirming, |row| {
-                        row.child(
-                            Button::new(("account-remove", index))
-                                .h(px(44.))
-                                .label("Remove")
-                                .accessibility_label(format!("Remove @{}", account.username))
-                                .disabled(unavailable)
-                                .on_click(cx.listener(move |view, _, _, cx| {
-                                    view.instagram.confirm_remove = Some(id);
-                                    cx.notify();
-                                })),
-                        )
-                    })
-                    .when(confirming, |row| {
-                        row.child(div().text_sm().child(format!(
-                            "Remove @{} from Tehom? Your posts stay on Instagram.",
-                            account.username
-                        )))
-                        .child(
-                            Button::new(("account-remove-yes", index))
-                                .h(px(44.))
-                                .primary()
-                                .label("Yes, remove")
-                                .disabled(unavailable)
-                                .on_click(cx.listener(move |view, _, window, cx| {
-                                    view.instagram.confirm_remove = None;
-                                    view.act(Action::RemoveAccount(id), window, cx)
-                                })),
-                        )
-                        .child(
-                            Button::new(("account-remove-no", index))
-                                .h(px(44.))
-                                .label("Keep")
-                                .on_click(cx.listener(|view, _, _, cx| {
-                                    view.instagram.confirm_remove = None;
-                                    cx.notify();
-                                })),
-                        )
-                    })
-            }))
+            .children(self.account_rows(Platform::Instagram, cx))
             .when(!form.open, |card| {
                 card.child(
                     div().flex().child(
@@ -541,11 +605,64 @@ impl Tehom {
             .into_any_element()
     }
 
+    pub(crate) fn sign_in_tiktok(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.act(Action::TiktokLogin, window, cx);
+        if self.source_busy {
+            self.status = "Sign in to TikTok in the browser window that opened.".into();
+        }
+    }
+
+    /// Connections: TikTok accounts. Sign-in happens in a browser window.
+    pub(crate) fn tiktok_card(&self, cx: &mut Context<Self>) -> AnyElement {
+        let p = crate::theme::palette(cx);
+        let accounts = self.accounts_on(Platform::Tiktok);
+        crate::theme::card(cx)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(icon(Platform::Tiktok))
+                    .child(div().text_lg().child("TikTok"))
+                    .child(
+                        div()
+                            .px_2()
+                            .py_1()
+                            .rounded(px(6.))
+                            .bg(p.surface)
+                            .text_xs()
+                            .text_color(p.muted)
+                            .child("Experimental"),
+                    ),
+            )
+            .child(div().text_sm().text_color(p.muted).child(
+                "Tehom opens a Chrome, Chromium, Edge or Brave window with its own profile, and you sign in to TikTok there; Tehom never sees your password. Posting uses that window too, so it opens while a clip uploads. This is not an official connection: TikTok may restrict accounts that post from other apps.",
+            ))
+            .when(accounts.is_empty(), |card| {
+                card.child(div().text_sm().child("No account connected yet."))
+            })
+            .children(self.account_rows(Platform::Tiktok, cx))
+            .child(
+                div().flex().child(
+                    Button::new("connect-tiktok")
+                        .h(px(44.))
+                        .primary()
+                        .icon(IconName::Plus)
+                        .label("Connect TikTok")
+                        .disabled(self.backend.is_none() || self.source_busy)
+                        .on_click(cx.listener(|view, _, window, cx| {
+                            view.sign_in_tiktok(window, cx)
+                        })),
+                ),
+            )
+            .into_any_element()
+    }
+
     /// Automations: the account used by every source set to "Default".
     pub(crate) fn default_posting_card(&self, cx: &mut Context<Self>) -> AnyElement {
         let p = crate::theme::palette(cx);
         let unavailable = self.backend.is_none() || self.source_busy;
-        let accounts = self.instagram_accounts();
+        let accounts = self.publish_accounts();
         let auto = self
             .engine_snapshot
             .as_ref()
@@ -587,7 +704,7 @@ impl Tehom {
                         let selected = auto == Some(id);
                         Button::new(("auto-publish", index))
                             .h(px(44.))
-                            .label(format!("@{}", account.username))
+                            .label(account_label(account))
                             .accessibility_label(format!(
                                 "Post automatically to @{}",
                                 account.username

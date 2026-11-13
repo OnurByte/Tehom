@@ -396,7 +396,7 @@ impl Tehom {
             .as_ref()
             .is_some_and(|s| s.program.is_some() && s.model.is_some());
         let speech_missing = self.speech.as_ref().is_some_and(|s| s.program.is_none());
-        let connected = !self.instagram_accounts().is_empty();
+        let connected = !self.accounts_on(tehom_core::Platform::Instagram).is_empty();
         let has_source = snapshot.is_some_and(|s| !s.sources.is_empty());
         let (title, body) = match step {
             0 => (

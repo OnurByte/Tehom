@@ -1430,18 +1430,23 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn publish_row_offers_instagram_and_marks_the_others_soon(cx: &mut TestAppContext) {
+    fn publish_row_offers_instagram_and_tiktok_and_marks_shorts_soon(cx: &mut TestAppContext) {
         cx.update(gpui_kit::init);
         let dir = tempfile::tempdir().unwrap();
         render_page(cx, Page::Clips, snapshot(dir.path(), true), |window| {
-            assert_ne!(window.find_by_label("Instagram").disabled(), Some(true));
-            for label in ["YouTube Shorts, coming soon", "TikTok, coming soon"] {
-                assert_eq!(
+            for label in ["Instagram", "TikTok"] {
+                assert_ne!(
                     window.find_by_label(label).disabled(),
                     Some(true),
                     "{label}"
                 );
             }
+            assert_eq!(
+                window
+                    .find_by_label("YouTube Shorts, coming soon")
+                    .disabled(),
+                Some(true)
+            );
         });
         // A clip without its MP4 file has nothing to post.
         let missing = tempfile::tempdir().unwrap();
@@ -1950,23 +1955,20 @@ mod tests {
             );
         })
         .unwrap();
-        // Connections lists Instagram and marks the others unavailable.
+        // Connections offers Instagram and TikTok and marks Shorts unavailable.
         render_page(
             cx,
             Page::Connections,
             snapshot(dir.path(), true),
             |window| {
                 assert!(window.try_find_by_label("Connect Instagram").is_some());
-                for label in [
-                    "YouTube Shorts, not available yet",
-                    "TikTok, not available yet",
-                ] {
-                    assert_eq!(
-                        window.find_by_label(label).disabled(),
-                        Some(true),
-                        "{label}"
-                    );
-                }
+                assert!(window.try_find_by_label("Connect TikTok").is_some());
+                assert_eq!(
+                    window
+                        .find_by_label("YouTube Shorts, not available yet")
+                        .disabled(),
+                    Some(true)
+                );
             },
         );
     }
