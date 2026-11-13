@@ -4184,20 +4184,30 @@ impl Automation {
             }
         }
     }
-    /// Where TikTok's browser keeps its sign-in. It is Tehom's own profile,
-    /// not the person's everyday one.
-    fn tiktok_profile(&self) -> PathBuf {
-        self.directory.join("tiktok-profile")
+    /// Where a browser-based platform keeps its sign-in. It is Tehom's own
+    /// profile, not the person's everyday one.
+    fn browser_profile(&self, platform: &str) -> PathBuf {
+        self.directory.join(format!("{platform}-profile"))
     }
-    /// Opens the TikTok browser window and waits for the person to sign in there.
-    pub async fn tiktok_login(&self) -> Result<Account> {
-        let me = tehom_tiktok::sign_in(&self.tiktok_profile())
-            .await
-            .map_err(|error| tiktok_error(&error))?;
-        let row = sqlx::query("INSERT INTO accounts(platform,user_id,username,full_name,session,needs_login) VALUES ('tiktok',?,?,?,'{}',0) ON CONFLICT(platform,user_id) DO UPDATE SET username=excluded.username,full_name=excluded.full_name,needs_login=0 RETURNING *")
-            .bind(&me.user_id)
-            .bind(&me.username)
-            .bind(&me.full_name)
+    /// Opens the platform's browser window and waits for the person to sign in
+    /// there. Only TikTok and YouTube Shorts sign in this way.
+    pub async fn browser_login(&self, platform: Platform) -> Result<Account> {
+        let profile = self.browser_profile(platform.name());
+        let (user_id, username, full_name) = match platform {
+            Platform::Tiktok => tehom_tiktok::sign_in(&profile)
+                .await
+                .map(|a| (a.user_id, a.username, a.full_name)),
+            Platform::YoutubeShorts => tehom_youtube::sign_in(&profile)
+                .await
+                .map(|a| (a.user_id, a.username, a.full_name)),
+            Platform::Instagram => bail!("Instagram signs in with a username and password"),
+        }
+        .map_err(|error| browser_error(platform, &error))?;
+        let row = sqlx::query("INSERT INTO accounts(platform,user_id,username,full_name,session,needs_login) VALUES (?,?,?,?,'{}',0) ON CONFLICT(platform,user_id) DO UPDATE SET username=excluded.username,full_name=excluded.full_name,needs_login=0 RETURNING *")
+            .bind(platform.name())
+            .bind(&user_id)
+            .bind(&username)
+            .bind(&full_name)
             .fetch_one(&self.pool)
             .await?;
         account_row(&row).context("Invalid account")
@@ -4208,11 +4218,8 @@ impl Automation {
             .fetch_optional(&self.pool)
             .await?
             .context("Account not found")?;
-        self.delete_secret(&format!(
-            "{}:{}",
-            row.get::<String, _>("platform"),
-            row.get::<String, _>("user_id")
-        ))?;
+        let platform: String = row.get("platform");
+        self.delete_secret(&format!("{platform}:{}", row.get::<String, _>("user_id")))?;
         let mut tx = self.pool.begin().await?;
         sqlx::query("DELETE FROM accounts WHERE id=?")
             .bind(id)
@@ -4227,14 +4234,16 @@ impl Automation {
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
-        // The browser profile holds TikTok's sign-in; drop it with the last account.
-        if !sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM accounts WHERE platform='tiktok')",
-        )
-        .fetch_one(&self.pool)
-        .await?
+        // A browser profile holds the platform's sign-in; drop it with the last account.
+        if platform != Platform::Instagram.name()
+            && !sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM accounts WHERE platform=?)",
+            )
+            .bind(&platform)
+            .fetch_one(&self.pool)
+            .await?
         {
-            let _ = tokio::fs::remove_dir_all(self.tiktok_profile()).await;
+            let _ = tokio::fs::remove_dir_all(self.browser_profile(&platform)).await;
         }
         Ok(())
     }
@@ -4338,14 +4347,26 @@ impl Automation {
                     info.height > info.width,
                     "TikTok needs a vertical video; export this clip with the Vertical profile first"
                 );
-                let post = tehom_tiktok::post_video(&self.tiktok_profile(), &user_id, &output, caption, false)
+                let profile = self.browser_profile(&platform);
+                let post = tehom_tiktok::post_video(&profile, &user_id, &output, caption, false)
                     .await
-                    .map_err(|error| tiktok_error(&error))?;
+                    .map_err(|error| browser_error(Platform::Tiktok, &error))?;
                 return Ok(if post.is_empty() {
                     format!("https://www.tiktok.com/@{username}")
                 } else {
                     format!("https://www.tiktok.com/@{username}/video/{post}")
                 });
+            }
+            if platform == Platform::YoutubeShorts.name() {
+                ensure!(
+                    info.height > info.width,
+                    "YouTube Shorts need a vertical video; export this clip with the Vertical profile first"
+                );
+                let profile = self.browser_profile(&platform);
+                let id = tehom_youtube::post_video(&profile, &user_id, &output, caption, false)
+                    .await
+                    .map_err(|error| browser_error(Platform::YoutubeShorts, &error))?;
+                return Ok(format!("https://youtube.com/shorts/{id}"));
             }
             ensure!(
                 info.height > info.width,
@@ -4701,10 +4722,12 @@ fn account_row(r: &sqlx::sqlite::SqliteRow) -> Option<Account> {
         needs_login: r.get("needs_login"),
     })
 }
-/// Plain messages for TikTok failures.
-fn tiktok_error(error: &tehom_tiktok::Error) -> anyhow::Error {
+/// Plain messages for failures of the browser-based platforms.
+fn browser_error(platform: Platform, error: &tehom_tiktok::Error) -> anyhow::Error {
     anyhow::anyhow!(match error {
-        tehom_tiktok::Error::LoginRequired => "Needs input: sign in to TikTok again".to_owned(),
+        tehom_tiktok::Error::LoginRequired => {
+            format!("Needs input: sign in to {} again", platform.label())
+        }
         other => other.to_string(),
     })
 }

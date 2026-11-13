@@ -1,6 +1,6 @@
 //! A Chromium-based browser with its own profile, driven over the Chrome
-//! DevTools Protocol. The person signs in to TikTok in that window and the
-//! requests TikTok signs itself are made by its own page.
+//! DevTools Protocol. The person signs in to a platform in that window; the
+//! requests the platform signs itself are made by its own page.
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -11,7 +11,36 @@ use tokio::process::{Child, Command};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
-use crate::{Error, Result};
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    /// The browser profile is not signed in to the platform (any more).
+    LoginRequired,
+    /// The platform or the setup refused; the text says why.
+    Rejected(String),
+    Server(u16),
+    Transport(String),
+    Protocol(String),
+    File(String),
+}
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::LoginRequired => write!(f, "sign-in required"),
+            Self::Rejected(message) => write!(f, "{message}"),
+            Self::Server(code) => write!(f, "server error (HTTP {code})"),
+            Self::Transport(message) => write!(f, "browser or connection problem: {message}"),
+            Self::Protocol(message) => write!(f, "unexpected answer: {message}"),
+            Self::File(message) => write!(f, "could not read the video: {message}"),
+        }
+    }
+}
+impl std::error::Error for Error {}
+impl Error {
+    pub fn is_retryable(&self) -> bool {
+        matches!(self, Self::Server(_))
+    }
+}
+pub type Result<T> = std::result::Result<T, Error>;
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -20,7 +49,7 @@ fn transport(error: impl ToString) -> Error {
 }
 
 /// The first Chromium-based browser installed here.
-pub(crate) fn find_browser() -> Option<PathBuf> {
+pub fn find_browser() -> Option<PathBuf> {
     let names = [
         "google-chrome-stable",
         "google-chrome",
@@ -61,17 +90,17 @@ pub(crate) fn find_browser() -> Option<PathBuf> {
     candidates.into_iter().find(|path| path.is_file())
 }
 
-pub(crate) struct Chromium {
+pub struct Chromium {
     child: Child,
     port: u16,
 }
 
 impl Chromium {
     /// Opens a window on `url` with `profile` as its own data directory.
-    pub(crate) async fn launch(profile: &Path, url: &str) -> Result<Self> {
+    pub async fn launch(profile: &Path, url: &str) -> Result<Self> {
         let browser = find_browser().ok_or_else(|| {
             Error::Rejected(
-                "No Chrome, Chromium, Edge or Brave browser was found; install one to use TikTok"
+                "No Chrome, Chromium, Edge or Brave browser was found; install one to use this"
                     .into(),
             )
         })?;
@@ -102,11 +131,12 @@ impl Chromium {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         Err(Error::Rejected(
-            "The TikTok browser did not start; close any window already using its profile and try again".into(),
+            "The browser did not start; close any window already using its profile and try again"
+                .into(),
         ))
     }
     /// The window's first tab.
-    pub(crate) async fn page(&self) -> Result<Page> {
+    pub async fn page(&self) -> Result<Page> {
         for _ in 0..100 {
             let tabs: Value = reqwest::get(format!("http://127.0.0.1:{}/json/list", self.port))
                 .await
@@ -129,7 +159,7 @@ impl Chromium {
         Err(Error::Protocol("the browser opened no tab".into()))
     }
     /// Closes the browser so its profile is written to disk.
-    pub(crate) async fn close(mut self) {
+    pub async fn close(mut self) {
         let version = async {
             let version: Value =
                 reqwest::get(format!("http://127.0.0.1:{}/json/version", self.port))
@@ -158,22 +188,17 @@ impl Chromium {
     }
 }
 
-pub(crate) struct Page {
+pub struct Page {
     socket: Socket,
     next: u64,
 }
 
 impl Page {
     #[cfg(test)]
-    pub(crate) fn new(socket: Socket) -> Self {
+    pub fn new(socket: Socket) -> Self {
         Self { socket, next: 0 }
     }
-    pub(crate) async fn call(
-        &mut self,
-        method: &str,
-        params: Value,
-        wait: Duration,
-    ) -> Result<Value> {
+    pub async fn call(&mut self, method: &str, params: Value, wait: Duration) -> Result<Value> {
         self.next += 1;
         let id = self.next;
         self.socket
@@ -211,7 +236,7 @@ impl Page {
         .map_err(|_| Error::Transport(format!("the browser did not answer {method} in time")))?
     }
     /// Runs a JavaScript expression (promises are awaited) and returns its value.
-    pub(crate) async fn eval(&mut self, expression: &str, wait: Duration) -> Result<Value> {
+    pub async fn eval(&mut self, expression: &str, wait: Duration) -> Result<Value> {
         let result = self
             .call(
                 "Runtime.evaluate",
@@ -230,26 +255,24 @@ impl Page {
         Ok(result["result"]["value"].clone())
     }
     /// Waits until the page has loaded and its scripts had a moment to start.
-    pub(crate) async fn settled(&mut self) -> Result<()> {
+    pub async fn settled(&mut self) -> Result<()> {
         for _ in 0..60 {
             if self
                 .eval("document.readyState", Duration::from_secs(10))
                 .await?
                 == "complete"
             {
-                // shortcut: a fixed pause for TikTok's scripts; upgrade if requests go out unsigned.
+                // shortcut: a fixed pause for the site's scripts; upgrade if requests go out unsigned.
                 tokio::time::sleep(Duration::from_secs(4)).await;
                 return Ok(());
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
-        Err(Error::Transport(
-            "the TikTok page did not finish loading".into(),
-        ))
+        Err(Error::Transport("the page did not finish loading".into()))
     }
-    /// A request made by the page itself, with the site's cookies. TikTok's
-    /// scripts sign it exactly as for any request the person makes.
-    pub(crate) async fn fetch(
+    /// A request made by the page itself, with the site's cookies; the
+    /// site's own scripts sign it exactly as for any request the person makes.
+    pub async fn fetch(
         &mut self,
         method: &str,
         url: &str,

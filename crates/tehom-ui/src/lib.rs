@@ -1430,23 +1430,17 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn publish_row_offers_instagram_and_tiktok_and_marks_shorts_soon(cx: &mut TestAppContext) {
+    fn publish_row_offers_every_platform(cx: &mut TestAppContext) {
         cx.update(gpui_kit::init);
         let dir = tempfile::tempdir().unwrap();
         render_page(cx, Page::Clips, snapshot(dir.path(), true), |window| {
-            for label in ["Instagram", "TikTok"] {
+            for label in ["Instagram", "TikTok", "YouTube Shorts"] {
                 assert_ne!(
                     window.find_by_label(label).disabled(),
                     Some(true),
                     "{label}"
                 );
             }
-            assert_eq!(
-                window
-                    .find_by_label("YouTube Shorts, coming soon")
-                    .disabled(),
-                Some(true)
-            );
         });
         // A clip without its MP4 file has nothing to post.
         let missing = tempfile::tempdir().unwrap();
@@ -1955,20 +1949,16 @@ mod tests {
             );
         })
         .unwrap();
-        // Connections offers Instagram and TikTok and marks Shorts unavailable.
+        // Connections offers every platform.
         render_page(
             cx,
             Page::Connections,
             snapshot(dir.path(), true),
             |window| {
                 assert!(window.try_find_by_label("Connect Instagram").is_some());
-                assert!(window.try_find_by_label("Connect TikTok").is_some());
-                assert_eq!(
-                    window
-                        .find_by_label("YouTube Shorts, not available yet")
-                        .disabled(),
-                    Some(true)
-                );
+                for label in ["Connect TikTok", "Connect YouTube Shorts"] {
+                    assert!(window.try_find_by_label(label).is_some(), "{label}");
+                }
             },
         );
     }
