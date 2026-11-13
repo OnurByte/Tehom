@@ -1,0 +1,21 @@
+[package]
+name = "tehom-tiktok"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip", "http2"] }
+tokio = { version = "1", features = ["fs", "time", "process", "io-util", "net"] }
+tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+serde_json = "1"
+sha2 = "0.10"
+hmac = "0.12"
+crc32fast = "1"
+rand = "0.8"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

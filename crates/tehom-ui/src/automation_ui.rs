@@ -51,6 +51,8 @@ pub(crate) enum Action {
     /// Username and password; the password lives only in this action.
     InstagramLogin(String, String),
     InstagramTwoFactor(String),
+    /// Opens the TikTok browser window and waits for the person to sign in.
+    TiktokLogin,
     RemoveAccount(i64),
     /// Clip, account, caption.
     Publish(i64, i64, String),
@@ -247,6 +249,7 @@ impl Tehom {
                 | Action::DownloadSpeechModel
                 | Action::InstagramLogin(..)
                 | Action::InstagramTwoFactor(_)
+                | Action::TiktokLogin
                 | Action::RemoveAccount(_)
                 | Action::Publish(..)
                 | Action::AutoPublish(_)
@@ -396,19 +399,26 @@ impl Tehom {
                             followup = Some(Followup::SignedIn);
                             format!("Instagram connected as @{}.", account.username)
                         }
+                        Action::TiktokLogin => {
+                            let account = backend.engine.tiktok_login().await?;
+                            format!("TikTok connected as @{}.", account.username)
+                        }
                         Action::RemoveAccount(id) => {
                             backend.engine.remove_account(id).await?;
                             "Account removed from Tehom.".into()
                         }
                         Action::Publish(clip, account, caption) => {
                             let publication = backend.engine.publish_clip(clip, account, &caption).await?;
+                            let name = backend.engine.snapshot().await?.accounts.iter()
+                                .find(|a| a.id == publication.account_id)
+                                .map_or("Instagram", |a| a.platform.label());
                             match publication.state.as_str() {
-                                "published" => "Posted to Instagram.".into(),
+                                "published" => format!("Posted to {name}."),
                                 "failed" => format!(
                                     "Could not post: {}",
                                     publication.error.unwrap_or_default()
                                 ),
-                                _ => "Instagram is still processing the post.".into(),
+                                _ => format!("{name} is still processing the post."),
                             }
                         }
                         Action::Automation(settings) => {

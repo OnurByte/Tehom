@@ -236,7 +236,7 @@ impl Tehom {
             .as_ref()
             .map(|s| s.sources.clone())
             .unwrap_or_default();
-        let accounts = self.instagram_accounts();
+        let accounts = self.publish_accounts();
         let default_account = self
             .engine_snapshot
             .as_ref()
@@ -461,7 +461,7 @@ impl Tehom {
         )
         .child(self.instagram_card(cx))
         .child(self.unavailable_card(Platform::YoutubeShorts, cx))
-        .child(self.unavailable_card(Platform::Tiktok, cx))
+        .child(self.tiktok_card(cx))
         .child(div().text_sm().text_color(p.muted).child(
             "Videos come from YouTube, Kick and RSS feeds without signing in. Add them on Home.",
         ))

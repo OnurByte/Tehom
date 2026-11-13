@@ -4184,6 +4184,24 @@ impl Automation {
             }
         }
     }
+    /// Where TikTok's browser keeps its sign-in. It is Tehom's own profile,
+    /// not the person's everyday one.
+    fn tiktok_profile(&self) -> PathBuf {
+        self.directory.join("tiktok-profile")
+    }
+    /// Opens the TikTok browser window and waits for the person to sign in there.
+    pub async fn tiktok_login(&self) -> Result<Account> {
+        let me = tehom_tiktok::sign_in(&self.tiktok_profile())
+            .await
+            .map_err(|error| tiktok_error(&error))?;
+        let row = sqlx::query("INSERT INTO accounts(platform,user_id,username,full_name,session,needs_login) VALUES ('tiktok',?,?,?,'{}',0) ON CONFLICT(platform,user_id) DO UPDATE SET username=excluded.username,full_name=excluded.full_name,needs_login=0 RETURNING *")
+            .bind(&me.user_id)
+            .bind(&me.username)
+            .bind(&me.full_name)
+            .fetch_one(&self.pool)
+            .await?;
+        account_row(&row).context("Invalid account")
+    }
     pub async fn remove_account(&self, id: i64) -> Result<()> {
         let row = sqlx::query("SELECT platform,user_id FROM accounts WHERE id=?")
             .bind(id)
@@ -4209,6 +4227,15 @@ impl Automation {
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
+        // The browser profile holds TikTok's sign-in; drop it with the last account.
+        if !sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM accounts WHERE platform='tiktok')",
+        )
+        .fetch_one(&self.pool)
+        .await?
+        {
+            let _ = tokio::fs::remove_dir_all(self.tiktok_profile()).await;
+        }
         Ok(())
     }
     async fn check_publish_account(&self, id: i64) -> Result<()> {
@@ -4263,7 +4290,7 @@ impl Automation {
         let caption = caption.trim();
         ensure!(
             caption.chars().count() <= CAPTION_LIMIT,
-            "Instagram captions can be at most {CAPTION_LIMIT} characters"
+            "Captions can be at most {CAPTION_LIMIT} characters"
         );
         let clip = sqlx::query("SELECT output_path,export_identity FROM clips WHERE id=?")
             .bind(clip_id)
@@ -4285,10 +4312,11 @@ impl Automation {
             .context("Account not found")?;
         let platform: String = account.get("platform");
         ensure!(
-            platform == Platform::Instagram.name(),
+            Platform::parse(&platform).is_some_and(Platform::available),
             "Publishing to this platform is not available"
         );
         let username: String = account.get("username");
+        let user_id: String = account.get("user_id");
         // Check and insert in one statement so two callers cannot both start.
         let id: Option<i64> = sqlx::query_scalar("INSERT INTO publications(clip_id,account_id,revision,state) SELECT ?,?,?,'uploading' WHERE NOT EXISTS(SELECT 1 FROM publications WHERE clip_id=? AND account_id=? AND revision=? AND state IN ('uploading','published')) RETURNING id")
             .bind(clip_id).bind(account_id).bind(&revision)
@@ -4305,6 +4333,20 @@ impl Automation {
                 let output = output.clone();
                 tokio::task::spawn_blocking(move || tehom_media::inspect(&output)).await??
             };
+            if platform == Platform::Tiktok.name() {
+                ensure!(
+                    info.height > info.width,
+                    "TikTok needs a vertical video; export this clip with the Vertical profile first"
+                );
+                let post = tehom_tiktok::post_video(&self.tiktok_profile(), &user_id, &output, caption, false)
+                    .await
+                    .map_err(|error| tiktok_error(&error))?;
+                return Ok(if post.is_empty() {
+                    format!("https://www.tiktok.com/@{username}")
+                } else {
+                    format!("https://www.tiktok.com/@{username}/video/{post}")
+                });
+            }
             ensure!(
                 info.height > info.width,
                 "Instagram Reels need a vertical video; export this clip with the Vertical profile first"
@@ -4657,6 +4699,13 @@ fn account_row(r: &sqlx::sqlite::SqliteRow) -> Option<Account> {
         username: r.get("username"),
         full_name: r.get("full_name"),
         needs_login: r.get("needs_login"),
+    })
+}
+/// Plain messages for TikTok failures.
+fn tiktok_error(error: &tehom_tiktok::Error) -> anyhow::Error {
+    anyhow::anyhow!(match error {
+        tehom_tiktok::Error::LoginRequired => "Needs input: sign in to TikTok again".to_owned(),
+        other => other.to_string(),
     })
 }
 /// Short, plain messages for Instagram failures; `action` is "sign-in" or "upload".

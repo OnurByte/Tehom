@@ -345,7 +345,7 @@ impl ExportProfile {
     }
 }
 
-/// Where a clip can be published. Only Instagram is implemented.
+/// Where a clip can be published. Instagram and TikTok are implemented.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Platform {
@@ -376,7 +376,7 @@ impl Platform {
     }
     /// Whether publishing to this platform is implemented.
     pub fn available(self) -> bool {
-        self == Self::Instagram
+        matches!(self, Self::Instagram | Self::Tiktok)
     }
 }
 
