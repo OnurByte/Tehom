@@ -19,7 +19,7 @@ assert 'fill-rule="evenodd"' in source and 'viewBox="0 0 512 512"' in source
 ICON_DIR = Path(__file__).resolve().parents[1] / "icons"
 # Brand glyphs, path data unchanged from assets/icons (Simple Icons, CC0).
 GLYPHS = {n: re.search(r' d="([^"]+)"', (ICON_DIR / f"{n}.svg").read_text()).group(1)
-          for n in ("instagram", "tiktok", "youtubeshorts", "bluesky", "facebook")}
+          for n in ("instagram", "tiktok", "youtubeshorts", "bluesky", "facebook", "youtube", "kick")}
 
 THEMES = {
     "dark": dict(background="#000000", text="#ffffff", muted="#ffffff", border="#404040",
@@ -157,7 +157,7 @@ for theme in THEMES:
     c.card(0, 0, WIDTH, 236)
     c.text(32, 52, "How it works", size=18)
     steps = [
-        ("link", "Add a link", ["A channel, a video, an RSS", "feed or a local file."]),
+        ("link", "Add a link", ["A YouTube or Kick channel or", "video, an RSS feed or a file."]),
         ("spark", "Let it choose", ["Speech is written here, your", "AI picks the best moments."]),
         ("review", "Edit", ["Fix the captions, colours", "and timing in Studio."]),
         ("save", "Save or post", ["MP4 files, or Reels on", "Instagram, by hand or auto."]),
@@ -175,7 +175,7 @@ for theme in THEMES:
     c = Canvas(theme)
     features = [
         ("shape", "Vertical, horizontal or original", ["1080 × 1920 for Shorts and Reels,", "1920 × 1080 or the source size."], "Works"),
-        ("watch", "Watches sources", ["Channels and RSS feeds turn new", "videos into clips on their own."], "Works"),
+        (("youtube", "kick"), "Watches sources", ["YouTube, RSS and (experimental) Kick", "channels turn new videos into clips."], "Works"),
         ("spark", "Your AI, your choice", ["OpenAI, Anthropic, Gemini, OpenRouter,", "Codex, Claude Code or a local model."], "Works"),
         ("captions", "Captions you can edit", ["Written on this computer, burned in,", "with colour, size and sound."], "Works"),
         ("local", "Private by default", ["Videos stay here; only captions go to", "the AI you allow. You choose what posts."], "Works"),
@@ -186,7 +186,12 @@ for theme in THEMES:
     for i, (icon, title, lines, status) in enumerate(features):
         x, y = (i % 3) * (item_w + gap), 48 + (i // 3) * (item_h + gap)
         c.card(x, y, item_w, item_h)
-        c.icon(x + 20, y + 20, icon)
+        if isinstance(icon, tuple):
+            # A source shows the marks of the sites it watches.
+            for j, glyph in enumerate(icon):
+                c.glyph(x + 20 + j * 44, y + 20, glyph)
+        else:
+            c.icon(x + 20, y + 20, icon)
         c.pill(x + item_w - 20, y + 24, status)
         c.text(x + 20, y + 76, title, size=16, weight=500)
         wrap(c, x + 20, y + 104, lines)
