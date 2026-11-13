@@ -92,6 +92,8 @@ pub struct Tehom {
     publish_caption: Entity<InputState>,
     publish_account: Option<i64>,
     instagram: publish::InstagramForm,
+    bluesky: publish::KeyForm,
+    facebook: publish::KeyForm,
     _input_watch: Vec<Subscription>,
     engine_stop: Arc<AtomicBool>,
     _engine_task: Option<Task<()>>,
@@ -153,6 +155,9 @@ impl Tehom {
             slider
         });
         let instagram = publish::InstagramForm::new(window, cx);
+        let bluesky =
+            publish::KeyForm::new("Handle, like name.bsky.social", "App password", window, cx);
+        let facebook = publish::KeyForm::new("Page id", "Page access token", window, cx);
         let automation = prefs::AutomationForm::new(window, cx);
         let engine_stop = Arc::new(AtomicBool::new(false));
         let start = cx.new(|cx| InputState::new(window, cx).default_value("0"));
@@ -256,6 +261,8 @@ impl Tehom {
             publish_caption,
             publish_account: None,
             instagram,
+            bluesky,
+            facebook,
             _input_watch: input_watch,
             engine_stop,
             _engine_task: None,
@@ -919,7 +926,7 @@ pub struct Assets;
 
 /// Files embedded in the binary: the brand mark and the Simple Icons (CC0)
 /// platform glyphs, see assets/README.md.
-const OWN_ASSETS: [(&str, &[u8]); 6] = [
+const OWN_ASSETS: [(&str, &[u8]); 8] = [
     (
         "brand/youtube.svg",
         include_bytes!("../../../assets/brand/youtube.svg"),
@@ -943,6 +950,14 @@ const OWN_ASSETS: [(&str, &[u8]); 6] = [
     (
         "icons/tiktok.svg",
         include_bytes!("../../../assets/icons/tiktok.svg"),
+    ),
+    (
+        "icons/bluesky.svg",
+        include_bytes!("../../../assets/icons/bluesky.svg"),
+    ),
+    (
+        "icons/facebook.svg",
+        include_bytes!("../../../assets/icons/facebook.svg"),
     ),
 ];
 

@@ -43,7 +43,7 @@ Then open **Tehom** from your apps. A short guide helps you choose an AI the fir
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/readme/post-dark.svg">
-  <img src="assets/readme/post-light.svg" width="100%" alt="Post to Instagram Reels, TikTok and YouTube Shorts">
+  <img src="assets/readme/post-light.svg" width="100%" alt="Post to Instagram Reels, TikTok, YouTube Shorts, Bluesky and Facebook Reels">
 </picture>
 
 ## Choose your AI
@@ -63,7 +63,7 @@ Tehom lists the models your choice offers, with a plain note on how capable each
 - **Sources.** YouTube channels and videos, Kick videos, any RSS or Atom feed with video, or a file from your computer.
 - **Studio.** Its own tab: player, timeline, trim points and a caption editor. Quick looks, colours, size and a slider to place captions at any height.
 - **Automations.** Every channel you follow is one. Choose what happens to new videos and which account its clips are posted to; each source can use a different one. The same page sets how often to check, clips per video and clip length.
-- **Connections.** Connect Instagram, TikTok or YouTube Shorts, then post a clip by hand or let auto-export post for you. All three use unofficial routes and are experimental, so the platform may ask you to confirm a login or restrict the account. Use one you can afford to lose access to. Kwai and Likee are planned.
+- **Connections.** Connect Instagram, TikTok, YouTube Shorts, Bluesky or Facebook Reels, then post a clip by hand or let auto-export post for you. Instagram, TikTok and YouTube Shorts use unofficial routes, so the platform may ask you to confirm a login or restrict the account; use one you can afford to lose access to. Bluesky (handle and app password) and Facebook Reels (Page id and Page access token from your own Meta app) use the platforms' official APIs. All five are experimental and untested against the live services. LinkedIn, Snapchat Spotlight, Bilibili, Kwai and Likee are planned.
 - **Your colours.** Light or dark, plus six accent colours. Press **Ctrl+K** (**Cmd+K** on Mac) or click the search box to find any action.
 
 ---

@@ -4200,9 +4200,43 @@ impl Automation {
             Platform::YoutubeShorts => tehom_youtube::sign_in(&profile)
                 .await
                 .map(|a| (a.user_id, a.username, a.full_name)),
-            Platform::Instagram => bail!("Instagram signs in with a username and password"),
+            _ => bail!("{} does not sign in through a browser", platform.label()),
         }
         .map_err(|error| browser_error(platform, &error))?;
+        let row = sqlx::query("INSERT INTO accounts(platform,user_id,username,full_name,session,needs_login) VALUES (?,?,?,?,'{}',0) ON CONFLICT(platform,user_id) DO UPDATE SET username=excluded.username,full_name=excluded.full_name,needs_login=0 RETURNING *")
+            .bind(platform.name())
+            .bind(&user_id)
+            .bind(&username)
+            .bind(&full_name)
+            .fetch_one(&self.pool)
+            .await?;
+        account_row(&row).context("Invalid account")
+    }
+    /// Connects Bluesky (handle and app password) or a Facebook Page (Page id
+    /// and Page access token). The secret goes to the keyring and is used
+    /// only to check the account here.
+    pub async fn key_login(&self, platform: Platform, id: &str, secret: &str) -> Result<Account> {
+        let (user_id, username, full_name) = match platform {
+            Platform::Bluesky => {
+                let account = tehom_bluesky::sign_in(id, secret).await.map_err(|error| {
+                    match error {
+                        tehom_bluesky::Error::LoginRequired => anyhow::anyhow!(
+                            "Wrong Bluesky handle or app password; create an app password in Bluesky's settings"
+                        ),
+                        other => anyhow::anyhow!(other.to_string()),
+                    }
+                })?;
+                (account.did, account.handle, String::new())
+            }
+            Platform::FacebookReels => {
+                let page = tehom_facebook::sign_in(id, secret)
+                    .await
+                    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                (page.page_id, page.name.clone(), page.name)
+            }
+            _ => bail!("{} does not sign in with a key", platform.label()),
+        };
+        self.store_secret(&format!("{}:{user_id}", platform.name()), secret.trim())?;
         let row = sqlx::query("INSERT INTO accounts(platform,user_id,username,full_name,session,needs_login) VALUES (?,?,?,?,'{}',0) ON CONFLICT(platform,user_id) DO UPDATE SET username=excluded.username,full_name=excluded.full_name,needs_login=0 RETURNING *")
             .bind(platform.name())
             .bind(&user_id)
@@ -4342,6 +4376,42 @@ impl Automation {
                 let output = output.clone();
                 tokio::task::spawn_blocking(move || tehom_media::inspect(&output)).await??
             };
+            if platform == Platform::Bluesky.name() || platform == Platform::FacebookReels.name() {
+                ensure!(
+                    info.height > info.width,
+                    "{} needs a vertical video; export this clip with the Vertical profile first",
+                    if platform == Platform::Bluesky.name() { "Bluesky posts here" } else { "Facebook Reels" }
+                );
+                let Some(secret) = self.secret(&format!("{platform}:{user_id}"))? else {
+                    bail!("Needs input: sign in to {} again", if platform == Platform::Bluesky.name() { "Bluesky" } else { "Facebook Reels" });
+                };
+                let bytes = tokio::fs::read(&output).await?;
+                if platform == Platform::Bluesky.name() {
+                    return tehom_bluesky::post_video(
+                        &user_id,
+                        &secret,
+                        &user_id,
+                        bytes,
+                        (info.width, info.height),
+                        caption,
+                    )
+                    .await
+                    .map_err(|error| match error {
+                        tehom_bluesky::Error::LoginRequired => {
+                            anyhow::anyhow!("Needs input: sign in to Bluesky again")
+                        }
+                        other => anyhow::anyhow!(other.to_string()),
+                    });
+                }
+                return tehom_facebook::post_video(&user_id, &secret, bytes, caption)
+                    .await
+                    .map_err(|error| match error {
+                        tehom_facebook::Error::LoginRequired => {
+                            anyhow::anyhow!("Needs input: sign in to Facebook Reels again")
+                        }
+                        other => anyhow::anyhow!(other.to_string()),
+                    });
+            }
             if platform == Platform::Tiktok.name() {
                 ensure!(
                     info.height > info.width,
@@ -4507,7 +4577,11 @@ impl Automation {
             .bind(clip_id)
             .fetch_one(&self.pool)
             .await?;
-        let caption: String = title.chars().take(CAPTION_LIMIT).collect();
+        // Bluesky posts are at most 300 characters; a title never needs more.
+        let caption: String = title
+            .chars()
+            .take(CAPTION_LIMIT.min(tehom_bluesky::POST_LIMIT))
+            .collect();
         if let Err(error) = self.publish_clip(clip_id, account_id, &caption).await {
             sqlx::query("INSERT INTO events(video_id,level,state,message) VALUES (?,'warning','publish_failed',?)")
                 .bind(video_id)

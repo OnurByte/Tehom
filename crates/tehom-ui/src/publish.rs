@@ -42,6 +42,27 @@ impl InstagramForm {
     }
 }
 
+/// The two fields of a platform that signs in with a key: Bluesky (handle,
+/// app password) and Facebook Reels (Page id, Page access token). The secret
+/// is read when connecting and cleared right after.
+pub(crate) struct KeyForm {
+    pub(crate) id: Entity<InputState>,
+    pub(crate) secret: Entity<InputState>,
+}
+impl KeyForm {
+    pub(crate) fn new(
+        id: &'static str,
+        secret: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Tehom>,
+    ) -> Self {
+        Self {
+            id: cx.new(|cx| InputState::new(window, cx).placeholder(id)),
+            secret: cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(secret)),
+        }
+    }
+}
+
 /// "@name", with the platform when it is not Instagram.
 pub(crate) fn account_label(account: &tehom_core::Account) -> String {
     match account.platform {
@@ -55,6 +76,8 @@ pub(crate) fn icon(platform: Platform) -> gpui_kit::component::Icon {
         Platform::Instagram => "icons/instagram.svg",
         Platform::YoutubeShorts => "icons/youtubeshorts.svg",
         Platform::Tiktok => "icons/tiktok.svg",
+        Platform::Bluesky => "icons/bluesky.svg",
+        Platform::FacebookReels => "icons/facebook.svg",
     })
 }
 
@@ -182,6 +205,8 @@ impl Tehom {
                             Platform::Instagram => ("post-instagram", "Instagram".to_string()),
                             Platform::YoutubeShorts => ("post-shorts", "YouTube Shorts".to_string()),
                             Platform::Tiktok => ("post-tiktok", "TikTok".to_string()),
+                            Platform::Bluesky => ("post-bluesky", "Bluesky".to_string()),
+                            Platform::FacebookReels => ("post-facebook", "Facebook Reels".to_string()),
                         };
                         let clip = open_clip.clone();
                         Button::new((name, key))
@@ -396,6 +421,15 @@ impl Tehom {
                                                 state.set_value(name, window, cx)
                                             });
                                             view.connect_instagram(window, cx);
+                                        } else if matches!(
+                                            platform,
+                                            Platform::Bluesky | Platform::FacebookReels
+                                        ) {
+                                            view.status = format!(
+                                                "Enter the {} details again below.",
+                                                platform.label()
+                                            );
+                                            view.navigate(Page::Connections, cx);
                                         } else {
                                             view.sign_in_browser(platform, window, cx);
                                         }
@@ -664,6 +698,93 @@ impl Tehom {
                         .disabled(self.backend.is_none() || self.source_busy)
                         .on_click(cx.listener(move |view, _, window, cx| {
                             view.sign_in_browser(platform, window, cx)
+                        })),
+                ),
+            )
+            .into_any_element()
+    }
+
+    pub(crate) fn key_form(&self, platform: Platform) -> &KeyForm {
+        if platform == Platform::Bluesky {
+            &self.bluesky
+        } else {
+            &self.facebook
+        }
+    }
+
+    /// Connections: a platform with an official API that signs in with a key.
+    pub(crate) fn key_card(&self, platform: Platform, cx: &mut Context<Self>) -> AnyElement {
+        let p = crate::theme::palette(cx);
+        let name = platform.label();
+        let accounts = self.accounts_on(platform);
+        let form = self.key_form(platform);
+        let unavailable = self.backend.is_none() || self.source_busy;
+        let help = if platform == Platform::Bluesky {
+            "Create an app password in Bluesky under Settings, Privacy and security, App passwords, then enter your handle and it here. Tehom keeps it in the system keyring and never asks for your main password. Posts are at most 300 characters."
+        } else {
+            "Posts Reels to a Facebook Page through Meta's Graph API. Enter the Page id and a Page access token from your own Meta app (it needs the pages_manage_posts permission, and Meta's App Review outside development mode). Tehom keeps the token in the system keyring."
+        };
+        let (id_label, secret_label) = if platform == Platform::Bluesky {
+            ("Bluesky handle", "Bluesky app password")
+        } else {
+            ("Facebook Page id", "Facebook Page access token")
+        };
+        crate::theme::card(cx)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(icon(platform))
+                    .child(div().text_lg().child(name))
+                    .child(
+                        div()
+                            .px_2()
+                            .py_1()
+                            .rounded(px(6.))
+                            .bg(p.surface)
+                            .text_xs()
+                            .text_color(p.muted)
+                            .child("Experimental"),
+                    ),
+            )
+            .child(div().text_sm().text_color(p.muted).child(help))
+            .when(accounts.is_empty(), |card| {
+                card.child(div().text_sm().child("No account connected yet."))
+            })
+            .children(self.account_rows(platform, cx))
+            .child(
+                Input::new(&form.id)
+                    .h(px(44.))
+                    .aria_label(id_label)
+                    .disabled(unavailable),
+            )
+            .child(
+                Input::new(&form.secret)
+                    .h(px(44.))
+                    .aria_label(secret_label)
+                    .disabled(unavailable),
+            )
+            .child(
+                div().flex().child(
+                    Button::new(("connect-key", platform as usize))
+                        .h(px(44.))
+                        .primary()
+                        .icon(IconName::Plus)
+                        .label(format!("Connect {name}"))
+                        .disabled(unavailable)
+                        .on_click(cx.listener(move |view, _, window, cx| {
+                            let form = view.key_form(platform);
+                            let (id, secret) = (
+                                form.id.read(cx).value().to_string(),
+                                form.secret.read(cx).value().to_string(),
+                            );
+                            if id.trim().is_empty() || secret.trim().is_empty() {
+                                view.status = format!("Enter both {name} fields first.");
+                                cx.notify();
+                                return;
+                            }
+                            view.act(Action::KeyLogin(platform, id, secret), window, cx);
                         })),
                 ),
             )

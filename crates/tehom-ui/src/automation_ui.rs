@@ -53,6 +53,8 @@ pub(crate) enum Action {
     InstagramTwoFactor(String),
     /// Opens the platform's browser window and waits for the person to sign in.
     BrowserLogin(tehom_core::Platform),
+    /// Platform, id (handle or Page id) and secret; the secret lives only in this action.
+    KeyLogin(tehom_core::Platform, String, String),
     RemoveAccount(i64),
     /// Clip, account, caption.
     Publish(i64, i64, String),
@@ -68,6 +70,8 @@ pub(crate) enum Action {
 enum Followup {
     TwoFactor(Option<String>, bool),
     SignedIn,
+    /// A Bluesky or Facebook key connected: clear its fields.
+    KeyConnected(tehom_core::Platform),
     /// A key was saved: list that provider's models again.
     Models,
 }
@@ -250,6 +254,7 @@ impl Tehom {
                 | Action::InstagramLogin(..)
                 | Action::InstagramTwoFactor(_)
                 | Action::BrowserLogin(_)
+                | Action::KeyLogin(..)
                 | Action::RemoveAccount(_)
                 | Action::Publish(..)
                 | Action::AutoPublish(_)
@@ -403,6 +408,11 @@ impl Tehom {
                             let account = backend.engine.browser_login(platform).await?;
                             format!("{} connected as @{}.", platform.label(), account.username)
                         }
+                        Action::KeyLogin(platform, id, secret) => {
+                            let account = backend.engine.key_login(platform, &id, &secret).await?;
+                            followup = Some(Followup::KeyConnected(platform));
+                            format!("{} connected as @{}.", platform.label(), account.username)
+                        }
                         Action::RemoveAccount(id) => {
                             backend.engine.remove_account(id).await?;
                             "Account removed from Tehom.".into()
@@ -480,6 +490,12 @@ impl Tehom {
                                 view.instagram
                                     .username
                                     .update(cx, |state, cx| state.set_value("", window, cx));
+                            }
+                            Some(Followup::KeyConnected(platform)) => {
+                                let form = view.key_form(platform);
+                                let (id, secret) = (form.id.clone(), form.secret.clone());
+                                id.update(cx, |state, cx| state.set_value("", window, cx));
+                                secret.update(cx, |state, cx| state.set_value("", window, cx));
                             }
                             Some(Followup::Models) => view.model_list = None,
                             None => {}

@@ -352,14 +352,24 @@ pub enum Platform {
     Instagram,
     YoutubeShorts,
     Tiktok,
+    Bluesky,
+    FacebookReels,
 }
 impl Platform {
-    pub const ALL: [Self; 3] = [Self::Instagram, Self::YoutubeShorts, Self::Tiktok];
+    pub const ALL: [Self; 5] = [
+        Self::Instagram,
+        Self::YoutubeShorts,
+        Self::Tiktok,
+        Self::Bluesky,
+        Self::FacebookReels,
+    ];
     pub fn name(self) -> &'static str {
         match self {
             Self::Instagram => "instagram",
             Self::YoutubeShorts => "youtube_shorts",
             Self::Tiktok => "tiktok",
+            Self::Bluesky => "bluesky",
+            Self::FacebookReels => "facebook_reels",
         }
     }
     pub fn parse(name: &str) -> Option<Self> {
@@ -372,11 +382,13 @@ impl Platform {
             Self::Instagram => "Instagram",
             Self::YoutubeShorts => "YouTube Shorts",
             Self::Tiktok => "TikTok",
+            Self::Bluesky => "Bluesky",
+            Self::FacebookReels => "Facebook Reels",
         }
     }
     /// Whether publishing to this platform is implemented.
     pub fn available(self) -> bool {
-        matches!(self, Self::Instagram | Self::Tiktok | Self::YoutubeShorts)
+        true
     }
 }
 

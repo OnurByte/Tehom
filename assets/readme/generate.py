@@ -19,7 +19,7 @@ assert 'fill-rule="evenodd"' in source and 'viewBox="0 0 512 512"' in source
 ICON_DIR = Path(__file__).resolve().parents[1] / "icons"
 # Brand glyphs, path data unchanged from assets/icons (Simple Icons, CC0).
 GLYPHS = {n: re.search(r' d="([^"]+)"', (ICON_DIR / f"{n}.svg").read_text()).group(1)
-          for n in ("instagram", "tiktok", "youtubeshorts")}
+          for n in ("instagram", "tiktok", "youtubeshorts", "bluesky", "facebook")}
 
 THEMES = {
     "dark": dict(background="#000000", text="#ffffff", muted="#ffffff", border="#404040",
@@ -179,7 +179,7 @@ for theme in THEMES:
         ("spark", "Your AI, your choice", ["OpenAI, Anthropic, Gemini, OpenRouter,", "Codex, Claude Code or a local model."], "Works"),
         ("captions", "Captions you can edit", ["Written on this computer, burned in,", "with colour, size and sound."], "Works"),
         ("local", "Private by default", ["Videos stay here; only captions go to", "the AI you allow. You choose what posts."], "Works"),
-        ("lab", "Post to three platforms", ["Instagram, TikTok and YouTube Shorts,", "by hand or automatically."], "Experimental"),
+        ("lab", "Post to five platforms", ["Instagram, TikTok, YouTube Shorts,", "Bluesky and Facebook Reels."], "Experimental"),
     ]
     c.text(0, 26, "What it does", size=18)
     item_w, item_h, gap = (WIDTH - 2 * 24) / 3, 152, 24
@@ -190,7 +190,7 @@ for theme in THEMES:
         c.pill(x + item_w - 20, y + 24, status)
         c.text(x + 20, y + 76, title, size=16, weight=500)
         wrap(c, x + 20, y + 104, lines)
-    planned = "Also ⁜ Light and dark mode ⁜ Ctrl+K command palette ⁜ never overwrites files ⁜ Soon ⁜ Kwai ⁜ Likee"
+    planned = "Also ⁜ Light and dark mode ⁜ Ctrl+K command palette ⁜ never overwrites files ⁜ Soon ⁜ LinkedIn ⁜ Snapchat ⁜ Bilibili ⁜ Kwai ⁜ Likee"
     c.text(0, 48 + 2 * item_h + gap + 40, planned, size=14, muted=True)
     height = 48 + 2 * item_h + gap + 56
     c.save("features", theme, height, "What it does")
@@ -202,13 +202,15 @@ for theme in THEMES:
         ("instagram", "Instagram Reels", ["Sign in once in the app.", "Post by hand or automatically."], "Experimental"),
         ("tiktok", "TikTok", ["Sign in once in a browser window.", "Post by hand or automatically."], "Experimental"),
         ("youtubeshorts", "YouTube Shorts", ["Sign in once in a browser window.", "Post by hand or automatically."], "Experimental"),
+        ("bluesky", "Bluesky", ["Handle and app password;", "Bluesky's official API."], "Experimental"),
+        ("facebook", "Facebook Reels", ["Page id and token from your own", "Meta app; official Graph API."], "Experimental"),
     ]
     item_w, item_h, gap = (WIDTH - 2 * 24) / 3, 152, 24
     for i, (glyph, title, lines, status) in enumerate(platforms):
-        x, y = i * (item_w + gap), 48
+        x, y = (i % 3) * (item_w + gap), 48 + (i // 3) * (item_h + gap)
         c.card(x, y, item_w, item_h)
         c.glyph(x + 20, y + 20, glyph)
         c.pill(x + item_w - 20, y + 24, status)
         c.text(x + 20, y + 84, title, size=16, weight=500)
         wrap(c, x + 20, y + 110, lines)
-    c.save("post", theme, 48 + item_h + 8, "Post to Instagram Reels, TikTok and YouTube Shorts")
+    c.save("post", theme, 48 + 2 * item_h + gap + 8, "Post to Instagram Reels, TikTok, YouTube Shorts, Bluesky and Facebook Reels")
