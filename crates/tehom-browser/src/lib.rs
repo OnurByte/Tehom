@@ -114,6 +114,8 @@ impl Chromium {
             .args([
                 "--remote-debugging-port=0",
                 "--no-first-run",
+                // The debugging port makes navigator.webdriver true, which Google's sign-in answers with "this browser may not be secure".
+                "--disable-blink-features=AutomationControlled",
                 "--no-default-browser-check",
             ])
             .arg(url)

@@ -8138,7 +8138,7 @@ dependencies = [
 
 [[package]]
 name = "tehom-automation"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "anyhow",
  "feed-rs",
@@ -8163,7 +8163,7 @@ dependencies = [
 
 [[package]]
 name = "tehom-bluesky"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "reqwest",
  "serde_json",
@@ -8174,7 +8174,7 @@ dependencies = [
 
 [[package]]
 name = "tehom-browser"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "futures-util",
  "reqwest",
@@ -8186,7 +8186,7 @@ dependencies = [
 
 [[package]]
 name = "tehom-cli"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -8205,7 +8205,7 @@ dependencies = [
 
 [[package]]
 name = "tehom-core"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -8213,7 +8213,7 @@ dependencies = [
 
 [[package]]
 name = "tehom-desktop"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "embed-resource",
  "gpui-kit",
@@ -8223,7 +8223,7 @@ dependencies = [
 
 [[package]]
 name = "tehom-facebook"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "reqwest",
  "serde_json",
@@ -8233,7 +8233,7 @@ dependencies = [
 
 [[package]]
 name = "tehom-instagram"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -8253,7 +8253,7 @@ dependencies = [
 
 [[package]]
 name = "tehom-media"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "fs2",
  "gstreamer",
@@ -8267,7 +8267,7 @@ dependencies = [
 
 [[package]]
 name = "tehom-tiktok"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "crc32fast",
  "hmac",
@@ -8282,7 +8282,7 @@ dependencies = [
 
 [[package]]
 name = "tehom-ui"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "anyhow",
  "directories",
@@ -8297,7 +8297,7 @@ dependencies = [
 
 [[package]]
 name = "tehom-youtube"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "reqwest",
  "serde_json",
