@@ -3,10 +3,8 @@
 //! request are made from that logged-in page, so TikTok's scripts sign them.
 //! The upload steps follow makiisthenes/TiktokAutoUploader (AGPL-3.0);
 //! none of its request-signing code is used.
-mod cdp;
 mod sign;
 
-use std::fmt;
 use std::path::Path;
 use std::time::Duration;
 
@@ -20,36 +18,8 @@ const STUDIO_URL: &str = "https://www.tiktok.com/tiktokstudio/upload";
 const AID: &str = "1988";
 const CHUNK: usize = 5 * 1024 * 1024;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Error {
-    /// The browser profile is not signed in to TikTok (any more).
-    LoginRequired,
-    /// TikTok or the setup refused; the text says why.
-    Rejected(String),
-    Server(u16),
-    Transport(String),
-    Protocol(String),
-    File(String),
-}
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::LoginRequired => write!(f, "TikTok sign-in required"),
-            Self::Rejected(message) => write!(f, "{message}"),
-            Self::Server(code) => write!(f, "TikTok server error (HTTP {code})"),
-            Self::Transport(message) => write!(f, "browser or connection problem: {message}"),
-            Self::Protocol(message) => write!(f, "unexpected answer from TikTok: {message}"),
-            Self::File(message) => write!(f, "could not read the video: {message}"),
-        }
-    }
-}
-impl std::error::Error for Error {}
-impl Error {
-    pub fn is_retryable(&self) -> bool {
-        matches!(self, Self::Server(_))
-    }
-}
-pub type Result<T> = std::result::Result<T, Error>;
+use tehom_browser::{Chromium, Page};
+pub use tehom_browser::{Error, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Account {
@@ -66,7 +36,7 @@ fn text(value: &Value) -> String {
     }
 }
 
-async fn account(page: &mut cdp::Page) -> Result<Account> {
+async fn account(page: &mut Page) -> Result<Account> {
     let (_, answer) = page
         .fetch(
             "GET",
@@ -100,7 +70,7 @@ async fn account(page: &mut cdp::Page) -> Result<Account> {
 /// finish signing in there (up to ten minutes). Their password is typed into
 /// TikTok's own page; Tehom never sees it.
 pub async fn sign_in(profile: &Path) -> Result<Account> {
-    let browser = cdp::Chromium::launch(profile, LOGIN_URL).await?;
+    let browser = Chromium::launch(profile, LOGIN_URL).await?;
     let result = async {
         let mut page = browser.page().await?;
         let wait = Duration::from_secs(30);
@@ -207,7 +177,7 @@ pub async fn post_video(
     if size == 0 {
         return Err(Error::File("the video file is empty".into()));
     }
-    let browser = cdp::Chromium::launch(profile, STUDIO_URL).await?;
+    let browser = Chromium::launch(profile, STUDIO_URL).await?;
     let result = async {
         let mut page = browser.page().await?;
         page.settled().await?;
@@ -225,7 +195,7 @@ pub async fn post_video(
 }
 
 async fn upload_and_post(
-    page: &mut cdp::Page,
+    page: &mut Page,
     video: &Path,
     size: u64,
     caption: &str,

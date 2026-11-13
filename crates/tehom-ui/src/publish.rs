@@ -1,5 +1,5 @@
 //! Posting clips: the per-clip "Post" row and the Connections cards.
-//! Instagram and TikTok work; YouTube Shorts is shown as coming soon.
+//! Instagram, TikTok and YouTube Shorts.
 use super::*;
 use crate::automation_ui::Action;
 use gpui_kit::Focusable as _;
@@ -180,9 +180,7 @@ impl Tehom {
                         let soon = !platform.available();
                         let (name, label) = match platform {
                             Platform::Instagram => ("post-instagram", "Instagram".to_string()),
-                            Platform::YoutubeShorts => {
-                                ("post-shorts", format!("{} · Soon", platform.label()))
-                            }
+                            Platform::YoutubeShorts => ("post-shorts", "YouTube Shorts".to_string()),
                             Platform::Tiktok => ("post-tiktok", "TikTok".to_string()),
                         };
                         let clip = open_clip.clone();
@@ -399,7 +397,7 @@ impl Tehom {
                                             });
                                             view.connect_instagram(window, cx);
                                         } else {
-                                            view.sign_in_tiktok(window, cx);
+                                            view.sign_in_browser(platform, window, cx);
                                         }
                                     })),
                             )
@@ -605,25 +603,39 @@ impl Tehom {
             .into_any_element()
     }
 
-    pub(crate) fn sign_in_tiktok(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.act(Action::TiktokLogin, window, cx);
+    pub(crate) fn sign_in_browser(
+        &mut self,
+        platform: Platform,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.act(Action::BrowserLogin(platform), window, cx);
         if self.source_busy {
-            self.status = "Sign in to TikTok in the browser window that opened.".into();
+            self.status = format!(
+                "Sign in to {} in the browser window that opened.",
+                platform.label()
+            );
         }
     }
 
-    /// Connections: TikTok accounts. Sign-in happens in a browser window.
-    pub(crate) fn tiktok_card(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// Connections: a platform that signs in through a browser window.
+    pub(crate) fn browser_card(&self, platform: Platform, cx: &mut Context<Self>) -> AnyElement {
         let p = crate::theme::palette(cx);
-        let accounts = self.accounts_on(Platform::Tiktok);
+        let name = platform.label();
+        let account_of = if platform == Platform::YoutubeShorts {
+            "Google"
+        } else {
+            name
+        };
+        let accounts = self.accounts_on(platform);
         crate::theme::card(cx)
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(icon(Platform::Tiktok))
-                    .child(div().text_lg().child("TikTok"))
+                    .child(icon(platform))
+                    .child(div().text_lg().child(name))
                     .child(
                         div()
                             .px_2()
@@ -635,23 +647,23 @@ impl Tehom {
                             .child("Experimental"),
                     ),
             )
-            .child(div().text_sm().text_color(p.muted).child(
-                "Tehom opens a Chrome, Chromium, Edge or Brave window with its own profile, and you sign in to TikTok there; Tehom never sees your password. Posting uses that window too, so it opens while a clip uploads. This is not an official connection: TikTok may restrict accounts that post from other apps.",
-            ))
+            .child(div().text_sm().text_color(p.muted).child(format!(
+                "Tehom opens a Chrome, Chromium, Edge or Brave window with its own profile, and you sign in to {account_of} there; Tehom never sees your password. Posting uses that window too, so it opens while a clip uploads. This is not an official connection: {name} may restrict accounts that post from other apps.",
+            )))
             .when(accounts.is_empty(), |card| {
                 card.child(div().text_sm().child("No account connected yet."))
             })
-            .children(self.account_rows(Platform::Tiktok, cx))
+            .children(self.account_rows(platform, cx))
             .child(
                 div().flex().child(
-                    Button::new("connect-tiktok")
+                    Button::new(("connect-browser", platform as usize))
                         .h(px(44.))
                         .primary()
                         .icon(IconName::Plus)
-                        .label("Connect TikTok")
+                        .label(format!("Connect {name}"))
                         .disabled(self.backend.is_none() || self.source_busy)
-                        .on_click(cx.listener(|view, _, window, cx| {
-                            view.sign_in_tiktok(window, cx)
+                        .on_click(cx.listener(move |view, _, window, cx| {
+                            view.sign_in_browser(platform, window, cx)
                         })),
                 ),
             )
@@ -716,48 +728,6 @@ impl Tehom {
                                 view.act(Action::AutoPublish(Some(id)), window, cx)
                             }))
                     })),
-            )
-            .into_any_element()
-    }
-
-    /// Connections: a platform Tehom cannot post to yet.
-    pub(crate) fn unavailable_card(
-        &self,
-        platform: Platform,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let p = crate::theme::palette(cx);
-        let name = platform.label();
-        crate::theme::card(cx)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(icon(platform))
-                    .child(div().text_lg().child(name))
-                    .child(
-                        div()
-                            .px_2()
-                            .py_1()
-                            .rounded(px(6.))
-                            .bg(p.surface)
-                            .text_xs()
-                            .text_color(p.muted)
-                            .child("Not available yet"),
-                    ),
-            )
-            .child(div().text_sm().text_color(p.muted).child(format!(
-                "Tehom cannot post to {name} yet. For now, save the MP4 and upload it yourself."
-            )))
-            .child(
-                div().flex().child(
-                    Button::new(("connect-soon", platform as usize))
-                        .h(px(44.))
-                        .label(format!("Connect {name}"))
-                        .accessibility_label(format!("{name}, not available yet"))
-                        .disabled(true),
-                ),
             )
             .into_any_element()
     }

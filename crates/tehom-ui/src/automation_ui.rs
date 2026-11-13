@@ -51,8 +51,8 @@ pub(crate) enum Action {
     /// Username and password; the password lives only in this action.
     InstagramLogin(String, String),
     InstagramTwoFactor(String),
-    /// Opens the TikTok browser window and waits for the person to sign in.
-    TiktokLogin,
+    /// Opens the platform's browser window and waits for the person to sign in.
+    BrowserLogin(tehom_core::Platform),
     RemoveAccount(i64),
     /// Clip, account, caption.
     Publish(i64, i64, String),
@@ -249,7 +249,7 @@ impl Tehom {
                 | Action::DownloadSpeechModel
                 | Action::InstagramLogin(..)
                 | Action::InstagramTwoFactor(_)
-                | Action::TiktokLogin
+                | Action::BrowserLogin(_)
                 | Action::RemoveAccount(_)
                 | Action::Publish(..)
                 | Action::AutoPublish(_)
@@ -399,9 +399,9 @@ impl Tehom {
                             followup = Some(Followup::SignedIn);
                             format!("Instagram connected as @{}.", account.username)
                         }
-                        Action::TiktokLogin => {
-                            let account = backend.engine.tiktok_login().await?;
-                            format!("TikTok connected as @{}.", account.username)
+                        Action::BrowserLogin(platform) => {
+                            let account = backend.engine.browser_login(platform).await?;
+                            format!("{} connected as @{}.", platform.label(), account.username)
                         }
                         Action::RemoveAccount(id) => {
                             backend.engine.remove_account(id).await?;

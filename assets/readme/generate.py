@@ -179,7 +179,7 @@ for theme in THEMES:
         ("spark", "Your AI, your choice", ["OpenAI, Anthropic, Gemini, OpenRouter,", "Codex, Claude Code or a local model."], "Works"),
         ("captions", "Captions you can edit", ["Written on this computer, burned in,", "with colour, size and sound."], "Works"),
         ("local", "Private by default", ["Videos stay here; only captions go to", "the AI you allow. You choose what posts."], "Works"),
-        ("lab", "Instagram and TikTok", ["Post clips from the app, by hand", "or automatically. Unofficial routes."], "Experimental"),
+        ("lab", "Post to three platforms", ["Instagram, TikTok and YouTube Shorts,", "by hand or automatically."], "Experimental"),
     ]
     c.text(0, 26, "What it does", size=18)
     item_w, item_h, gap = (WIDTH - 2 * 24) / 3, 152, 24
@@ -190,7 +190,7 @@ for theme in THEMES:
         c.pill(x + item_w - 20, y + 24, status)
         c.text(x + 20, y + 76, title, size=16, weight=500)
         wrap(c, x + 20, y + 104, lines)
-    planned = "Also ⁜ Light and dark mode ⁜ Ctrl+K command palette ⁜ never overwrites files ⁜ Soon ⁜ YouTube Shorts"
+    planned = "Also ⁜ Light and dark mode ⁜ Ctrl+K command palette ⁜ never overwrites files"
     c.text(0, 48 + 2 * item_h + gap + 40, planned, size=14, muted=True)
     height = 48 + 2 * item_h + gap + 56
     c.save("features", theme, height, "What it does")
@@ -201,7 +201,7 @@ for theme in THEMES:
     platforms = [
         ("instagram", "Instagram Reels", ["Sign in once in the app.", "Post by hand or automatically."], "Experimental"),
         ("tiktok", "TikTok", ["Sign in once in a browser window.", "Post by hand or automatically."], "Experimental"),
-        ("youtubeshorts", "YouTube Shorts", ["Save the MP4 for now.", "Posting is planned."], "Soon"),
+        ("youtubeshorts", "YouTube Shorts", ["Sign in once in a browser window.", "Post by hand or automatically."], "Experimental"),
     ]
     item_w, item_h, gap = (WIDTH - 2 * 24) / 3, 152, 24
     for i, (glyph, title, lines, status) in enumerate(platforms):
@@ -211,4 +211,4 @@ for theme in THEMES:
         c.pill(x + item_w - 20, y + 24, status)
         c.text(x + 20, y + 84, title, size=16, weight=500)
         wrap(c, x + 20, y + 110, lines)
-    c.save("post", theme, 48 + item_h + 8, "Post to Instagram Reels and TikTok; YouTube Shorts soon")
+    c.save("post", theme, 48 + item_h + 8, "Post to Instagram Reels, TikTok and YouTube Shorts")

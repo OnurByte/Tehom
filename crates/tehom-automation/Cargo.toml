@@ -19,6 +19,7 @@ tehom-core = { path = "../tehom-core" }
 tehom-media = { path = "../tehom-media" }
 tehom-instagram = { path = "../tehom-instagram" }
 tehom-tiktok = { path = "../tehom-tiktok" }
+tehom-youtube = { path = "../tehom-youtube" }
 # API keys for remote AI providers live in the OS keyring, never in SQLite.
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
 [dev-dependencies]

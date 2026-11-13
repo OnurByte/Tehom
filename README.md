@@ -43,7 +43,7 @@ Then open **Tehom** from your apps. A short guide helps you choose an AI the fir
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/readme/post-dark.svg">
-  <img src="assets/readme/post-light.svg" width="100%" alt="Post to Instagram Reels and TikTok; YouTube Shorts soon">
+  <img src="assets/readme/post-light.svg" width="100%" alt="Post to Instagram Reels, TikTok and YouTube Shorts">
 </picture>
 
 ## Choose your AI
@@ -63,7 +63,7 @@ Tehom lists the models your choice offers, with a plain note on how capable each
 - **Sources.** YouTube channels and videos, Kick videos, any RSS or Atom feed with video, or a file from your computer.
 - **Studio.** Its own tab: player, timeline, trim points and a caption editor. Quick looks, colours, size and a slider to place captions at any height.
 - **Automations.** Every channel you follow is one. Choose what happens to new videos and which account its clips are posted to; each source can use a different one. The same page sets how often to check, clips per video and clip length.
-- **Connections.** Connect Instagram or TikTok, then post a clip by hand or let auto-export post for you. Both use unofficial routes and are experimental, so the platform may ask you to confirm a login or restrict the account. Use one you can afford to lose access to. YouTube Shorts is not available yet.
+- **Connections.** Connect Instagram, TikTok or YouTube Shorts, then post a clip by hand or let auto-export post for you. All three use unofficial routes and are experimental, so the platform may ask you to confirm a login or restrict the account. Use one you can afford to lose access to.
 - **Your colours.** Light or dark, plus six accent colours. Press **Ctrl+K** (**Cmd+K** on Mac) or click the search box to find any action.
 
 ---
@@ -90,9 +90,9 @@ Run `tehom --help` for every command. Settings file: [`config/tehom.example.toml
 <details>
 <summary><b>Privacy and safety</b></summary>
 
-- Tehom posts nothing unless you connect an Instagram or TikTok account and choose to publish or turn on automatic posting. Otherwise it only talks to the video site, RSS feeds you add, and the AI you allow.
+- Tehom posts nothing unless you connect an Instagram, TikTok or YouTube account and choose to publish or turn on automatic posting. Otherwise it only talks to the video site, RSS feeds you add, and the AI you allow.
 - Instagram publishing uses Instagram's private mobile protocol, not an official API. Instagram may change it or restrict accounts that use it; use an account you can afford to lose access to.
-- TikTok publishing is unofficial too. You sign in to TikTok yourself in a Chrome, Chromium, Edge or Brave window with Tehom's own profile; Tehom never sees your password, and the window opens again while a clip uploads. TikTok may change this or restrict the account.
+- TikTok and YouTube Shorts publishing are unofficial too. You sign in yourself in a Chrome, Chromium, Edge or Brave window with Tehom's own profile; Tehom never sees your password, and the window opens again while a clip uploads. The platform may change this or restrict the account.
 - Speech is transcribed on this computer with whisper.cpp when a video has no captions.
 - API keys live in your system keyring, never in Tehom's files.
 - Existing files are never overwritten, and half-made clips never appear.
