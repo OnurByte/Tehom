@@ -9,6 +9,21 @@
 
 ## Install
 
+Pick your computer. Each link always gives the newest version.
+
+| Your computer | Download |
+| --- | --- |
+| <img src="assets/readme/os-windows.svg" height="16" alt=""> Windows | [tehom-windows-x86_64.zip](https://github.com/OnurByte/Tehom/releases/latest/download/tehom-windows-x86_64.zip) |
+| <img src="assets/readme/os-apple.svg" height="16" alt=""> Mac with an M chip (M1 or newer) | [tehom-macos-aarch64.tar.gz](https://github.com/OnurByte/Tehom/releases/latest/download/tehom-macos-aarch64.tar.gz) |
+| <img src="assets/readme/os-linux.svg" height="16" alt=""> Linux, Intel or AMD | [tehom-linux-x86_64.tar.gz](https://github.com/OnurByte/Tehom/releases/latest/download/tehom-linux-x86_64.tar.gz) |
+| <img src="assets/readme/os-linux.svg" height="16" alt=""> Linux, ARM (Raspberry Pi 5, ARM laptops) | [tehom-linux-aarch64.tar.gz](https://github.com/OnurByte/Tehom/releases/latest/download/tehom-linux-aarch64.tar.gz) |
+
+Not sure which Mac you have? Choose  → **About This Mac**: a chip named **Apple M…** is the one above. A Mac with an Intel chip has no download yet.
+
+**The easy way is the paste command further down.** It downloads the right file, checks it is not damaged, adds Tehom to your apps and tells you if FFmpeg, yt-dlp or GStreamer are missing. The links above are for people who want the files themselves. Each file has a `.sha256` checksum beside it on the [releases page](https://github.com/OnurByte/Tehom/releases/latest).
+
+These downloads are not code-signed, so your computer may warn you the first time. That is expected: on Windows choose **More info**, then **Run anyway**; on a Mac, right-click Tehom and choose **Open**. The paste commands below avoid the Mac warning.
+
 ### <img src="assets/readme/os-apple.svg" height="20" alt=""> <img src="assets/readme/os-linux.svg" height="20" alt=""> macOS and Linux
 
 Open **Terminal** and paste:
